@@ -6,6 +6,12 @@ Version: 1.0
 
 Repository: travel-movie-ai
 
+> Implementation note: this document describes the target MVP and architecture.
+> It is not a statement that every stage is already available. Current
+> implementation status and installation instructions are maintained in
+> [README.md](../README.md) and
+> [installation-and-usage.md](installation-and-usage.md).
+
 Tagline:
 
 > Your personal AI travel filmmaker.

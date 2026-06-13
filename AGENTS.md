@@ -51,7 +51,7 @@ initializing model-heavy dependencies.
 - `docs/` - architecture and setup documentation.
 - `workspace/` - generated per-project data; never commit it.
 
-See `TECHNICAL_SPECIFICATION.md` for product requirements and
+See `docs/TECHNICAL_SPECIFICATION.md` for product requirements and
 `docs/architecture.md` for package boundaries and runtime artifacts.
 
 ## Product Direction
@@ -301,7 +301,7 @@ run, state that explicitly.
 - Update `.env.example` when adding or renaming settings.
 - Update `docs/architecture.md` when package boundaries, runtime artifacts, or
   pipeline contracts change.
-- Update `TECHNICAL_SPECIFICATION.md` only when product requirements change, not
+- Update `docs/TECHNICAL_SPECIFICATION.md` only when product requirements change, not
   merely to describe an implementation detail.
 - Keep command examples valid for Windows PowerShell, the primary development
   environment.

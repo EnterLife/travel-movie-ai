@@ -1,13 +1,13 @@
 """Timeline assembly."""
 
 from datetime import UTC, datetime
-from pathlib import Path
 
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MediaAsset,
     MontageClip,
+    MusicPlan,
     QuickMontagePlan,
     QuickMontageSettings,
     Scene,
@@ -18,7 +18,7 @@ from travelmovieai.story.ranking import rank_scenes
 def build_quick_montage_plan(
     assets: list[MediaAsset],
     settings: QuickMontageSettings,
-    music_path: Path | None = None,
+    music_plan: MusicPlan | None = None,
 ) -> QuickMontagePlan:
     usable = [
         asset
@@ -79,7 +79,8 @@ def build_quick_montage_plan(
         settings=settings,
         clips=clips,
         total_duration_seconds=_timeline_duration(clips, settings),
-        music_path=music_path,
+        music_path=music_plan.source_path if music_plan else None,
+        music_plan=music_plan,
     )
 
 
@@ -87,7 +88,7 @@ def build_semantic_montage_plan(
     assets: list[MediaAsset],
     scenes: list[Scene],
     settings: QuickMontageSettings,
-    music_path: Path | None = None,
+    music_plan: MusicPlan | None = None,
 ) -> QuickMontagePlan:
     assets_by_id = {asset.id: asset for asset in assets}
     selected: list[MontageClip] = []
@@ -147,7 +148,8 @@ def build_semantic_montage_plan(
         settings=settings,
         clips=selected,
         total_duration_seconds=_timeline_duration(selected, settings),
-        music_path=music_path,
+        music_path=music_plan.source_path if music_plan else None,
+        music_plan=music_plan,
         selection_mode="semantic",
     )
 

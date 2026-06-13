@@ -55,6 +55,42 @@ class HealthResponse(BaseModel):
     ffprobe: DependencyStatus
 
 
+class ModelOption(BaseModel):
+    id: str
+    likely_vision: bool = False
+    recommended: bool = False
+
+
+class AIProviderStatus(BaseModel):
+    available: bool
+    base_url: str
+    configured_model: str
+    models: list[ModelOption] = Field(default_factory=list)
+    error: str | None = None
+
+
+class CudaStatusResponse(BaseModel):
+    available: bool
+    gpu_name: str | None = None
+    driver_version: str | None = None
+    memory_mb: int | None = None
+    compute_capability: str | None = None
+    ffmpeg_nvenc: bool = False
+    opencv_cuda_devices: int = 0
+    torch_cuda: bool = False
+    torch_version: str | None = None
+    note: str | None = None
+
+
+class CapabilitiesResponse(BaseModel):
+    ai: AIProviderStatus
+    cuda: CudaStatusResponse
+    opencv_available: bool
+    scenedetect_available: bool
+    music_modes: list[str]
+    render_devices: list[str]
+
+
 class MovieRequest(BaseModel):
     input_path: str = Field(min_length=1)
     workspace: str | None = None
@@ -77,3 +113,6 @@ class MovieJobResponse(BaseModel):
     clip_count: int | None = None
     duration_seconds: float | None = None
     selection_mode: str | None = None
+    render_encoder: str | None = None
+    music_mode: str | None = None
+    music_profile: str | None = None

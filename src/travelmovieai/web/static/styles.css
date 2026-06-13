@@ -682,12 +682,45 @@ input::placeholder {
 }
 
 .movie-panel {
-  display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(300px, 1.15fr) minmax(210px, 0.8fr);
-  gap: 28px;
-  align-items: end;
   margin-top: 16px;
   padding: 26px;
+}
+
+.movie-panel-heading {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.movie-panel-copy {
+  max-width: 580px;
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.capability-chip {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 9px;
+}
+
+.capability-chip.ready {
+  border-color: rgba(139, 215, 173, 0.2);
+  color: var(--green);
+}
+
+.capability-chip.warning {
+  border-color: rgba(230, 180, 95, 0.18);
+  color: #e6b45f;
 }
 
 .movie-panel h3,
@@ -709,37 +742,69 @@ input::placeholder {
   line-height: 1.55;
 }
 
-.movie-settings {
+.ai-config-grid {
   display: grid;
-  grid-template-columns: 1fr 90px;
-  gap: 9px 12px;
-  align-items: center;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 24px;
 }
 
-.movie-settings label {
-  margin: 0;
+.config-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(5, 7, 9, 0.3);
 }
 
-.movie-settings input,
-.movie-settings select,
-.music-path {
+.config-card h4 {
+  margin: 0 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.config-card > label {
+  margin: 14px 0 7px;
+}
+
+.config-card select,
+.config-card input[type="number"],
+.config-card input[type="text"] {
   width: 100%;
+  min-width: 0;
   height: 38px;
+  padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
   outline: none;
   color: var(--text);
-  background: rgba(5, 7, 9, 0.55);
-  text-align: center;
+  background: rgba(5, 7, 9, 0.7);
 }
 
-.movie-settings select {
-  padding: 0 8px;
+.config-card input:disabled,
+.config-card select:disabled {
+  opacity: 0.45;
+}
+
+.compact-settings {
+  display: grid;
+  grid-template-columns: 1fr 72px;
+  gap: 7px 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.compact-settings label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .movie-actions {
   display: grid;
   gap: 10px;
+  max-width: 520px;
+  margin: 22px auto 0;
 }
 
 .toggle-row {
@@ -785,12 +850,7 @@ input::placeholder {
 }
 
 .music-path {
-  padding: 0 10px;
-  border-radius: 10px;
-  color: var(--text);
-  background: rgba(5, 7, 9, 0.55);
   font-size: 11px;
-  text-align: left;
 }
 
 .movie-button {
@@ -986,11 +1046,11 @@ footer a {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .movie-panel {
+  .ai-config-grid {
     grid-template-columns: 1fr 1fr;
   }
 
-  .movie-actions {
+  .config-card:last-child {
     grid-column: 1 / -1;
   }
 }
@@ -1053,9 +1113,21 @@ footer a {
     width: 100%;
   }
 
-  .movie-panel,
+  .ai-config-grid,
   .movie-progress {
     grid-template-columns: 1fr;
+  }
+
+  .movie-panel-heading {
+    flex-direction: column;
+  }
+
+  .capability-list {
+    justify-content: flex-start;
+  }
+
+  .config-card:last-child {
+    grid-column: auto;
   }
 
   .movie-result-heading {

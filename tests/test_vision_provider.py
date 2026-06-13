@@ -76,3 +76,48 @@ def test_lm_studio_provider_reports_unavailable_server(
             "qwen-test",
             10,
         ).analyze(image, StoryStyle.CINEMATIC)
+
+
+def test_lm_studio_provider_retries_without_json_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"fake jpeg")
+    responses = iter(
+        [
+            FakeResponse({"choices": [{"message": {"content": ""}}]}),
+            FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "Result:\n"
+                                    '{"caption":"Beach","location_type":"beach",'
+                                    '"activity":"walking","emotion":"calm",'
+                                    '"people_count":1,"importance_score":75,"tags":[]}'
+                                )
+                            }
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    calls: list[dict[str, Any]] = []
+
+    def respond(request: Any, timeout: float) -> FakeResponse:
+        calls.append(json.loads(request.data.decode("utf-8")))
+        return next(responses)
+
+    monkeypatch.setattr(vision, "urlopen", respond)
+    result = LMStudioVisionProvider(
+        "http://localhost:1234/v1",
+        "reasoning-vision",
+        10,
+    ).analyze(image, StoryStyle.CINEMATIC)
+
+    assert result.caption == "Beach"
+    assert "response_format" in calls[0]
+    assert "response_format" not in calls[1]

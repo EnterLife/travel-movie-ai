@@ -106,6 +106,8 @@ workspace/.web/jobs.json
 
 Приоритет: высокий, до vision LLM.
 
+Статус: реализован базовый анализ representative contact sheets.
+
 Задачи:
 
 - blur, brightness, contrast и noise;
@@ -119,6 +121,10 @@ workspace/.web/jobs.json
 - метрики воспроизводимы на synthetic fixtures;
 - quality analysis не интерпретирует содержание сцены;
 - плохие сцены видны пользователю до AI-анализа.
+
+Реализованы brightness, contrast, sharpness, saturation, colorfulness,
+нормализованный quality score и участие quality score в scene ranking.
+Фильтры и просмотр метрик в галерее остаются следующей UI-задачей.
 
 ## Этап 5. Speech Analysis
 
@@ -223,8 +229,9 @@ workspace/.web/jobs.json
 
 Приоритет: финальный MVP.
 
-Статус: частично реализован renderer с semantic scene selection, локальной
-музыкой, ducking и переходами. Storyboard, титры и субтитры не реализованы.
+Статус: частично реализован renderer с semantic scene selection, OpenCV
+quality ranking, локально генерируемой музыкой, ducking, переходами и
+CUDA/NVENC с CPU fallback. Storyboard, титры и субтитры не реализованы.
 
 Задачи:
 

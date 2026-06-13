@@ -20,7 +20,8 @@ from travelmovieai.domain.models import (
     StageResult,
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
-from travelmovieai.infrastructure.system import ExecutableStatus
+from travelmovieai.infrastructure.lm_studio import LMStudioModels
+from travelmovieai.infrastructure.system import CudaStatus, ExecutableStatus
 from travelmovieai.web.app import create_app
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager
@@ -126,6 +127,32 @@ def test_web_health_is_not_ready_without_ffprobe() -> None:
 
     assert health.json()["status"] == "degraded"
     assert health.json()["ready"] is False
+
+
+def test_web_capabilities_lists_models_and_cuda() -> None:
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            model_lister=lambda url, key, timeout: LMStudioModels(
+                available=True,
+                models=("text-model", "vision-omni"),
+            ),
+            cuda_checker=lambda ffmpeg: CudaStatus(
+                available=True,
+                gpu_name="RTX Test",
+                memory_mb=6144,
+                ffmpeg_nvenc=True,
+            ),
+        )
+    ) as client:
+        response = client.get("/api/capabilities")
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["ai"]["available"] is True
+    assert payload["ai"]["models"][1]["likely_vision"] is True
+    assert payload["ai"]["models"][1]["recommended"] is True
+    assert payload["cuda"]["ffmpeg_nvenc"] is True
 
 
 def test_web_scan_job_reaches_completed_result(tmp_path: Path) -> None:

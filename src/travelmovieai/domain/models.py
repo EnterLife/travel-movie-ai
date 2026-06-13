@@ -79,6 +79,30 @@ class VisionAnalysisReport(BaseModel):
     scenes: list[Scene] = Field(default_factory=list)
 
 
+class VisualQualityMetrics(BaseModel):
+    brightness: float = Field(ge=0, le=100)
+    contrast: float = Field(ge=0, le=100)
+    sharpness: float = Field(ge=0, le=100)
+    saturation: float = Field(ge=0, le=100)
+    colorfulness: float = Field(ge=0, le=100)
+    quality_score: float = Field(ge=0, le=100)
+    backend: str
+
+
+class QualityAnalysisReport(BaseModel):
+    created_at: datetime
+    scenes: list[Scene] = Field(default_factory=list)
+
+
+class MusicPlan(BaseModel):
+    mode: Literal["none", "manual", "library", "generated"]
+    source_path: Path | None = None
+    profile: Literal["calm", "cinematic", "warm", "energetic"] | None = None
+    bpm: int | None = Field(default=None, ge=40, le=180)
+    reasoning: str = ""
+    generated: bool = False
+
+
 class Event(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     title: str
@@ -116,13 +140,18 @@ class QuickMontageSettings(BaseModel):
     height: int = Field(default=720, ge=240, le=2160)
     fps: int = Field(default=30, ge=15, le=60)
     semantic_analysis: bool = False
+    quality_analysis: bool = True
     story_style: StoryStyle = StoryStyle.CINEMATIC
+    vision_model: str | None = Field(default=None, max_length=300)
+    render_device: Literal["auto", "cuda", "cpu"] = "auto"
     scene_threshold: float = Field(default=27, ge=1, le=100)
     min_scene_duration_seconds: float = Field(default=1.5, ge=0.5, le=30)
     max_scene_duration_seconds: float = Field(default=12, ge=2, le=120)
     transition: Literal["none", "fade", "dissolve", "wipeleft", "slideright"] = "fade"
     transition_duration_seconds: float = Field(default=0.5, ge=0, le=3)
     music_enabled: bool = True
+    music_mode: Literal["auto", "generated", "library", "manual", "none"] = "auto"
+    music_profile: Literal["auto", "calm", "cinematic", "warm", "energetic"] = "auto"
     music_path: Path | None = None
     music_volume: float = Field(default=0.16, ge=0, le=1)
 
@@ -146,6 +175,7 @@ class QuickMontagePlan(BaseModel):
     clips: list[MontageClip] = Field(default_factory=list)
     total_duration_seconds: float = Field(default=0, ge=0)
     music_path: Path | None = None
+    music_plan: MusicPlan | None = None
     selection_mode: Literal["chronological", "semantic"] = "chronological"
 
 
@@ -155,6 +185,9 @@ class QuickMontageResult(BaseModel):
     clip_count: int
     duration_seconds: float
     selection_mode: Literal["chronological", "semantic"] = "chronological"
+    render_encoder: str | None = None
+    music_mode: str | None = None
+    music_profile: str | None = None
 
 
 class StageResult(BaseModel):

@@ -11,10 +11,10 @@ if not exist "%PYTHON_EXE%" (
   if errorlevel 1 goto :error
 )
 
-"%PYTHON_EXE%" -c "import travelmovieai, fastapi, uvicorn" >nul 2>&1
+"%PYTHON_EXE%" -c "import travelmovieai, fastapi, uvicorn, cv2, scenedetect" >nul 2>&1
 if errorlevel 1 (
-  echo Installing TravelMovieAI dependencies...
-  "%PYTHON_EXE%" -m pip install -e .
+  echo Installing TravelMovieAI and video analysis dependencies...
+  "%PYTHON_EXE%" -m pip install -e ".[video]"
   if errorlevel 1 goto :error
 )
 

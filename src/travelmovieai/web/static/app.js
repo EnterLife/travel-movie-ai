@@ -26,9 +26,17 @@ const movieDuration = document.querySelector("#movie-duration");
 const clipDuration = document.querySelector("#clip-duration");
 const photoDuration = document.querySelector("#photo-duration");
 const storyStyle = document.querySelector("#story-style");
+const visionModel = document.querySelector("#vision-model");
+const renderDevice = document.querySelector("#render-device");
 const transitionType = document.querySelector("#transition-type");
 const semanticAnalysis = document.querySelector("#semantic-analysis");
+const qualityAnalysis = document.querySelector("#quality-analysis");
+const musicMode = document.querySelector("#music-mode");
+const musicProfile = document.querySelector("#music-profile");
+const musicVolume = document.querySelector("#music-volume");
+const musicVolumeValue = document.querySelector("#music-volume-value");
 const musicPath = document.querySelector("#music-path");
+const capabilityList = document.querySelector("#capability-list");
 const movieProgress = document.querySelector("#movie-progress");
 const movieStatus = document.querySelector("#movie-status");
 const movieProgressTitle = document.querySelector("#movie-progress-title");
@@ -102,6 +110,66 @@ async function checkHealth() {
     submitButton.disabled = true;
     movieButton.disabled = true;
     showError(error.message);
+  }
+}
+
+async function loadCapabilities() {
+  try {
+    const capabilities = await requestJson("/api/capabilities");
+    renderCapabilities(capabilities);
+    populateModels(capabilities.ai);
+    if (!capabilities.cuda.ffmpeg_nvenc && renderDevice.value === "cuda") {
+      renderDevice.value = "auto";
+    }
+  } catch {
+    capabilityList.replaceChildren(capabilityChip("AI/GPU: нет данных", false));
+    visionModel.replaceChildren(new Option("Модели недоступны", ""));
+  }
+}
+
+function renderCapabilities(capabilities) {
+  capabilityList.replaceChildren(
+    capabilityChip(
+      capabilities.ai.available
+        ? `LM Studio · ${capabilities.ai.models.length} моделей`
+        : "LM Studio недоступен",
+      capabilities.ai.available,
+    ),
+    capabilityChip(
+      capabilities.cuda.available
+        ? `${capabilities.cuda.gpu_name} · ${capabilities.cuda.memory_mb} MB`
+        : "NVIDIA GPU не найдена",
+      capabilities.cuda.available,
+    ),
+    capabilityChip(
+      capabilities.cuda.ffmpeg_nvenc ? "NVENC готов" : "NVENC недоступен",
+      capabilities.cuda.ffmpeg_nvenc,
+    ),
+    capabilityChip(
+      capabilities.opencv_available ? "OpenCV готов" : "OpenCV fallback: Pillow",
+      capabilities.opencv_available,
+    ),
+  );
+}
+
+function capabilityChip(label, available) {
+  const chip = document.createElement("span");
+  chip.className = `capability-chip ${available ? "ready" : "warning"}`;
+  chip.textContent = label;
+  return chip;
+}
+
+function populateModels(ai) {
+  visionModel.replaceChildren();
+  if (!ai.models.length) {
+    visionModel.append(new Option(ai.configured_model || "Нет моделей", ai.configured_model));
+    return;
+  }
+  for (const model of ai.models) {
+    const suffix = model.likely_vision ? " · vision" : " · совместимость не проверена";
+    const option = new Option(`${model.id}${suffix}`, model.id);
+    option.selected = model.recommended;
+    visionModel.append(option);
   }
 }
 
@@ -285,9 +353,15 @@ movieButton.addEventListener("click", async () => {
           max_video_clip_seconds: Number(clipDuration.value),
           photo_duration_seconds: Number(photoDuration.value),
           semantic_analysis: semanticAnalysis.checked,
+          quality_analysis: qualityAnalysis.checked,
+          vision_model: visionModel.value || null,
+          render_device: renderDevice.value,
           story_style: storyStyle.value,
           transition: transitionType.value,
-          music_enabled: true,
+          music_enabled: musicMode.value !== "none",
+          music_mode: musicMode.value,
+          music_profile: musicProfile.value,
+          music_volume: Number(musicVolume.value) / 100,
           music_path: musicPath.value.trim() || null,
         },
       }),
@@ -347,6 +421,8 @@ function showMovieResult(job) {
   movieResultSummary.textContent =
     `${job.clip_count} фрагментов · ${formatDuration(job.duration_seconds)} · ${
       job.selection_mode === "semantic" ? "AI-отбор" : "быстрый режим"
+    } · ${job.render_encoder || "кодировщик неизвестен"} · ${
+      job.music_profile || job.music_mode || "без музыки"
     }`;
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
@@ -495,6 +571,14 @@ function lastPathPart(value) {
 }
 
 refreshJobs.addEventListener("click", loadHistory);
+musicMode.addEventListener("change", () => {
+  musicPath.disabled = musicMode.value !== "manual";
+  musicProfile.disabled = ["manual", "library", "none"].includes(musicMode.value);
+});
+musicVolume.addEventListener("input", () => {
+  musicVolumeValue.textContent = `${musicVolume.value}%`;
+});
 submitButton.disabled = true;
 checkHealth();
+loadCapabilities();
 loadHistory();

@@ -13,10 +13,11 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
     scored: list[Scene] = []
     for scene in scenes:
         base = scene.importance_score if scene.importance_score is not None else 50.0
+        quality = scene.quality_score if scene.quality_score is not None else 60.0
         tags = _semantic_tags(scene)
         rarity = sum(1 / tag_frequency[tag] for tag in tags) / len(tags) if tags else 0.0
         diversity_bonus = min(10.0, rarity * 5)
-        score = min(100.0, base + diversity_bonus)
+        score = min(100.0, base * 0.68 + quality * 0.22 + diversity_bonus)
         scored.append(
             scene.model_copy(
                 update={
@@ -25,6 +26,7 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
                         "ranking_score": score,
                         "ranking_factors": {
                             "vision_importance": base,
+                            "visual_quality": quality,
                             "diversity_bonus": diversity_bonus,
                         },
                     }

@@ -168,4 +168,7 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         clip_count=result.clip_count if result else None,
         duration_seconds=result.duration_seconds if result else None,
         selection_mode=result.selection_mode if result else None,
+        render_encoder=result.render_encoder if result else None,
+        music_mode=result.music_mode if result else None,
+        music_profile=result.music_profile if result else None,
     )

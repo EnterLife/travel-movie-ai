@@ -24,9 +24,14 @@ Implemented:
 - one-click quick montage from videos and photos;
 - PySceneDetect scene boundaries with a deterministic uniform fallback;
 - representative frame extraction and cached scene metadata;
+- start/middle/end contact sheets for stronger scene understanding;
 - local Qwen-compatible vision analysis through LM Studio;
+- selectable loaded LM Studio models in the web interface;
+- OpenCV visual quality scoring used by scene ranking;
 - explainable semantic scene ranking;
+- local procedural soundtrack generation guided by scene metrics;
 - local soundtrack selection, audio ducking, and FFmpeg transitions;
+- NVIDIA CUDA/NVENC rendering with automatic CPU fallback;
 - H.264/AAC MP4 preview and download from the web interface;
 - one-click Windows launcher in `scripts\run_web.bat`;
 - Windows paths containing spaces and Unicode characters.
@@ -79,10 +84,11 @@ Paste the full path to the media folder, optionally set a workspace, and click
 After the scan:
 
 1. Adjust the target movie duration and clip limits.
-2. Keep semantic selection enabled for AI mode, or disable it for quick mode.
-3. Select a story style, transition, and optional local music file.
-4. Click `Собрать фильм`.
-5. Preview or download the generated MP4.
+2. Select one of the vision models currently loaded in LM Studio.
+3. Keep semantic and OpenCV analysis enabled for the best automatic selection.
+4. Select `Auto`, CUDA, or CPU rendering and configure the music director.
+5. Click `Запустить AI-монтаж`.
+6. Preview or download the generated MP4.
 
 Stop the server with `Ctrl+C` or close its console window.
 
@@ -174,9 +180,19 @@ Semantic mode additionally:
 - preserves chronological order after selecting the strongest scenes;
 - reuses valid scene and vision cache data on repeated runs.
 
-Both modes can apply FFmpeg video/audio transitions and select music from an
-explicit path, music-named source audio, or `assets/music`. Music is faded and ducked
-under source audio. The builder writes `quick_timeline.json` and `final.mp4`.
+Both modes can apply FFmpeg video/audio transitions. Music modes include:
+
+- `AI Auto`: derive a calm/cinematic/warm/energetic profile from OpenCV metrics
+  and scene emotion, then generate a deterministic local ambient WAV;
+- generated music with a manually selected profile;
+- a track from source media or `assets/music`;
+- an explicit local file;
+- no music.
+
+Music is faded and ducked under source audio. Rendering uses NVIDIA
+`h264_nvenc` when `Auto` or CUDA is selected and available, with CPU fallback
+for `Auto`. The builder writes `quality_analysis.json`, `music_plan.json`,
+`quick_timeline.json`, and `final.mp4`.
 
 This is not yet the complete Story Builder: event clustering, duplicate
 removal, quality scoring, speech context, titles, and narration are pending.
@@ -247,9 +263,10 @@ The default Media Scan setup usually needs no changes. Important settings:
 - `TRAVELMOVIEAI_FFMPEG_BINARY`: FFmpeg executable name or full path;
 - `TRAVELMOVIEAI_FFPROBE_BINARY`: FFprobe executable name or full path;
 - `TRAVELMOVIEAI_LM_STUDIO_URL`: local OpenAI-compatible endpoint;
-- `TRAVELMOVIEAI_VISION_MODEL`: identifier of the loaded vision model;
+- `TRAVELMOVIEAI_VISION_MODEL`: `auto` or a loaded vision model identifier;
 - `TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS`: finite request timeout;
 - `TRAVELMOVIEAI_MUSIC_LIBRARY`: local soundtrack directory;
+- `TRAVELMOVIEAI_GENERATED_MUSIC_FILENAME`: generated WAV filename;
 - `TRAVELMOVIEAI_WORKERS`: worker limit reserved for processing stages;
 - `TRAVELMOVIEAI_BATCH_SIZE`: batch size reserved for processing stages;
 - `TRAVELMOVIEAI_WEB_HOST`: local web server host;

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from travelmovieai.analysis.quality import analyze_scene_quality
 from travelmovieai.analysis.scenes import RepresentativeFrameExtractor
 from travelmovieai.analysis.vision import VisionProvider, analyze_scenes
 from travelmovieai.application.context import ProjectContext
@@ -14,9 +15,12 @@ from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage, StoryStyle
 from travelmovieai.domain.models import (
     MediaScanReport,
+    MusicPlan,
+    QualityAnalysisReport,
     QuickMontagePlan,
     QuickMontageResult,
     QuickMontageSettings,
+    Scene,
     SceneDetectionReport,
     StageResult,
 )
@@ -27,11 +31,15 @@ from travelmovieai.editing.timeline import (
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.infrastructure.lm_studio import (
+    list_lm_studio_models,
+    resolve_vision_model,
+)
 from travelmovieai.infrastructure.vision import LMStudioVisionProvider
 from travelmovieai.pipeline.registry import build_default_pipeline
 from travelmovieai.pipeline.runner import PipelineRunner
 from travelmovieai.pipeline.stages.scene_detection import SceneDetectionStage
-from travelmovieai.story.music import select_music
+from travelmovieai.story.music import build_music_plan
 
 
 class TravelMovieService:
@@ -96,26 +104,33 @@ class TravelMovieService:
         except (OSError, ValidationError) as error:
             raise MontageError("Не удалось прочитать результаты Media Scan.") from error
 
-        music_path = select_music(
-            report.assets,
-            settings,
-            self.settings.music_library.expanduser().resolve(),
-        )
         if settings.semantic_analysis:
             plan = self._build_semantic_plan(
                 context,
                 report,
                 settings,
-                music_path,
                 progress,
             )
         else:
-            plan = build_quick_montage_plan(report.assets, settings, music_path)
+            plan = build_quick_montage_plan(report.assets, settings)
+            music_plan = self._build_music_plan(
+                context,
+                report,
+                [],
+                settings,
+                plan.total_duration_seconds,
+            )
+            plan = plan.model_copy(
+                update={
+                    "music_plan": music_plan,
+                    "music_path": music_plan.source_path,
+                }
+            )
         timeline_path = context.artifacts_dir / "quick_timeline.json"
         resolved_output = (output_path or context.artifacts_dir / "final.mp4").resolve()
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(timeline_path, plan)
-        QuickMontageRenderer(self.settings.ffmpeg_binary).render(
+        render_encoder = QuickMontageRenderer(self.settings.ffmpeg_binary).render(
             plan,
             resolved_output,
             context.cache_dir,
@@ -127,6 +142,9 @@ class TravelMovieService:
             clip_count=len(plan.clips),
             duration_seconds=plan.total_duration_seconds,
             selection_mode=plan.selection_mode,
+            render_encoder=render_encoder,
+            music_mode=plan.music_plan.mode if plan.music_plan else None,
+            music_profile=plan.music_plan.profile if plan.music_plan else None,
         )
 
     def _build_semantic_plan(
@@ -134,7 +152,6 @@ class TravelMovieService:
         context: ProjectContext,
         report: MediaScanReport,
         settings: QuickMontageSettings,
-        music_path: Path | None,
         progress: Callable[[int, int, str], None] | None,
     ) -> QuickMontagePlan:
         if progress:
@@ -164,31 +181,82 @@ class TravelMovieService:
             frame_path = extractor.extract(scene, asset, context.frames_dir)
             prepared_scenes.append(scene.model_copy(update={"keyframe_path": frame_path}))
 
-        provider = self._vision_provider()
         vision_report = analyze_scenes(
             prepared_scenes,
-            provider,
+            self._vision_provider(settings.vision_model),
             settings.story_style,
             progress,
         )
         vision_path = context.artifacts_dir / "vision_analysis.json"
         write_json_atomic(vision_path, vision_report)
+        quality_report = (
+            analyze_scene_quality(vision_report.scenes)
+            if settings.quality_analysis
+            else QualityAnalysisReport(
+                created_at=vision_report.created_at,
+                scenes=vision_report.scenes,
+            )
+        )
+        quality_path = context.artifacts_dir / "quality_analysis.json"
+        write_json_atomic(quality_path, quality_report)
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
-        repository.synchronize_scenes(vision_report.scenes)
-        return build_semantic_montage_plan(
+        repository.synchronize_scenes(quality_report.scenes)
+        plan = build_semantic_montage_plan(
             report.assets,
-            vision_report.scenes,
+            quality_report.scenes,
             settings,
-            music_path,
+        )
+        music_plan = self._build_music_plan(
+            context,
+            report,
+            quality_report.scenes,
+            settings,
+            plan.total_duration_seconds,
+        )
+        return plan.model_copy(
+            update={
+                "music_plan": music_plan,
+                "music_path": music_plan.source_path,
+            }
         )
 
-    def _vision_provider(self) -> VisionProvider:
+    def _build_music_plan(
+        self,
+        context: ProjectContext,
+        report: MediaScanReport,
+        scenes: list[Scene],
+        settings: QuickMontageSettings,
+        duration_seconds: float,
+    ) -> MusicPlan:
+        music_plan = build_music_plan(
+            report.assets,
+            scenes,
+            settings,
+            self.settings.music_library.expanduser().resolve(),
+            context.artifacts_dir / self.settings.generated_music_filename,
+            duration_seconds,
+        )
+        write_json_atomic(context.artifacts_dir / "music_plan.json", music_plan)
+        return music_plan
+
+    def _vision_provider(self, model: str | None = None) -> VisionProvider:
         if self._vision_provider_factory is not None:
             return self._vision_provider_factory(self.settings)
+        resolved_model = model
+        if not resolved_model:
+            discovered = list_lm_studio_models(
+                self.settings.lm_studio_url,
+                self.settings.lm_studio_api_key,
+                5,
+            )
+            resolved_model = resolve_vision_model(
+                discovered,
+                self.settings.vision_model,
+            )
         return LMStudioVisionProvider(
             base_url=self.settings.lm_studio_url,
-            model=self.settings.vision_model,
+            model=resolved_model,
             timeout_seconds=self.settings.vision_timeout_seconds,
             api_key=self.settings.lm_studio_api_key,
         )

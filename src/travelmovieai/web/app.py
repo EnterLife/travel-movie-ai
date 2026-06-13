@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from importlib.util import find_spec
 from pathlib import Path
 from uuid import UUID
 
@@ -14,12 +15,25 @@ from travelmovieai.application.service import TravelMovieService
 from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusyError
 from travelmovieai.domain.models import MediaScanReport
-from travelmovieai.infrastructure.system import ExecutableStatus, check_executable
+from travelmovieai.infrastructure.lm_studio import (
+    LMStudioModels,
+    list_lm_studio_models,
+)
+from travelmovieai.infrastructure.system import (
+    CudaStatus,
+    ExecutableStatus,
+    check_cuda,
+    check_executable,
+)
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager
 from travelmovieai.web.schemas import (
+    AIProviderStatus,
+    CapabilitiesResponse,
+    CudaStatusResponse,
     DependencyStatus,
     HealthResponse,
+    ModelOption,
     MovieJobResponse,
     MovieRequest,
     ScanJobHistory,
@@ -35,6 +49,8 @@ def create_app(
     job_manager: ScanJobManager | None = None,
     movie_job_manager: MovieJobManager | None = None,
     executable_checker: Callable[[str], ExecutableStatus] = check_executable,
+    model_lister: Callable[[str, str | None, float], LMStudioModels] = (list_lm_studio_models),
+    cuda_checker: Callable[[str], CudaStatus] = check_cuda,
 ) -> FastAPI:
     resolved_settings = settings or Settings()
     service = TravelMovieService(resolved_settings)
@@ -75,6 +91,34 @@ def create_app(
             ready=ffprobe.available,
             ffmpeg=DependencyStatus.model_validate(asdict(ffmpeg)),
             ffprobe=DependencyStatus.model_validate(asdict(ffprobe)),
+        )
+
+    @app.get("/api/capabilities", response_model=CapabilitiesResponse)
+    def capabilities() -> CapabilitiesResponse:
+        discovered = model_lister(
+            resolved_settings.lm_studio_url,
+            resolved_settings.lm_studio_api_key,
+            5,
+        )
+        model_options = _model_options(
+            discovered.models,
+            resolved_settings.vision_model,
+        )
+        return CapabilitiesResponse(
+            ai=AIProviderStatus(
+                available=discovered.available,
+                base_url=resolved_settings.lm_studio_url,
+                configured_model=resolved_settings.vision_model,
+                models=model_options,
+                error=discovered.error,
+            ),
+            cuda=CudaStatusResponse.model_validate(
+                asdict(cuda_checker(resolved_settings.ffmpeg_binary))
+            ),
+            opencv_available=find_spec("cv2") is not None,
+            scenedetect_available=find_spec("scenedetect") is not None,
+            music_modes=["auto", "generated", "library", "manual", "none"],
+            render_devices=["auto", "cuda", "cpu"],
         )
 
     @app.post(
@@ -179,3 +223,23 @@ def _manager(request: Request) -> ScanJobManager:
 def _movie_manager(request: Request) -> MovieJobManager:
     manager: MovieJobManager = request.app.state.movie_job_manager
     return manager
+
+
+def _model_options(models: tuple[str, ...], configured_model: str) -> list[ModelOption]:
+    vision_markers = ("vision", "-vl", "/vl", "omni", "gemma-3", "gemma-4")
+    likely = [
+        model for model in models if any(marker in model.casefold() for marker in vision_markers)
+    ]
+    recommended = (
+        configured_model
+        if configured_model in models
+        else (likely[0] if likely else (models[0] if models else configured_model))
+    )
+    return [
+        ModelOption(
+            id=model,
+            likely_vision=model in likely,
+            recommended=model == recommended,
+        )
+        for model in models
+    ]

@@ -10,6 +10,7 @@ from uuid import uuid4
 from travelmovieai.core.exceptions import DependencyUnavailableError, MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MontageClip, QuickMontagePlan
+from travelmovieai.infrastructure.system import check_cuda
 
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -17,6 +18,8 @@ ProgressCallback = Callable[[int, int, str], None]
 class QuickMontageRenderer:
     def __init__(self, ffmpeg_binary: str = "ffmpeg") -> None:
         self.ffmpeg_binary = ffmpeg_binary
+        self._render_device = "cpu"
+        self._encoder = "libx264"
 
     def render(
         self,
@@ -24,7 +27,9 @@ class QuickMontageRenderer:
         output_path: Path,
         work_dir: Path,
         progress: ProgressCallback | None = None,
-    ) -> None:
+    ) -> str:
+        self._render_device = plan.settings.render_device
+        self._encoder = self._select_encoder(plan.settings.render_device)
         segments_dir = work_dir / "quick_montage_segments"
         segments_dir.mkdir(parents=True, exist_ok=True)
         segment_paths: list[Path] = []
@@ -34,7 +39,13 @@ class QuickMontageRenderer:
             segment_path = segments_dir / f"{index:05d}.mp4"
             if progress:
                 progress(index - 1, total_steps, f"Подготовка клипа {index}/{len(plan.clips)}")
-            self._render_segment(clip, plan, segment_path)
+            try:
+                self._render_segment(clip, plan, segment_path)
+            except MontageError:
+                if self._render_device != "auto" or self._encoder != "h264_nvenc":
+                    raise
+                self._encoder = "libx264"
+                self._render_segment(clip, plan, segment_path)
             segment_paths.append(segment_path)
 
         if progress:
@@ -46,6 +57,7 @@ class QuickMontageRenderer:
         self._compose_segments(segment_paths, plan, output_path, work_dir)
         if progress:
             progress(total_steps, total_steps, "Фильм готов")
+        return self._encoder
 
     def _render_segment(
         self,
@@ -132,12 +144,7 @@ class QuickMontageRenderer:
             [
                 "-t",
                 duration,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "21",
+                *self._video_encoder_args(),
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -187,12 +194,7 @@ class QuickMontageRenderer:
                 "[aout]",
                 "-t",
                 _decimal(plan.total_duration_seconds),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "21",
+                *self._video_encoder_args(),
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -203,7 +205,14 @@ class QuickMontageRenderer:
             ]
         )
         try:
-            self._run(command, "Не удалось применить переходы и музыку")
+            try:
+                self._run(command, "Не удалось применить переходы и музыку")
+            except MontageError:
+                if self._render_device != "auto" or self._encoder != "h264_nvenc":
+                    raise
+                self._encoder = "libx264"
+                command = _replace_video_encoder(command, self._video_encoder_args())
+                self._run(command, "Не удалось применить переходы и музыку")
             os.replace(temporary_output, output_path)
         finally:
             temporary_output.unlink(missing_ok=True)
@@ -268,6 +277,36 @@ class QuickMontageRenderer:
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "unknown FFmpeg error"
             raise MontageError(f"{message}: {detail}")
+
+    def _select_encoder(self, render_device: str) -> str:
+        cuda = check_cuda(self.ffmpeg_binary)
+        if render_device == "cuda":
+            if not cuda.available or not cuda.ffmpeg_nvenc:
+                raise DependencyUnavailableError(
+                    "CUDA-рендеринг выбран, но NVIDIA GPU или h264_nvenc недоступны."
+                )
+            return "h264_nvenc"
+        if render_device == "auto" and cuda.available and cuda.ffmpeg_nvenc:
+            return "h264_nvenc"
+        return "libx264"
+
+    def _video_encoder_args(self) -> list[str]:
+        if self._encoder == "h264_nvenc":
+            return [
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p5",
+                "-tune",
+                "hq",
+                "-rc",
+                "vbr",
+                "-cq",
+                "21",
+                "-b:v",
+                "0",
+            ]
+        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
 
 
 def _decimal(value: float) -> str:
@@ -346,3 +385,14 @@ def _build_filter_graph(
             "alimiter=limit=0.95[aout]"
         )
     return ";\n".join(lines)
+
+
+def _replace_video_encoder(command: list[str], encoder_args: list[str]) -> list[str]:
+    replaced = list(command)
+    index = replaced.index("-c:v")
+    end = index + 2
+    while end < len(replaced) and replaced[end].startswith("-"):
+        if replaced[end] in {"-c:a", "-movflags"}:
+            break
+        end += 2
+    return [*replaced[:index], *encoder_args, *replaced[end:]]

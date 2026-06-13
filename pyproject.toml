@@ -25,7 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 video = [
   "opencv-python>=4.10,<5",
-  "scenedetect[opencv]>=0.6.5,<1",
+  "scenedetect>=0.6.5,<1",
 ]
 speech = [
   "faster-whisper>=1.1,<2",
@@ -48,7 +48,7 @@ all = [
   "faiss-cpu>=1.9,<2",
   "faster-whisper>=1.1,<2",
   "opencv-python>=4.10,<5",
-  "scenedetect[opencv]>=0.6.5,<1",
+  "scenedetect>=0.6.5,<1",
   "sentence-transformers>=3.4,<4",
   "transformers>=4.48,<5",
 ]

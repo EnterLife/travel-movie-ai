@@ -146,6 +146,7 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
         height=240,
         fps=24,
         semantic_analysis=True,
+        music_mode="library",
         transition="dissolve",
         transition_duration_seconds=0.25,
     )

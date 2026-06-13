@@ -117,28 +117,37 @@ class RepresentativeFrameExtractor:
             return asset.path
 
         frames_dir.mkdir(parents=True, exist_ok=True)
-        frame_path = frames_dir / f"{scene.id}.jpg"
+        frame_path = frames_dir / f"{scene.id}-contact-v2.jpg"
         if frame_path.is_file() and frame_path.stat().st_size > 0:
             return frame_path
-        midpoint = scene.start_seconds + (scene.end_seconds - scene.start_seconds) / 2
-        command = [
-            self.ffmpeg_binary,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            f"{midpoint:.3f}",
-            "-i",
-            str(asset.path),
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=960:-2:force_original_aspect_ratio=decrease",
-            "-q:v",
-            "3",
-            str(frame_path),
-        ]
+        duration = scene.end_seconds - scene.start_seconds
+        timestamps = (
+            scene.start_seconds + duration * 0.12,
+            scene.start_seconds + duration * 0.5,
+            scene.start_seconds + duration * 0.88,
+        )
+        command = [self.ffmpeg_binary, "-hide_banner", "-loglevel", "error", "-y"]
+        for timestamp in timestamps:
+            command.extend(["-ss", f"{timestamp:.3f}", "-i", str(asset.path)])
+        command.extend(
+            [
+                "-filter_complex",
+                "[0:v]scale=480:270:force_original_aspect_ratio=decrease,"
+                "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[a];"
+                "[1:v]scale=480:270:force_original_aspect_ratio=decrease,"
+                "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[b];"
+                "[2:v]scale=480:270:force_original_aspect_ratio=decrease,"
+                "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[c];"
+                "[a][b][c]hstack=inputs=3[v]",
+                "-map",
+                "[v]",
+                "-frames:v",
+                "1",
+                "-q:v",
+                "3",
+                str(frame_path),
+            ]
+        )
         try:
             completed = subprocess.run(
                 command,

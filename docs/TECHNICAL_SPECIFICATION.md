@@ -837,10 +837,13 @@ report.html
 
 Current implementation note:
 
-* `scenes.json`, representative frames, and `vision_analysis.json` are available;
+* `scenes.json`, start/middle/end contact sheets, `vision_analysis.json`, and
+  `quality_analysis.json` are available;
 * local Qwen-compatible semantic analysis runs through LM Studio;
-* scene ranking, local music, ducking, transitions, `quick_timeline.json`, and
-  `final.mp4` are available;
+* the web interface discovers loaded LM Studio models and CUDA/NVENC;
+* scene ranking, OpenCV-guided generated music, ducking, transitions,
+  CUDA rendering, `music_plan.json`, `quick_timeline.json`, and `final.mp4`
+  are available;
 * event clustering, multimodal Story Builder, narration, subtitles, and full
   quality-aware ranking are not yet implemented.
 

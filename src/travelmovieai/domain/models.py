@@ -116,19 +116,64 @@ class VisionAnalysisReport(BaseModel):
     cached_count: int = 0
 
 
+class SpeechTranscript(BaseModel):
+    text: str
+    language: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class SpeechAnalysisReport(BaseModel):
+    created_at: datetime
+    provider: str
+    model: str
+    scenes: list[Scene] = Field(default_factory=list)
+    transcribed_count: int = 0
+    cached_count: int = 0
+
+
 class VisualQualityMetrics(BaseModel):
     brightness: float = Field(ge=0, le=100)
     contrast: float = Field(ge=0, le=100)
     sharpness: float = Field(ge=0, le=100)
     saturation: float = Field(ge=0, le=100)
     colorfulness: float = Field(ge=0, le=100)
+    exposure_score: float = Field(default=50, ge=0, le=100)
+    noise_score: float = Field(default=0, ge=0, le=100)
+    motion_score: float = Field(default=0, ge=0, le=100)
+    camera_shake_score: float = Field(default=0, ge=0, le=100)
     quality_score: float = Field(ge=0, le=100)
+    rejection_reasons: list[str] = Field(default_factory=list)
     backend: str
 
 
 class QualityAnalysisReport(BaseModel):
     created_at: datetime
     scenes: list[Scene] = Field(default_factory=list)
+
+
+class DuplicateGroup(BaseModel):
+    keeper_scene_id: UUID
+    duplicate_scene_ids: list[UUID] = Field(default_factory=list)
+    similarity: float = Field(ge=0, le=1)
+
+
+class DuplicateDetectionReport(BaseModel):
+    created_at: datetime
+    groups: list[DuplicateGroup] = Field(default_factory=list)
+    unique_count: int = 0
+    duplicate_count: int = 0
+
+
+class SceneSelectionDecision(BaseModel):
+    scene_id: UUID
+    selected: bool
+    reason: str
+    score: float = Field(ge=0, le=100)
+
+
+class SceneSelectionReport(BaseModel):
+    created_at: datetime
+    decisions: list[SceneSelectionDecision] = Field(default_factory=list)
 
 
 class MusicPlan(BaseModel):
@@ -176,11 +221,19 @@ class MultimodalDescriptionReport(BaseModel):
     descriptions: list[MultimodalSceneDescription] = Field(default_factory=list)
 
 
+class StorySection(BaseModel):
+    role: Literal["opening", "journey", "highlight", "finale"]
+    title: str
+    event_ids: list[UUID] = Field(default_factory=list)
+    scene_ids: list[UUID] = Field(default_factory=list)
+
+
 class Storyboard(BaseModel):
     title: str
     style: StoryStyle
     event_ids: list[UUID] = Field(default_factory=list)
     narration: list[str] = Field(default_factory=list)
+    sections: list[StorySection] = Field(default_factory=list)
 
 
 class TimelineItem(BaseModel):
@@ -206,6 +259,12 @@ class QuickMontageSettings(BaseModel):
     fps: int = Field(default=30, ge=15, le=60)
     semantic_analysis: bool = False
     quality_analysis: bool = True
+    speech_analysis: bool = False
+    reject_technical_failures: bool = True
+    min_quality_score: float = Field(default=22, ge=0, le=100)
+    duplicate_detection: bool = True
+    duplicate_similarity_threshold: float = Field(default=0.92, ge=0.5, le=1)
+    max_scenes_per_event: int = Field(default=4, ge=1, le=20)
     story_style: StoryStyle = StoryStyle.CINEMATIC
     vision_provider: Literal["qwen", "florence"] = "qwen"
     vision_model: str | None = Field(default=None, max_length=300)
@@ -220,6 +279,7 @@ class QuickMontageSettings(BaseModel):
     music_profile: Literal["auto", "calm", "cinematic", "warm", "energetic"] = "auto"
     music_path: Path | None = None
     music_volume: float = Field(default=0.16, ge=0, le=1)
+    preview_mode: bool = False
 
 
 class MontageClip(BaseModel):
@@ -233,6 +293,8 @@ class MontageClip(BaseModel):
     scene_id: UUID | None = None
     caption: str | None = None
     semantic_score: float | None = Field(default=None, ge=0, le=100)
+    event_id: UUID | None = None
+    selection_reason: str = ""
 
 
 class QuickMontagePlan(BaseModel):

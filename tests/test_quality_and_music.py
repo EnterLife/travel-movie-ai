@@ -26,6 +26,10 @@ def test_quality_analysis_persists_explainable_metrics(tmp_path: Path) -> None:
     metrics = analyzed.metadata["quality_metrics"]
     assert metrics["brightness"] > 40
     assert metrics["backend"] in {"opencv", "pillow"}
+    assert 0 <= metrics["noise_score"] <= 100
+    assert 0 <= metrics["motion_score"] <= 100
+    assert 0 <= metrics["camera_shake_score"] <= 100
+    assert isinstance(metrics["rejection_reasons"], list)
 
 
 def test_auto_music_profile_uses_visual_metrics_and_generates_wav(

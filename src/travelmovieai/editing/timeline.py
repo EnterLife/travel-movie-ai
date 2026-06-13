@@ -1,6 +1,7 @@
 """Timeline assembly."""
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
@@ -11,6 +12,8 @@ from travelmovieai.domain.models import (
     QuickMontagePlan,
     QuickMontageSettings,
     Scene,
+    SceneSelectionDecision,
+    SceneSelectionReport,
 )
 from travelmovieai.story.ranking import rank_scenes
 
@@ -95,7 +98,9 @@ def build_semantic_montage_plan(
     effective_duration = 0.0
     transition = _transition_duration(settings)
 
-    for scene in rank_scenes(scenes):
+    ranked = rank_scenes(scenes)
+    candidates = _story_candidates(ranked, settings)
+    for scene in candidates:
         asset = assets_by_id.get(scene.asset_id)
         if asset is None or asset.scan_error:
             continue
@@ -127,6 +132,8 @@ def build_semantic_montage_plan(
                 has_audio=_has_audio(asset),
                 caption=scene.caption,
                 semantic_score=float(scene.metadata.get("ranking_score", 50)),
+                event_id=_event_id(scene),
+                selection_reason=_selection_reason(scene),
             )
         )
         effective_duration += duration - (transition if len(selected) > 1 else 0)
@@ -154,6 +161,43 @@ def build_semantic_montage_plan(
     )
 
 
+def build_selection_report(
+    scenes: list[Scene],
+    plan: QuickMontagePlan,
+    settings: QuickMontageSettings,
+) -> SceneSelectionReport:
+    selected = {
+        clip.scene_id: clip
+        for clip in plan.clips
+        if clip.scene_id is not None
+    }
+    decisions = []
+    for scene in rank_scenes(scenes):
+        clip = selected.get(scene.id)
+        if clip is not None:
+            decisions.append(
+                SceneSelectionDecision(
+                    scene_id=scene.id,
+                    selected=True,
+                    reason=clip.selection_reason,
+                    score=float(scene.metadata.get("ranking_score", 0)),
+                )
+            )
+            continue
+        decisions.append(
+            SceneSelectionDecision(
+                scene_id=scene.id,
+                selected=False,
+                reason=_rejection_reason(scene, settings),
+                score=float(scene.metadata.get("ranking_score", 0)),
+            )
+        )
+    return SceneSelectionReport(
+        created_at=datetime.now(UTC),
+        decisions=decisions,
+    )
+
+
 def _has_audio(asset: MediaAsset) -> bool:
     streams = asset.probe_metadata.get("streams", [])
     return any(stream.get("codec_type") == "audio" for stream in streams)
@@ -174,3 +218,80 @@ def _transition_duration(settings: QuickMontageSettings) -> float:
     if settings.transition == "none":
         return 0.0
     return settings.transition_duration_seconds
+
+
+def _story_candidates(
+    ranked: list[Scene],
+    settings: QuickMontageSettings,
+) -> list[Scene]:
+    eligible = [scene for scene in ranked if _eligible(scene, settings)]
+    forced = [
+        scene
+        for scene in eligible
+        if scene.metadata.get("selection_override") == "include"
+    ]
+    selected_ids = {scene.id for scene in forced}
+    event_counts: dict[str, int] = {}
+    ordered = list(forced)
+
+    for scene in eligible:
+        event_id = str(scene.metadata.get("event_id", scene.id))
+        if scene.id in selected_ids or event_counts.get(event_id, 0) > 0:
+            continue
+        ordered.append(scene)
+        selected_ids.add(scene.id)
+        event_counts[event_id] = 1
+
+    for scene in eligible:
+        if scene.id in selected_ids:
+            continue
+        event_id = str(scene.metadata.get("event_id", scene.id))
+        if event_counts.get(event_id, 0) >= settings.max_scenes_per_event:
+            continue
+        ordered.append(scene)
+        selected_ids.add(scene.id)
+        event_counts[event_id] = event_counts.get(event_id, 0) + 1
+    return ordered
+
+
+def _eligible(scene: Scene, settings: QuickMontageSettings) -> bool:
+    override = str(scene.metadata.get("selection_override", "auto"))
+    if override == "exclude":
+        return False
+    if override == "include":
+        return True
+    if settings.duplicate_detection and scene.metadata.get("duplicate_status") == "duplicate":
+        return False
+    technical_reasons = scene.metadata.get("technical_rejection_reasons", [])
+    if settings.reject_technical_failures and technical_reasons:
+        return False
+    return scene.quality_score is None or scene.quality_score >= settings.min_quality_score
+
+
+def _rejection_reason(scene: Scene, settings: QuickMontageSettings) -> str:
+    override = str(scene.metadata.get("selection_override", "auto"))
+    if override == "exclude":
+        return "excluded by user"
+    if settings.duplicate_detection and scene.metadata.get("duplicate_status") == "duplicate":
+        return f"near duplicate of {scene.metadata.get('duplicate_of')}"
+    technical = scene.metadata.get("technical_rejection_reasons", [])
+    if settings.reject_technical_failures and technical:
+        return f"technical rejection: {', '.join(technical)}"
+    if scene.quality_score is not None and scene.quality_score < settings.min_quality_score:
+        return f"quality below {settings.min_quality_score:.0f}"
+    return "duration budget or event diversity limit"
+
+
+def _selection_reason(scene: Scene) -> str:
+    if scene.metadata.get("selection_override") == "include":
+        return "required by user"
+    reasons = scene.metadata.get("ranking_reasons", [])
+    return "; ".join(str(reason) for reason in reasons) or "best scene for event"
+
+
+def _event_id(scene: Scene) -> UUID | None:
+    value = scene.metadata.get("event_id")
+    try:
+        return UUID(str(value)) if value else None
+    except ValueError:
+        return None

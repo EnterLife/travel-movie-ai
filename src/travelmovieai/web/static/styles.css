@@ -725,7 +725,8 @@ input::placeholder {
 
 .movie-panel h3,
 .movie-progress h3,
-.movie-result h3 {
+.movie-result h3,
+.scene-review h3 {
   margin: 7px 0 0;
   font-size: 21px;
   font-weight: 540;
@@ -735,7 +736,8 @@ input::placeholder {
 .movie-panel-copy p,
 .movie-actions p,
 .movie-progress p,
-.movie-result p {
+.movie-result p,
+.scene-review p {
   margin: 9px 0 0;
   color: var(--muted);
   font-size: 12px;
@@ -847,6 +849,95 @@ input::placeholder {
 
 .music-label {
   margin: 2px 0 0;
+}
+
+.scene-review {
+  margin-top: 16px;
+  padding: 26px;
+}
+
+.scene-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.scene-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(5, 7, 9, 0.45);
+}
+
+.scene-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 5;
+  object-fit: cover;
+  background: #050709;
+}
+
+.scene-card-copy {
+  padding: 14px;
+}
+
+.scene-card-copy strong,
+.scene-card-copy small {
+  display: block;
+}
+
+.scene-card-copy strong {
+  overflow: hidden;
+  color: var(--muted-light);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-card-copy small {
+  margin-top: 5px;
+  color: var(--accent);
+  font-size: 9px;
+}
+
+.scene-card-copy p {
+  min-height: 32px;
+  margin-top: 8px;
+  font-size: 10px;
+}
+
+.scene-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--line);
+}
+
+.scene-actions button {
+  min-height: 34px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.scene-actions button:last-child {
+  border-right: 0;
+}
+
+.scene-actions button.active {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.scene-actions button.active.include {
+  color: var(--green);
+}
+
+.scene-actions button.active.exclude {
+  color: var(--red);
 }
 
 .music-path {

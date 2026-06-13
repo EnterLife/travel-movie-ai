@@ -5,8 +5,10 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from travelmovieai.analysis.duplicates import detect_duplicate_scenes
 from travelmovieai.analysis.quality import analyze_scene_quality
 from travelmovieai.analysis.scenes import RepresentativeFrameExtractor
+from travelmovieai.analysis.speech import analyze_speech
 from travelmovieai.analysis.vision import VisionProvider, analyze_scenes
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.application.validation import ProjectPaths, validate_project_paths
@@ -27,6 +29,7 @@ from travelmovieai.domain.models import (
 from travelmovieai.editing.renderer import QuickMontageRenderer
 from travelmovieai.editing.timeline import (
     build_quick_montage_plan,
+    build_selection_report,
     build_semantic_montage_plan,
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
@@ -39,10 +42,14 @@ from travelmovieai.infrastructure.vision import (
     Florence2VisionProvider,
     LMStudioVisionProvider,
 )
+from travelmovieai.infrastructure.whisper import FasterWhisperProvider
 from travelmovieai.pipeline.registry import build_default_pipeline
 from travelmovieai.pipeline.runner import PipelineRunner
 from travelmovieai.pipeline.stages.scene_detection import SceneDetectionStage
-from travelmovieai.story.builder import build_multimodal_descriptions
+from travelmovieai.story.builder import (
+    build_multimodal_descriptions,
+    build_storyboard,
+)
 from travelmovieai.story.events import detect_events
 from travelmovieai.story.music import build_music_plan
 
@@ -107,6 +114,7 @@ class TravelMovieService:
         output_path: Path | None = None,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> QuickMontageResult:
+        settings = _effective_montage_settings(settings)
         context = self._context(input_path=input_path, workspace=workspace)
         self.analyze(input_path=context.input_path, workspace=context.workspace)
         analysis_path = context.artifacts_dir / "analysis.json"
@@ -138,10 +146,14 @@ class TravelMovieService:
                 }
             )
         timeline_path = context.artifacts_dir / "quick_timeline.json"
-        resolved_output = (output_path or context.artifacts_dir / "final.mp4").resolve()
+        default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
+        resolved_output = (output_path or context.artifacts_dir / default_name).resolve()
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(timeline_path, plan)
-        render_encoder = QuickMontageRenderer(self.settings.ffmpeg_binary).render(
+        render_encoder = QuickMontageRenderer(
+            self.settings.ffmpeg_binary,
+            self.settings.ffprobe_binary,
+        ).render(
             plan,
             resolved_output,
             context.cache_dir,
@@ -210,17 +222,51 @@ class TravelMovieService:
         )
         vision_path = context.artifacts_dir / "vision_analysis.json"
         write_json_atomic(vision_path, vision_report)
-        descriptions = build_multimodal_descriptions(vision_report.scenes)
+        speech_scenes = vision_report.scenes
+        if settings.speech_analysis:
+            speech_report = analyze_speech(
+                vision_report.scenes,
+                report.assets,
+                FasterWhisperProvider(
+                    self.settings.whisper_model,
+                    self.settings.device,
+                ),
+                self.settings.ffmpeg_binary,
+                context.cache_dir / "speech",
+            )
+            speech_scenes = speech_report.scenes
+            write_json_atomic(
+                context.artifacts_dir / "speech_analysis.json",
+                speech_report,
+            )
+        if settings.duplicate_detection:
+            duplicate_report, deduplicated_scenes = detect_duplicate_scenes(
+                speech_scenes,
+                settings.duplicate_similarity_threshold,
+            )
+            write_json_atomic(
+                context.artifacts_dir / "duplicates.json",
+                duplicate_report,
+            )
+        else:
+            deduplicated_scenes = speech_scenes
+        descriptions = build_multimodal_descriptions(deduplicated_scenes)
         write_json_atomic(
             context.artifacts_dir / "scene_descriptions.json",
             descriptions,
         )
         event_report, event_scenes = detect_events(
-            vision_report.scenes,
+            deduplicated_scenes,
             report.assets,
         )
         events_path = context.artifacts_dir / "events.json"
         write_json_atomic(events_path, event_report)
+        storyboard = build_storyboard(
+            event_report.events,
+            event_scenes,
+            settings.story_style,
+        )
+        write_json_atomic(context.artifacts_dir / "storyboard.json", storyboard)
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
         repository.synchronize_scenes(event_scenes)
@@ -229,6 +275,10 @@ class TravelMovieService:
             report.assets,
             event_scenes,
             settings,
+        )
+        write_json_atomic(
+            context.artifacts_dir / "selection_decisions.json",
+            build_selection_report(event_scenes, plan, settings),
         )
         music_plan = self._build_music_plan(
             context,
@@ -353,3 +403,23 @@ class TravelMovieService:
             style=style,
             cloud=cloud or self.settings.cloud_enabled,
         )
+
+
+def _effective_montage_settings(
+    settings: QuickMontageSettings,
+) -> QuickMontageSettings:
+    if not settings.preview_mode:
+        return settings
+    width = min(settings.width, 854)
+    height = min(settings.height, 480)
+    if width % 2:
+        width -= 1
+    if height % 2:
+        height -= 1
+    return settings.model_copy(
+        update={
+            "width": width,
+            "height": height,
+            "fps": min(settings.fps, 24),
+        }
+    )

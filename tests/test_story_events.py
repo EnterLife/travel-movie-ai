@@ -1,9 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from travelmovieai.domain.enums import MediaType
+from travelmovieai.domain.enums import MediaType, StoryStyle
 from travelmovieai.domain.models import MediaAsset, Scene
-from travelmovieai.story.builder import build_multimodal_descriptions
+from travelmovieai.story.builder import build_multimodal_descriptions, build_storyboard
 from travelmovieai.story.events import detect_events
 
 
@@ -64,6 +64,34 @@ def test_multimodal_description_records_used_sources() -> None:
         "audio",
     ]
     assert "main gallery" in report.descriptions[0].description
+
+
+def test_storyboard_builds_opening_highlight_and_finale() -> None:
+    assets = [
+        _asset(f"scene-{index}.mp4", datetime(2026, 1, index + 1, tzinfo=UTC))
+        for index in range(3)
+    ]
+    event_report, scenes = detect_events(
+        [
+            _scene(assets[0], "airport", "arriving", "Arrival."),
+            _scene(assets[1], "city", "sightseeing", "Main city highlight."),
+            _scene(assets[2], "hotel", "departing", "Last evening."),
+        ],
+        assets,
+    )
+
+    storyboard = build_storyboard(
+        event_report.events,
+        scenes,
+        StoryStyle.CINEMATIC,
+    )
+
+    assert [section.role for section in storyboard.sections] == [
+        "opening",
+        "highlight",
+        "finale",
+    ]
+    assert storyboard.event_ids == [event.id for event in event_report.events]
 
 
 def _asset(name: str, created_at: datetime) -> MediaAsset:

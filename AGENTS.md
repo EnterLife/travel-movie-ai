@@ -87,15 +87,16 @@ The canonical stage order is defined by `PipelineStage` and registered in
 6. Speech analysis.
 7. Audio analysis.
 8. Embeddings.
-9. Scene captioning.
-10. Event detection.
-11. Story builder.
-12. Scene ranking.
-13. Music selection.
-14. Narration.
-15. Voice synthesis.
-16. Timeline builder.
-17. Rendering.
+9. Duplicate detection.
+10. Scene captioning.
+11. Event detection.
+12. Story builder.
+13. Scene ranking.
+14. Music selection.
+15. Narration.
+16. Voice synthesis.
+17. Timeline builder.
+18. Rendering.
 
 Do not reorder stages or change artifact contracts casually. When a stage
 contract changes, update its domain model, serialization, downstream consumers,

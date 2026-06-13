@@ -30,8 +30,10 @@ const visionProvider = document.querySelector("#vision-provider");
 const visionModel = document.querySelector("#vision-model");
 const renderDevice = document.querySelector("#render-device");
 const transitionType = document.querySelector("#transition-type");
+const previewMode = document.querySelector("#preview-mode");
 const semanticAnalysis = document.querySelector("#semantic-analysis");
 const qualityAnalysis = document.querySelector("#quality-analysis");
+const speechAnalysis = document.querySelector("#speech-analysis");
 const musicMode = document.querySelector("#music-mode");
 const musicProfile = document.querySelector("#music-profile");
 const musicVolume = document.querySelector("#music-volume");
@@ -45,6 +47,8 @@ const movieProgressMessage = document.querySelector("#movie-progress-message");
 const movieProgressBar = document.querySelector("#movie-progress-bar");
 const movieResult = document.querySelector("#movie-result");
 const movieResultSummary = document.querySelector("#movie-result-summary");
+const sceneReview = document.querySelector("#scene-review");
+const sceneGrid = document.querySelector("#scene-grid");
 const movieDownload = document.querySelector("#movie-download");
 const moviePreview = document.querySelector("#movie-preview");
 
@@ -366,11 +370,13 @@ movieButton.addEventListener("click", async () => {
           photo_duration_seconds: Number(photoDuration.value),
           semantic_analysis: semanticAnalysis.checked,
           quality_analysis: qualityAnalysis.checked,
+          speech_analysis: speechAnalysis.checked,
           vision_provider: visionProvider.value,
           vision_model: visionModel.value || null,
           render_device: renderDevice.value,
           story_style: storyStyle.value,
           transition: transitionType.value,
+          preview_mode: previewMode.checked,
           music_enabled: musicMode.value !== "none",
           music_mode: musicMode.value,
           music_profile: musicProfile.value,
@@ -440,7 +446,106 @@ function showMovieResult(job) {
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");
+  loadSceneReview().catch((error) => showError(error.message));
   movieResult.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function loadSceneReview() {
+  if (!currentJob || !semanticAnalysis.checked) {
+    sceneReview.classList.add("hidden");
+    return;
+  }
+  const query = new URLSearchParams({
+    input_path: currentJob.input_path,
+    workspace: currentJob.workspace,
+  });
+  const payload = await requestJson(`/api/scenes?${query}`);
+  renderSceneReview(payload.scenes || []);
+}
+
+function renderSceneReview(scenes) {
+  sceneGrid.replaceChildren();
+  for (const scene of scenes.slice(0, 120)) {
+    const card = document.createElement("article");
+    card.className = "scene-card";
+    const query = new URLSearchParams({
+      input_path: currentJob.input_path,
+      workspace: currentJob.workspace,
+    });
+    const image = document.createElement("img");
+    image.loading = "lazy";
+    image.alt = scene.caption || "Кадры сцены";
+    image.src = `/api/scenes/${scene.id}/thumbnail?${query}`;
+
+    const copy = document.createElement("div");
+    copy.className = "scene-card-copy";
+    const title = document.createElement("strong");
+    title.textContent = scene.caption || "Сцена без описания";
+    const metrics = document.createElement("small");
+    const rank = scene.metadata?.ranking_score;
+    metrics.textContent =
+      `AI ${formatScore(scene.importance_score)} · качество ${formatScore(
+        scene.quality_score,
+      )}${rank == null ? "" : ` · итог ${formatScore(rank)}`}`;
+    const reasons = document.createElement("p");
+    reasons.textContent = sceneDecisionSummary(scene);
+    copy.append(title, metrics, reasons);
+
+    const actions = document.createElement("div");
+    actions.className = "scene-actions";
+    for (const [decision, label] of [
+      ["auto", "Авто"],
+      ["include", "Обязательно"],
+      ["exclude", "Исключить"],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      const active = (scene.metadata?.selection_override || "auto") === decision;
+      button.className = active ? `active ${decision}` : decision;
+      button.addEventListener("click", async () => {
+        await updateSceneDecision(scene.id, decision);
+        scene.metadata = { ...(scene.metadata || {}) };
+        if (decision === "auto") {
+          delete scene.metadata.selection_override;
+        } else {
+          scene.metadata.selection_override = decision;
+        }
+        renderSceneReview(scenes);
+      });
+      actions.append(button);
+    }
+    card.append(image, copy, actions);
+    sceneGrid.append(card);
+  }
+  sceneReview.classList.toggle("hidden", scenes.length === 0);
+}
+
+async function updateSceneDecision(sceneId, decision) {
+  await requestJson(`/api/scenes/${sceneId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      input_path: currentJob.input_path,
+      workspace: currentJob.workspace,
+      decision,
+    }),
+  });
+}
+
+function sceneDecisionSummary(scene) {
+  if (scene.metadata?.duplicate_status === "duplicate") {
+    return "Похожая сцена: автоматически пропускается, если не сделать обязательной.";
+  }
+  const technical = scene.metadata?.technical_rejection_reasons || [];
+  if (technical.length) {
+    return `Технические проблемы: ${technical.join(", ")}.`;
+  }
+  const reasons = scene.metadata?.ranking_reasons || [];
+  return reasons.join(" · ") || "Решение появится после semantic анализа.";
+}
+
+function formatScore(value) {
+  return value == null ? "—" : Math.round(value);
 }
 
 function renderFiles(assets) {

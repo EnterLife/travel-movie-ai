@@ -25,6 +25,7 @@ class PipelineStage(StrEnum):
     SPEECH_ANALYSIS = "speech_analysis"
     AUDIO_ANALYSIS = "audio_analysis"
     EMBEDDINGS = "embeddings"
+    DUPLICATE_DETECTION = "duplicate_detection"
     SCENE_CAPTIONING = "scene_captioning"
     EVENT_DETECTION = "event_detection"
     STORY_BUILDER = "story_builder"

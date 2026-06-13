@@ -231,6 +231,13 @@
                   <small>Резкость, экспозиция, контраст и насыщенность</small>
                 </span>
               </label>
+              <label class="toggle-row" for="speech-analysis">
+                <input id="speech-analysis" type="checkbox">
+                <span>
+                  <strong>Распознавание речи</strong>
+                  <small>Faster Whisper, медленнее; помогает не обрезать важные реплики</small>
+                </span>
+              </label>
             </section>
 
             <section class="config-card">
@@ -259,6 +266,14 @@
                 <option value="slideright">Slide right</option>
                 <option value="none">Без переходов</option>
               </select>
+
+              <label class="toggle-row" for="preview-mode">
+                <input id="preview-mode" type="checkbox">
+                <span>
+                  <strong>Быстрый preview</strong>
+                  <small>До 854×480 и 24 FPS для быстрой проверки монтажа</small>
+                </span>
+              </label>
             </section>
 
             <section class="config-card">
@@ -336,6 +351,20 @@
             </a>
           </div>
           <video id="movie-preview" controls preload="metadata"></video>
+        </article>
+
+        <article class="panel scene-review hidden" id="scene-review">
+          <div class="scene-review-heading">
+            <div>
+              <span class="section-number">КОНТРОЛЬ</span>
+              <h3>Отбор сцен</h3>
+              <p>
+                Измените решение и снова запустите монтаж. Повторный Vision AI
+                анализ для неизменённых сцен не потребуется.
+              </p>
+            </div>
+          </div>
+          <div class="scene-grid" id="scene-grid"></div>
         </article>
 
         <article class="panel files-panel">

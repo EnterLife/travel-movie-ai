@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from travelmovieai.domain.models import QuickMontageSettings
+from travelmovieai.domain.models import QuickMontageSettings, Scene
 
 
 class JobStatus(StrEnum):
@@ -116,3 +116,13 @@ class MovieJobResponse(BaseModel):
     render_encoder: str | None = None
     music_mode: str | None = None
     music_profile: str | None = None
+
+
+class SceneListResponse(BaseModel):
+    scenes: list[Scene] = Field(default_factory=list)
+
+
+class SceneOverrideRequest(BaseModel):
+    input_path: str = Field(min_length=1)
+    workspace: str | None = None
+    decision: str = Field(pattern=r"^(auto|include|exclude)$")

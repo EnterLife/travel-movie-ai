@@ -11,15 +11,19 @@ from travelmovieai.application.validation import (
     ProjectPaths,
     validate_project_paths,
 )
+from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import WorkspaceBusyError
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import MediaType, PipelineStage
 from travelmovieai.domain.models import (
+    MediaAsset,
     MediaScanReport,
     QuickMontageResult,
     QuickMontageSettings,
+    Scene,
     StageResult,
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
+from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.lm_studio import LMStudioModels
 from travelmovieai.infrastructure.system import CudaStatus, ExecutableStatus
 from travelmovieai.web.app import create_app
@@ -230,6 +234,45 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert job["selection_mode"] == "semantic"
     assert download.status_code == 200
     assert download.content == b"fake mp4"
+
+
+def test_web_scene_override_is_persisted(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    workspace = tmp_path / "workspace"
+    repository = MediaAssetRepository(workspace / "project.db")
+    repository.initialize()
+    asset = MediaAsset(
+        path=media / "clip.mp4",
+        relative_path=Path("clip.mp4"),
+        media_type=MediaType.VIDEO,
+        extension=".mp4",
+        size_bytes=1,
+        modified_at=datetime.now(UTC),
+        modified_ns=1,
+        duration_seconds=3,
+    )
+    repository.synchronize([asset], datetime.now(UTC))
+    scene = Scene(asset_id=asset.id, start_seconds=0, end_seconds=3)
+    repository.synchronize_scenes([scene])
+
+    with TestClient(
+        create_app(
+            settings=Settings(),
+            job_manager=ScanJobManager(FakeScanService()),
+        )
+    ) as client:
+        query = {"input_path": str(media), "workspace": str(workspace)}
+        listed = client.get("/api/scenes", params=query)
+        updated = client.patch(
+            f"/api/scenes/{scene.id}",
+            json={**query, "decision": "include"},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json()["scenes"][0]["id"] == str(scene.id)
+    assert updated.status_code == 200
+    assert updated.json()["scenes"][0]["metadata"]["selection_override"] == "include"
 
 
 def test_job_manager_rejects_active_workspace(tmp_path: Path) -> None:

@@ -12,9 +12,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from travelmovieai.application.service import TravelMovieService
+from travelmovieai.application.validation import ProjectPaths
 from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusyError
 from travelmovieai.domain.models import MediaScanReport
+from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.lm_studio import (
     LMStudioModels,
     list_lm_studio_models,
@@ -39,6 +41,8 @@ from travelmovieai.web.schemas import (
     ScanJobHistory,
     ScanJobResponse,
     ScanRequest,
+    SceneListResponse,
+    SceneOverrideRequest,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -212,6 +216,58 @@ def create_app(
             filename=output_path.name,
         )
 
+    @app.get("/api/scenes", response_model=SceneListResponse)
+    def list_scenes(
+        input_path: str = Query(min_length=1),
+        workspace: str | None = Query(default=None),
+    ) -> SceneListResponse:
+        paths = _validated_paths(service, input_path, workspace)
+        repository = MediaAssetRepository(
+            paths.workspace / resolved_settings.database_filename
+        )
+        repository.initialize()
+        return SceneListResponse(scenes=repository.list_scenes())
+
+    @app.patch("/api/scenes/{scene_id}", response_model=SceneListResponse)
+    def update_scene_override(
+        scene_id: UUID,
+        payload: SceneOverrideRequest,
+    ) -> SceneListResponse:
+        paths = _validated_paths(service, payload.input_path, payload.workspace)
+        repository = MediaAssetRepository(
+            paths.workspace / resolved_settings.database_filename
+        )
+        repository.initialize()
+        scene = repository.set_scene_selection_override(scene_id, payload.decision)
+        if scene is None:
+            raise HTTPException(status_code=404, detail="Сцена не найдена.")
+        return SceneListResponse(scenes=[scene])
+
+    @app.get("/api/scenes/{scene_id}/thumbnail", response_class=FileResponse)
+    def scene_thumbnail(
+        scene_id: UUID,
+        input_path: str = Query(min_length=1),
+        workspace: str | None = Query(default=None),
+    ) -> FileResponse:
+        paths = _validated_paths(service, input_path, workspace)
+        repository = MediaAssetRepository(
+            paths.workspace / resolved_settings.database_filename
+        )
+        repository.initialize()
+        scene = next(
+            (item for item in repository.list_scenes() if item.id == scene_id),
+            None,
+        )
+        if scene is None or scene.keyframe_path is None or not scene.keyframe_path.is_file():
+            raise HTTPException(status_code=404, detail="Кадр сцены не найден.")
+        frame_path = scene.keyframe_path.resolve()
+        if not (
+            frame_path.is_relative_to(paths.workspace)
+            or frame_path.is_relative_to(paths.input_path)
+        ):
+            raise HTTPException(status_code=403, detail="Недопустимый путь кадра.")
+        return FileResponse(frame_path)
+
     return app
 
 
@@ -243,3 +299,15 @@ def _model_options(models: tuple[str, ...], configured_model: str) -> list[Model
         )
         for model in models
     ]
+
+
+def _validated_paths(
+    service: TravelMovieService,
+    input_path: str,
+    workspace: str | None,
+) -> ProjectPaths:
+    resolved_workspace = Path(workspace) if workspace and workspace.strip() else None
+    try:
+        return service.resolve_project_paths(Path(input_path), resolved_workspace)
+    except InvalidProjectPathError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

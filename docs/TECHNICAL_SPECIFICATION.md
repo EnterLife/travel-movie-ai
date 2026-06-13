@@ -258,6 +258,10 @@ Embeddings
 
 ↓
 
+Duplicate Detection
+
+↓
+
 Scene Captioning
 
 ↓
@@ -361,11 +365,16 @@ OpenCV-based metrics are calculated before Vision AI:
 * brightness;
 * contrast;
 * saturation and colorfulness;
-* later: noise, motion, and camera shake.
+* noise;
+* motion;
+* camera shake.
 
 These metrics describe technical quality only. They must not be used for
 semantic scene interpretation. The normalized quality score is passed into
 Stage 4.5 as one factor of the final visual importance score.
+
+The implementation records explicit technical rejection reasons. A manual
+include override can retain a rejected scene without modifying source media.
 
 ---
 
@@ -576,6 +585,18 @@ Tasks:
 * duplicate detection
 * similarity search
 * clustering
+
+---
+
+## Stage 7.5. Duplicate Detection
+
+Group visually near-identical scenes with a local perceptual fingerprint.
+Never delete source media. Keep the strongest representative based on manual
+override, semantic importance, and technical quality.
+
+Output:
+
+duplicates.json
 
 ---
 
@@ -881,12 +902,19 @@ Current implementation note:
   landmarks, score factors, story relevance, and versioned cache metadata;
 * `scene_descriptions.json`, `events.json`, event persistence in SQLite, and
   event-aware scene ranking are available;
+* motion/shake/noise quality analysis, perceptual duplicate detection,
+  explainable selection decisions, and user include/exclude overrides are
+  available;
+* optional Faster Whisper scene transcription and deterministic
+  opening/journey/highlight/finale storyboard sections are available;
+* preview rendering uses at most 854x480 and 24 FPS, and every resulting MP4
+  is validated with FFprobe;
 * the web interface discovers loaded LM Studio models and CUDA/NVENC;
 * scene ranking, OpenCV-guided generated music, ducking, transitions,
   CUDA rendering, `music_plan.json`, `quick_timeline.json`, and `final.mp4`
   are available;
-* full storyboard generation, narration, subtitles, duplicate detection, and
-  manual scene/event editing are not yet implemented.
+* LLM-assisted narrative, narration, subtitles, embedding similarity, and
+  manual event editing are not yet implemented.
 
 ---
 

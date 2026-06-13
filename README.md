@@ -29,9 +29,16 @@ Implemented:
 - optional local Florence-2 analysis with CPU/CUDA selection;
 - selectable loaded LM Studio models in the web interface;
 - OpenCV visual quality scoring used by scene ranking;
+- motion, camera shake, noise, exposure, and technical rejection reasons;
+- perceptual near-duplicate scene detection;
 - structured landmark, people, activity, emotion, and score-factor metadata;
 - temporal and semantic event clustering persisted to JSON and SQLite;
 - multimodal scene descriptions prepared for the Story Builder;
+- deterministic opening/journey/highlight/finale storyboard sections;
+- scene review with Auto, Required, and Exclude controls;
+- fast 854×480 preview rendering without repeating cached AI analysis;
+- optional scene-level Faster Whisper transcription;
+- final MP4 validation through FFprobe;
 - explainable semantic scene ranking;
 - local procedural soundtrack generation guided by scene metrics;
 - local soundtrack selection, audio ducking, and FFmpeg transitions;
@@ -43,9 +50,9 @@ Implemented:
 Not implemented yet:
 
 - thumbnail gallery and manual scene metadata editing;
-- speech and audio classification;
-- embeddings and duplicate detection;
-- full storyboard generation;
+- audio classification;
+- embedding-based duplicate and semantic similarity search;
+- LLM-assisted storyboard and narration generation;
 - narration, subtitles, titles, and manual storyboard editing;
 - HTML report generation.
 
@@ -90,9 +97,12 @@ After the scan:
 1. Adjust the target movie duration and clip limits.
 2. Select Qwen/LM Studio or Florence-2 and choose the model.
 3. Keep semantic and OpenCV analysis enabled for the best automatic selection.
-4. Select `Auto`, CUDA, or CPU rendering and configure the music director.
-5. Click `Запустить AI-монтаж`.
-6. Preview or download the generated MP4.
+4. Enable Faster Whisper when dialogue should influence the story.
+5. Enable fast preview for the first editing pass.
+6. Select `Auto`, CUDA, or CPU rendering and configure the music director.
+7. Click `Запустить AI-монтаж`.
+8. Mark scenes as required or excluded, then rerun the montage.
+9. Disable preview mode and render the final MP4.
 
 Stop the server with `Ctrl+C` or close its console window.
 
@@ -158,8 +168,12 @@ D:\TravelMovieAI\Japan2026\
     ├── frame_sampling.json
     ├── quality_analysis.json
     ├── vision_analysis.json
+    ├── speech_analysis.json
+    ├── duplicates.json
     ├── scene_descriptions.json
     ├── events.json
+    ├── storyboard.json
+    ├── selection_decisions.json
     ├── quick_timeline.json
     └── final.mp4
 ```
@@ -185,8 +199,12 @@ Semantic mode additionally:
 - extracts one representative frame per scene;
 - asks the configured local vision model for a validated JSON description;
 - combines measured OpenCV quality with Vision AI score factors;
+- rejects severe blur, exposure, noise, and shake problems unless overridden;
+- removes near-duplicates while keeping the strongest representative;
 - detects landmarks and groups related scenes into events;
+- gives each event representation within the duration budget;
 - ranks scenes by importance, quality, landmarks, events, and diversity;
+- records why every scene was selected or rejected;
 - preserves chronological order after selecting the strongest scenes;
 - reuses valid scene and vision cache data on repeated runs.
 
@@ -204,8 +222,8 @@ Music is faded and ducked under source audio. Rendering uses NVIDIA
 for `Auto`. The builder writes `quality_analysis.json`, `music_plan.json`,
 `quick_timeline.json`, and `final.mp4`.
 
-This is not yet the complete Story Builder: duplicate removal, speech context,
-storyboard ordering, titles, and narration are pending.
+This is not yet the complete Story Builder: audio classification,
+embedding-based similarity, generated titles, and narration are pending.
 
 ## Supported Media
 

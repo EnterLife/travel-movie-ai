@@ -1,5 +1,6 @@
 """FFmpeg rendering for declarative montage plans."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -16,8 +17,13 @@ ProgressCallback = Callable[[int, int, str], None]
 
 
 class QuickMontageRenderer:
-    def __init__(self, ffmpeg_binary: str = "ffmpeg") -> None:
+    def __init__(
+        self,
+        ffmpeg_binary: str = "ffmpeg",
+        ffprobe_binary: str = "ffprobe",
+    ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
+        self.ffprobe_binary = ffprobe_binary
         self._render_device = "cpu"
         self._encoder = "libx264"
 
@@ -55,6 +61,7 @@ class QuickMontageRenderer:
                 "Переходы, музыка и финальная сборка",
             )
         self._compose_segments(segment_paths, plan, output_path, work_dir)
+        self._validate_output(output_path)
         if progress:
             progress(total_steps, total_steps, "Фильм готов")
         return self._encoder
@@ -307,6 +314,46 @@ class QuickMontageRenderer:
                 "0",
             ]
         return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
+
+    def _validate_output(self, output_path: Path) -> None:
+        command = [
+            self.ffprobe_binary,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(output_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except FileNotFoundError as error:
+            raise DependencyUnavailableError(
+                f"FFprobe executable was not found: {self.ffprobe_binary}"
+            ) from error
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or "unknown FFprobe error"
+            raise MontageError(f"Итоговый фильм не прошёл FFprobe-проверку: {detail}")
+        try:
+            payload = json.loads(completed.stdout)
+            stream_types = {
+                stream.get("codec_type")
+                for stream in payload.get("streams", [])
+            }
+            duration = float(payload.get("format", {}).get("duration", 0))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise MontageError("FFprobe вернул некорректные данные итогового фильма.") from error
+        if "video" not in stream_types or "audio" not in stream_types or duration <= 0:
+            raise MontageError(
+                "Итоговый файл не содержит ожидаемые видео, аудио или длительность."
+            )
 
 
 def _decimal(value: float) -> str:

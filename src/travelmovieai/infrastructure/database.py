@@ -160,6 +160,24 @@ class MediaAssetRepository:
                 for scene in scenes
             )
 
+    def set_scene_selection_override(
+        self,
+        scene_id: UUID,
+        decision: str,
+    ) -> Scene | None:
+        with self._session_factory.begin() as session:
+            record = session.get(SceneRecord, str(scene_id))
+            if record is None:
+                return None
+            metadata = dict(record.scene_metadata or {})
+            if decision == "auto":
+                metadata.pop("selection_override", None)
+            else:
+                metadata["selection_override"] = decision
+            record.scene_metadata = metadata
+            session.flush()
+            return _record_to_scene(record)
+
     def list_events(self) -> list[Event]:
         with self._session_factory() as session:
             records = session.query(EventRecord).order_by(

@@ -16,29 +16,55 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
         quality = scene.quality_score if scene.quality_score is not None else 60.0
         event_importance = float(scene.metadata.get("event_importance", base))
         landmark_bonus = min(8.0, len(scene.metadata.get("landmarks", [])) * 4.0)
+        technical_reasons = list(scene.metadata.get("technical_rejection_reasons", []))
+        technical_penalty = min(24.0, len(technical_reasons) * 8.0)
+        duplicate_penalty = (
+            35.0 if scene.metadata.get("duplicate_status") == "duplicate" else 0.0
+        )
         tags = _semantic_tags(scene)
         rarity = sum(1 / tag_frequency[tag] for tag in tags) / len(tags) if tags else 0.0
         diversity_bonus = min(8.0, rarity * 4)
-        score = min(
-            100.0,
-            base * 0.62
-            + quality * 0.16
-            + event_importance * 0.08
-            + diversity_bonus
-            + landmark_bonus,
+        score = max(
+            0.0,
+            min(
+                100.0,
+                base * 0.62
+                + quality * 0.16
+                + event_importance * 0.08
+                + diversity_bonus
+                + landmark_bonus
+                - technical_penalty
+                - duplicate_penalty,
+            ),
         )
+        reasons = [
+            f"vision {base:.0f}",
+            f"quality {quality:.0f}",
+            f"event {event_importance:.0f}",
+        ]
+        if landmark_bonus:
+            reasons.append("landmark")
+        if diversity_bonus:
+            reasons.append("semantic diversity")
+        if technical_reasons:
+            reasons.append(f"technical issues: {', '.join(technical_reasons)}")
+        if duplicate_penalty:
+            reasons.append("near duplicate")
         scored.append(
             scene.model_copy(
                 update={
                     "metadata": {
                         **scene.metadata,
                         "ranking_score": score,
+                        "ranking_reasons": reasons,
                         "ranking_factors": {
                             "vision_importance": base,
                             "visual_quality": quality,
                             "event_importance": event_importance,
                             "landmark_bonus": landmark_bonus,
                             "diversity_bonus": diversity_bonus,
+                            "technical_penalty": technical_penalty,
+                            "duplicate_penalty": duplicate_penalty,
                         },
                     }
                 }

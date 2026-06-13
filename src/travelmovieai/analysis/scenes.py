@@ -3,10 +3,12 @@
 import hashlib
 import importlib
 import json
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from travelmovieai.core.exceptions import DependencyUnavailableError, MontageError
 from travelmovieai.domain.enums import MediaType
@@ -117,9 +119,12 @@ class RepresentativeFrameExtractor:
             return asset.path
 
         frames_dir.mkdir(parents=True, exist_ok=True)
-        frame_path = frames_dir / f"{scene.id}-contact-v2.jpg"
+        frame_path = frames_dir / f"{scene.id}-contact-v3.png"
         if frame_path.is_file() and frame_path.stat().st_size > 0:
             return frame_path
+        temporary_path = frame_path.with_name(
+            f".{frame_path.stem}.{uuid4().hex}.tmp.png"
+        )
         duration = scene.end_seconds - scene.start_seconds
         timestamps = (
             scene.start_seconds + duration * 0.12,
@@ -138,32 +143,44 @@ class RepresentativeFrameExtractor:
                 "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[b];"
                 "[2:v]scale=480:270:force_original_aspect_ratio=decrease,"
                 "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[c];"
-                "[a][b][c]hstack=inputs=3[v]",
+                "[a][b][c]hstack=inputs=3,format=rgb24[v]",
                 "-map",
                 "[v]",
+                "-an",
+                "-sn",
                 "-frames:v",
                 "1",
-                "-q:v",
+                "-c:v",
+                "png",
+                "-compression_level",
                 "3",
-                str(frame_path),
+                "-threads",
+                "1",
+                str(temporary_path),
             ]
         )
         try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                check=False,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except FileNotFoundError as error:
-            raise DependencyUnavailableError(
-                f"FFmpeg executable was not found: {self.ffmpeg_binary}"
-            ) from error
-        if completed.returncode != 0 or not frame_path.is_file():
-            detail = completed.stderr.strip() or "unknown FFmpeg error"
-            raise MontageError(f"Не удалось извлечь кадр из {asset.relative_path}: {detail}")
-        return frame_path
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    check=False,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except FileNotFoundError as error:
+                raise DependencyUnavailableError(
+                    f"FFmpeg executable was not found: {self.ffmpeg_binary}"
+                ) from error
+            if completed.returncode != 0 or not temporary_path.is_file():
+                detail = completed.stderr.strip() or "unknown FFmpeg error"
+                raise MontageError(
+                    f"Не удалось извлечь кадр из {asset.relative_path}: {detail}"
+                )
+            os.replace(temporary_path, frame_path)
+            return frame_path
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
 
 def scene_cache_key(asset: MediaAsset, settings: QuickMontageSettings) -> str:

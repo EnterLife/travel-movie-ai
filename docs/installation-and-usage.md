@@ -31,7 +31,7 @@
 Семантический режим дополнительно:
 
 - делит видео на сцены через PySceneDetect или равномерный fallback;
-- извлекает contact sheet из начала, середины и конца сцены;
+- извлекает RGB PNG contact sheet из начала, середины и конца сцены;
 - оценивает резкость, яркость, контраст, насыщенность и цветность через OpenCV;
 - измеряет motion, camera shake и noise, фиксирует причины технического брака;
 - анализирует кадр Qwen/VLM через LM Studio либо локальной Florence-2;
@@ -609,7 +609,8 @@ JSON записывается атомарно. Каталоги `frames` и `ca
 
 ### `artifacts/scenes.json`
 
-Границы сцен, detector/cache metadata и пути contact sheets. Если
+Границы сцен, detector/cache metadata и пути RGB PNG contact sheets. Формат PNG
+избегает несовместимости MJPEG с limited-range YUV в новых версиях FFmpeg. Если
 PySceneDetect не установлен или не смог обработать файл, используются
 ограниченные по длительности равномерные сцены.
 

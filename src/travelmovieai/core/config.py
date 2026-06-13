@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     whisper_model: Literal["medium", "large-v3"] = "medium"
     device: Literal["auto", "cuda", "directml", "cpu"] = "auto"
     cloud_enabled: bool = False
-    batch_size: int = Field(default=8, ge=1)
-    workers: int = Field(default=4, ge=1)
+    batch_size: int = Field(default=0, ge=0)
+    workers: int = Field(default=0, ge=0)
     web_host: str = "127.0.0.1"
     web_port: int = Field(default=8000, ge=1, le=65535)
     web_history_limit: int = Field(default=100, ge=1, le=1000)

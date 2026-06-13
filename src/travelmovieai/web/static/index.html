@@ -329,13 +329,48 @@
         </article>
 
         <article class="panel movie-progress hidden" id="movie-progress">
-          <div>
-            <span class="status-chip running" id="movie-status">Монтаж</span>
-            <h3 id="movie-progress-title">Подготовка фильма</h3>
-            <p id="movie-progress-message">Задание ожидает запуска.</p>
+          <div class="movie-progress-header">
+            <div>
+              <span class="status-chip running" id="movie-status">Монтаж</span>
+              <h3 id="movie-progress-title">Подготовка фильма</h3>
+              <p id="movie-progress-message">Задание ожидает запуска.</p>
+            </div>
+            <strong id="movie-progress-percent">0%</strong>
           </div>
           <div class="movie-progress-meter">
             <span id="movie-progress-bar"></span>
+          </div>
+          <dl class="movie-progress-details">
+            <div>
+              <dt>Этап</dt>
+              <dd id="movie-progress-phase">Ожидание</dd>
+            </div>
+            <div>
+              <dt>Прошло</dt>
+              <dd id="movie-progress-elapsed">00:00</dd>
+            </div>
+            <div>
+              <dt>Осталось</dt>
+              <dd id="movie-progress-eta">—</dd>
+            </div>
+            <div>
+              <dt>Ресурсы</dt>
+              <dd id="movie-progress-resources">Определяются...</dd>
+            </div>
+          </dl>
+          <section class="movie-subtasks">
+            <div class="movie-subtasks-heading">
+              <span>Прогресс по подзадачам</span>
+              <span id="movie-subtasks-summary">0 / 0</span>
+            </div>
+            <div class="movie-subtasks-list" id="movie-subtasks-list"></div>
+          </section>
+          <div class="movie-log-wrap">
+            <div class="movie-log-heading">
+              <span>Журнал обработки</span>
+              <span id="movie-log-count">0 сообщений</span>
+            </div>
+            <div class="movie-log" id="movie-log" role="log" aria-live="polite"></div>
           </div>
         </article>
 

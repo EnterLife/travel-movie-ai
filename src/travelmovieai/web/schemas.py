@@ -82,9 +82,24 @@ class CudaStatusResponse(BaseModel):
     note: str | None = None
 
 
+class ResourceProfileResponse(BaseModel):
+    logical_cores: int
+    memory_mb: int | None = None
+    gpu_name: str | None = None
+    gpu_memory_mb: int | None = None
+    nvenc: bool
+    frame_workers: int
+    analysis_workers: int
+    render_workers: int
+    ffmpeg_threads: int
+    model_batch_size: int
+    summary: str
+
+
 class CapabilitiesResponse(BaseModel):
     ai: AIProviderStatus
     cuda: CudaStatusResponse
+    resources: ResourceProfileResponse
     opencv_available: bool
     scenedetect_available: bool
     music_modes: list[str]
@@ -97,6 +112,22 @@ class MovieRequest(BaseModel):
     settings: QuickMontageSettings = Field(default_factory=QuickMontageSettings)
 
 
+class JobLogEntry(BaseModel):
+    timestamp: datetime
+    level: str = "info"
+    phase: str
+    message: str
+    progress_percent: float = Field(ge=0, le=100)
+
+
+class JobSubtaskProgress(BaseModel):
+    id: str
+    label: str
+    status: str = Field(pattern=r"^(pending|running|completed|skipped|failed)$")
+    progress_percent: float = Field(default=0, ge=0, le=100)
+    message: str = ""
+
+
 class MovieJobResponse(BaseModel):
     id: UUID
     status: JobStatus
@@ -107,8 +138,15 @@ class MovieJobResponse(BaseModel):
     finished_at: datetime | None = None
     message: str = ""
     error: str | None = None
+    phase: str = "queued"
     progress_current: int = 0
     progress_total: int = 0
+    progress_percent: float = Field(default=0, ge=0, le=100)
+    elapsed_seconds: float = Field(default=0, ge=0)
+    eta_seconds: float | None = Field(default=None, ge=0)
+    resources: ResourceProfileResponse | None = None
+    subtasks: list[JobSubtaskProgress] = Field(default_factory=list)
+    logs: list[JobLogEntry] = Field(default_factory=list)
     output_path: Path | None = None
     clip_count: int | None = None
     duration_seconds: float | None = None

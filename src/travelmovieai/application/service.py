@@ -1,7 +1,11 @@
 """Use-case facade called by the CLI."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -16,6 +20,7 @@ from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage, StoryStyle
 from travelmovieai.domain.models import (
+    MediaAsset,
     MediaScanReport,
     MusicPlan,
     QualityAnalysisReport,
@@ -38,6 +43,7 @@ from travelmovieai.infrastructure.lm_studio import (
     list_lm_studio_models,
     resolve_vision_model,
 )
+from travelmovieai.infrastructure.system import ResourceProfile, detect_resource_profile
 from travelmovieai.infrastructure.vision import (
     Florence2VisionProvider,
     LMStudioVisionProvider,
@@ -62,6 +68,16 @@ class TravelMovieService:
     ) -> None:
         self.settings = settings
         self._vision_provider_factory = vision_provider_factory
+        self._resource_profile: ResourceProfile | None = None
+
+    def get_resource_profile(self) -> ResourceProfile:
+        if self._resource_profile is None:
+            self._resource_profile = detect_resource_profile(
+                self.settings.ffmpeg_binary,
+                worker_override=self.settings.workers,
+                batch_override=self.settings.batch_size,
+            )
+        return self._resource_profile
 
     def create(
         self,
@@ -81,9 +97,7 @@ class TravelMovieService:
                 story_style=style,
                 vision_provider=self.settings.vision_provider,
                 vision_model=(
-                    None
-                    if self.settings.vision_model == "auto"
-                    else self.settings.vision_model
+                    None if self.settings.vision_model == "auto" else self.settings.vision_model
                 ),
             ),
             output_path=output_path,
@@ -115,8 +129,13 @@ class TravelMovieService:
         progress: Callable[[int, int, str], None] | None = None,
     ) -> QuickMontageResult:
         settings = _effective_montage_settings(settings)
+        resources = self.get_resource_profile()
+        tracker = _ProgressTracker(progress)
+        tracker.emit(0, f"Профиль ресурсов: {resources.summary}")
         context = self._context(input_path=input_path, workspace=workspace)
+        tracker.emit(1, "Проверка медиатеки и обновление индекса")
         self.analyze(input_path=context.input_path, workspace=context.workspace)
+        tracker.emit(5, "Media Scan завершён, чтение метаданных")
         analysis_path = context.artifacts_dir / "analysis.json"
         try:
             report = MediaScanReport.model_validate_json(analysis_path.read_text(encoding="utf-8"))
@@ -128,9 +147,11 @@ class TravelMovieService:
                 context,
                 report,
                 settings,
-                progress,
+                tracker,
+                resources,
             )
         else:
+            tracker.emit(10, "Быстрый отбор клипов по длительности")
             plan = build_quick_montage_plan(report.assets, settings)
             music_plan = self._build_music_plan(
                 context,
@@ -145,20 +166,25 @@ class TravelMovieService:
                     "music_path": music_plan.source_path,
                 }
             )
+            tracker.emit(80, "Быстрый монтажный план сформирован")
         timeline_path = context.artifacts_dir / "quick_timeline.json"
         default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
         resolved_output = (output_path or context.artifacts_dir / default_name).resolve()
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(timeline_path, plan)
+        tracker.emit(84, f"Timeline сохранён: {len(plan.clips)} клипов")
         render_encoder = QuickMontageRenderer(
             self.settings.ffmpeg_binary,
             self.settings.ffprobe_binary,
+            workers=resources.render_workers,
+            ffmpeg_threads=resources.ffmpeg_threads,
         ).render(
             plan,
             resolved_output,
             context.cache_dir,
-            progress,
+            tracker.range(85, 100),
         )
+        tracker.emit(100, "Фильм готов и проверен через FFprobe")
         return QuickMontageResult(
             output_path=resolved_output,
             timeline_path=timeline_path,
@@ -175,10 +201,10 @@ class TravelMovieService:
         context: ProjectContext,
         report: MediaScanReport,
         settings: QuickMontageSettings,
-        progress: Callable[[int, int, str], None] | None,
+        tracker: _ProgressTracker,
+        resources: ResourceProfile,
     ) -> QuickMontagePlan:
-        if progress:
-            progress(0, 1, "Детектирование сцен")
+        tracker.emit(6, "Детектирование сцен")
         SceneDetectionStage(settings=settings).run(context)
         scenes_path = context.artifacts_dir / "scenes.json"
         try:
@@ -190,22 +216,26 @@ class TravelMovieService:
 
         assets_by_id = {asset.id: asset for asset in report.assets}
         extractor = RepresentativeFrameExtractor(self.settings.ffmpeg_binary)
-        prepared_scenes = []
-        for index, scene in enumerate(scene_report.scenes, start=1):
-            asset = assets_by_id.get(scene.asset_id)
-            if asset is None:
-                continue
-            if progress:
-                progress(
-                    index - 1,
-                    len(scene_report.scenes),
-                    f"Кадр сцены {index}/{len(scene_report.scenes)}",
-                )
-            frame_path = extractor.extract(scene, asset, context.frames_dir)
-            prepared_scenes.append(scene.model_copy(update={"keyframe_path": frame_path}))
+        tracker.emit(
+            12,
+            f"Найдено сцен: {len(scene_report.scenes)}. "
+            f"Извлечение кадров в {resources.frame_workers} потоков",
+        )
+        prepared_scenes = _extract_scene_frames(
+            scene_report.scenes,
+            assets_by_id,
+            extractor,
+            context.frames_dir,
+            resources.frame_workers,
+            tracker.range(12, 32),
+        )
 
         quality_report = (
-            analyze_scene_quality(prepared_scenes)
+            analyze_scene_quality(
+                prepared_scenes,
+                workers=resources.analysis_workers,
+                progress=tracker.range(32, 45),
+            )
             if settings.quality_analysis
             else QualityAnalysisReport(
                 created_at=scene_report.created_at,
@@ -214,16 +244,18 @@ class TravelMovieService:
         )
         quality_path = context.artifacts_dir / "quality_analysis.json"
         write_json_atomic(quality_path, quality_report)
+        tracker.emit(45, "OpenCV-анализ качества сохранён")
         vision_report = analyze_scenes(
             quality_report.scenes,
             self._vision_provider(settings.vision_provider, settings.vision_model),
             settings.story_style,
-            progress,
+            tracker.range(45, 70),
         )
         vision_path = context.artifacts_dir / "vision_analysis.json"
         write_json_atomic(vision_path, vision_report)
         speech_scenes = vision_report.scenes
         if settings.speech_analysis:
+            tracker.emit(70, "Whisper: распознавание речи и важных реплик")
             speech_report = analyze_speech(
                 vision_report.scenes,
                 report.assets,
@@ -233,13 +265,17 @@ class TravelMovieService:
                 ),
                 self.settings.ffmpeg_binary,
                 context.cache_dir / "speech",
+                tracker.range(70, 75),
             )
             speech_scenes = speech_report.scenes
             write_json_atomic(
                 context.artifacts_dir / "speech_analysis.json",
                 speech_report,
             )
+        else:
+            tracker.emit(74, "Распознавание речи отключено")
         if settings.duplicate_detection:
+            tracker.emit(75, "Поиск похожих и повторяющихся сцен")
             duplicate_report, deduplicated_scenes = detect_duplicate_scenes(
                 speech_scenes,
                 settings.duplicate_similarity_threshold,
@@ -250,6 +286,7 @@ class TravelMovieService:
             )
         else:
             deduplicated_scenes = speech_scenes
+        tracker.emit(77, "Объединение Vision AI, OpenCV и аудиометаданных")
         descriptions = build_multimodal_descriptions(deduplicated_scenes)
         write_json_atomic(
             context.artifacts_dir / "scene_descriptions.json",
@@ -259,6 +296,7 @@ class TravelMovieService:
             deduplicated_scenes,
             report.assets,
         )
+        tracker.emit(79, f"События поездки сгруппированы: {len(event_report.events)}")
         events_path = context.artifacts_dir / "events.json"
         write_json_atomic(events_path, event_report)
         storyboard = build_storyboard(
@@ -266,6 +304,7 @@ class TravelMovieService:
             event_scenes,
             settings.story_style,
         )
+        tracker.emit(81, "Сценарий и порядок сцен сформированы")
         write_json_atomic(context.artifacts_dir / "storyboard.json", storyboard)
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
@@ -276,6 +315,7 @@ class TravelMovieService:
             event_scenes,
             settings,
         )
+        tracker.emit(82, f"AI-отбор завершён: {len(plan.clips)} клипов")
         write_json_atomic(
             context.artifacts_dir / "selection_decisions.json",
             build_selection_report(event_scenes, plan, settings),
@@ -287,6 +327,7 @@ class TravelMovieService:
             settings,
             plan.total_duration_seconds,
         )
+        tracker.emit(83, f"Музыка: {music_plan.mode}, профиль {music_plan.profile}")
         return plan.model_copy(
             update={
                 "music_plan": music_plan,
@@ -322,11 +363,7 @@ class TravelMovieService:
             return self._vision_provider_factory(self.settings)
         if provider == "florence":
             return Florence2VisionProvider(
-                model=(
-                    model
-                    if model and model != "auto"
-                    else "microsoft/Florence-2-large"
-                ),
+                model=(model if model and model != "auto" else "microsoft/Florence-2-large"),
                 device=self.settings.device,
             )
         resolved_model = model
@@ -423,3 +460,61 @@ def _effective_montage_settings(
             "fps": min(settings.fps, 24),
         }
     )
+
+
+class _ProgressTracker:
+    def __init__(
+        self,
+        callback: Callable[[int, int, str], None] | None,
+    ) -> None:
+        self._callback = callback
+
+    def emit(self, percent: float, message: str) -> None:
+        if self._callback is not None:
+            self._callback(round(max(0, min(100, percent)) * 10), 1000, message)
+
+    def range(
+        self,
+        start_percent: float,
+        end_percent: float,
+    ) -> Callable[[int, int, str], None]:
+        def report(current: int, total: int, message: str) -> None:
+            fraction = current / total if total > 0 else 0
+            self.emit(
+                start_percent + (end_percent - start_percent) * fraction,
+                message,
+            )
+
+        return report
+
+
+def _extract_scene_frames(
+    scenes: list[Scene],
+    assets_by_id: dict[UUID, MediaAsset],
+    extractor: RepresentativeFrameExtractor,
+    frames_dir: Path,
+    workers: int,
+    progress: Callable[[int, int, str], None],
+) -> list[Scene]:
+    jobs = [(index, scene, assets_by_id.get(scene.asset_id)) for index, scene in enumerate(scenes)]
+    valid_jobs = [(index, scene, asset) for index, scene, asset in jobs if asset is not None]
+    prepared: dict[int, Scene] = {}
+    worker_count = min(max(1, workers), max(1, len(valid_jobs)))
+
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="travelmovieai-frames",
+    ) as executor:
+        futures = {
+            executor.submit(extractor.extract, scene, asset, frames_dir): (index, scene)
+            for index, scene, asset in valid_jobs
+        }
+        for completed, future in enumerate(as_completed(futures), start=1):
+            index, scene = futures[future]
+            prepared[index] = scene.model_copy(update={"keyframe_path": future.result()})
+            progress(
+                completed,
+                len(valid_jobs),
+                f"Кадры: {completed}/{len(valid_jobs)}, workers={worker_count}",
+            )
+    return [prepared[index] for index in sorted(prepared)]

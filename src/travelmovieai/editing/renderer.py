@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,9 +22,13 @@ class QuickMontageRenderer:
         self,
         ffmpeg_binary: str = "ffmpeg",
         ffprobe_binary: str = "ffprobe",
+        workers: int = 1,
+        ffmpeg_threads: int = 1,
     ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
         self.ffprobe_binary = ffprobe_binary
+        self.workers = max(1, workers)
+        self.ffmpeg_threads = max(1, ffmpeg_threads)
         self._render_device = "cpu"
         self._encoder = "libx264"
 
@@ -38,21 +43,16 @@ class QuickMontageRenderer:
         self._encoder = self._select_encoder(plan.settings.render_device)
         segments_dir = work_dir / "quick_montage_segments"
         segments_dir.mkdir(parents=True, exist_ok=True)
-        segment_paths: list[Path] = []
         total_steps = len(plan.clips) + 1
-
-        for index, clip in enumerate(plan.clips, start=1):
-            segment_path = segments_dir / f"{index:05d}.mp4"
-            if progress:
-                progress(index - 1, total_steps, f"Подготовка клипа {index}/{len(plan.clips)}")
-            try:
-                self._render_segment(clip, plan, segment_path)
-            except MontageError:
-                if self._render_device != "auto" or self._encoder != "h264_nvenc":
-                    raise
-                self._encoder = "libx264"
-                self._render_segment(clip, plan, segment_path)
-            segment_paths.append(segment_path)
+        try:
+            segment_paths = self._render_segments(plan, segments_dir, progress, total_steps)
+        except MontageError:
+            if self._render_device != "auto" or self._encoder != "h264_nvenc":
+                raise
+            self._encoder = "libx264"
+            shutil.rmtree(segments_dir, ignore_errors=True)
+            segments_dir.mkdir(parents=True, exist_ok=True)
+            segment_paths = self._render_segments(plan, segments_dir, progress, total_steps)
 
         if progress:
             progress(
@@ -65,6 +65,54 @@ class QuickMontageRenderer:
         if progress:
             progress(total_steps, total_steps, "Фильм готов")
         return self._encoder
+
+    def _render_segments(
+        self,
+        plan: QuickMontagePlan,
+        segments_dir: Path,
+        progress: ProgressCallback | None,
+        total_steps: int,
+    ) -> list[Path]:
+        segment_paths = [
+            segments_dir / f"{index:05d}.mp4" for index in range(1, len(plan.clips) + 1)
+        ]
+        worker_count = min(self.workers, len(plan.clips))
+        if worker_count <= 1:
+            for index, (clip, segment_path) in enumerate(
+                zip(plan.clips, segment_paths, strict=True),
+                start=1,
+            ):
+                if progress:
+                    progress(
+                        index - 1,
+                        total_steps,
+                        f"Рендер клипа {index}/{len(plan.clips)}, "
+                        f"encoder={self._encoder}, threads={self.ffmpeg_threads}",
+                    )
+                self._render_segment(clip, plan, segment_path)
+            return segment_paths
+
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="travelmovieai-render",
+        ) as executor:
+            futures = {
+                executor.submit(self._render_segment, clip, plan, segment_path): index
+                for index, (clip, segment_path) in enumerate(
+                    zip(plan.clips, segment_paths, strict=True),
+                    start=1,
+                )
+            }
+            for completed, future in enumerate(as_completed(futures), start=1):
+                future.result()
+                if progress:
+                    progress(
+                        completed,
+                        total_steps,
+                        f"Готово клипов {completed}/{len(plan.clips)}, "
+                        f"render workers={worker_count}, encoder={self._encoder}",
+                    )
+        return segment_paths
 
     def _render_segment(
         self,
@@ -88,6 +136,8 @@ class QuickMontageRenderer:
                 "-loglevel",
                 "error",
                 "-y",
+                "-filter_threads",
+                str(self.ffmpeg_threads),
                 "-loop",
                 "1",
                 "-t",
@@ -115,6 +165,8 @@ class QuickMontageRenderer:
                 "-loglevel",
                 "error",
                 "-y",
+                "-filter_threads",
+                str(self.ffmpeg_threads),
                 "-ss",
                 _decimal(clip.source_start_seconds),
                 "-t",
@@ -186,7 +238,15 @@ class QuickMontageRenderer:
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_output = output_path.with_name(f".{output_path.stem}.{uuid4().hex}.tmp.mp4")
-        command = [self.ffmpeg_binary, "-hide_banner", "-loglevel", "error", "-y"]
+        command = [
+            self.ffmpeg_binary,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-filter_threads",
+            str(self.ffmpeg_threads),
+        ]
         for segment in segments:
             command.extend(["-i", str(segment)])
         if plan.music_path is not None:
@@ -313,7 +373,16 @@ class QuickMontageRenderer:
                 "-b:v",
                 "0",
             ]
-        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
+        return [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "21",
+            "-threads",
+            str(self.ffmpeg_threads),
+        ]
 
     def _validate_output(self, output_path: Path) -> None:
         command = [
@@ -343,17 +412,12 @@ class QuickMontageRenderer:
             raise MontageError(f"Итоговый фильм не прошёл FFprobe-проверку: {detail}")
         try:
             payload = json.loads(completed.stdout)
-            stream_types = {
-                stream.get("codec_type")
-                for stream in payload.get("streams", [])
-            }
+            stream_types = {stream.get("codec_type") for stream in payload.get("streams", [])}
             duration = float(payload.get("format", {}).get("duration", 0))
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise MontageError("FFprobe вернул некорректные данные итогового фильма.") from error
         if "video" not in stream_types or "audio" not in stream_types or duration <= 0:
-            raise MontageError(
-                "Итоговый файл не содержит ожидаемые видео, аудио или длительность."
-            )
+            raise MontageError("Итоговый файл не содержит ожидаемые видео, аудио или длительность.")
 
 
 def _decimal(value: float) -> str:

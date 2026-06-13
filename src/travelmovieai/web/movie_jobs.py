@@ -1,9 +1,10 @@
 """Background quick montage jobs."""
 
+import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -13,7 +14,30 @@ from uuid import UUID, uuid4
 from travelmovieai.application.validation import ProjectPaths
 from travelmovieai.core.exceptions import TravelMovieError, WorkspaceBusyError
 from travelmovieai.domain.models import QuickMontageResult, QuickMontageSettings
-from travelmovieai.web.schemas import JobStatus, MovieJobResponse
+from travelmovieai.infrastructure.system import ResourceProfile
+from travelmovieai.web.schemas import (
+    JobLogEntry,
+    JobStatus,
+    JobSubtaskProgress,
+    MovieJobResponse,
+    ResourceProfileResponse,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+_SUBTASK_RANGES = {
+    "media_scan": (0.0, 6.0, "Медиатека"),
+    "scene_detection": (6.0, 12.0, "Детектирование сцен"),
+    "frame_sampling": (12.0, 32.0, "Извлечение кадров"),
+    "quality_analysis": (32.0, 45.0, "OpenCV-анализ"),
+    "vision_analysis": (45.0, 70.0, "Vision AI"),
+    "speech_analysis": (70.0, 75.0, "Распознавание речи"),
+    "story_builder": (75.0, 83.0, "Сюжет и отбор"),
+    "music": (83.0, 84.0, "Музыка"),
+    "timeline": (84.0, 85.0, "Timeline"),
+    "rendering": (85.0, 99.0, "Рендеринг"),
+    "validation": (99.0, 100.0, "Проверка фильма"),
+}
 
 
 class MovieService(Protocol):
@@ -44,6 +68,10 @@ class _MovieJob:
     error: str | None = None
     progress_current: int = 0
     progress_total: int = 0
+    phase: str = "queued"
+    resources: ResourceProfile | None = None
+    subtasks: list[JobSubtaskProgress] = field(default_factory=list)
+    logs: list[JobLogEntry] = field(default_factory=list)
     result: QuickMontageResult | None = None
 
 
@@ -75,7 +103,9 @@ class MovieJobManager:
                 settings=settings,
                 created_at=datetime.now(UTC),
                 message="Монтаж ожидает запуска.",
+                subtasks=_build_subtasks(settings),
             )
+            _append_log(job, "Задание добавлено в очередь.")
             self._jobs[job.id] = job
         self._executor.submit(self._run, job.id)
         return _to_response(job)
@@ -106,12 +136,24 @@ class MovieJobManager:
             job.status = JobStatus.RUNNING
             job.started_at = datetime.now(UTC)
             job.message = "Подготовка монтажа..."
+            job.phase = "preparing"
+            profile_getter = getattr(self._service, "get_resource_profile", None)
+            if callable(profile_getter):
+                try:
+                    job.resources = profile_getter()
+                except Exception:
+                    LOGGER.exception("Could not detect hardware resources")
+                    job.resources = None
+            _append_log(job, job.message)
 
         def progress(current: int, total: int, message: str) -> None:
             with self._lock:
                 job.progress_current = current
                 job.progress_total = total
                 job.message = message
+                job.phase = _phase_from_message(message)
+                _update_subtasks(job, job.phase, _progress_percent(current, total), message)
+                _append_log(job, message)
 
         try:
             result = self._service.create_quick_montage(
@@ -131,15 +173,22 @@ class MovieJobManager:
             job.status = JobStatus.COMPLETED
             job.finished_at = datetime.now(UTC)
             job.message = "Фильм готов."
+            job.phase = "completed"
             job.result = result
-            job.progress_current = job.progress_total
+            job.progress_current = 1000
+            job.progress_total = 1000
+            _complete_subtasks(job)
+            _append_log(job, job.message)
 
     def _fail(self, job: _MovieJob, error: str) -> None:
         with self._lock:
             job.status = JobStatus.FAILED
             job.finished_at = datetime.now(UTC)
             job.message = "Монтаж завершился с ошибкой."
+            job.phase = "failed"
             job.error = error
+            _fail_active_subtask(job, error)
+            _append_log(job, error, level="error")
 
     def _workspace_is_active(self, workspace: Path) -> bool:
         key = os.path.normcase(str(workspace.resolve()))
@@ -152,6 +201,17 @@ class MovieJobManager:
 
 def _to_response(job: _MovieJob) -> MovieJobResponse:
     result = job.result
+    now = job.finished_at or datetime.now(UTC)
+    started_at = job.started_at or job.created_at
+    elapsed_seconds = max(0.0, (now - started_at).total_seconds())
+    progress_percent = (
+        min(100.0, job.progress_current / job.progress_total * 100)
+        if job.progress_total > 0
+        else 0.0
+    )
+    eta_seconds = None
+    if 0 < progress_percent < 100 and elapsed_seconds > 0:
+        eta_seconds = elapsed_seconds * (100 - progress_percent) / progress_percent
     return MovieJobResponse(
         id=job.id,
         status=job.status,
@@ -162,8 +222,17 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         finished_at=job.finished_at,
         message=job.message,
         error=job.error,
+        phase=job.phase,
         progress_current=job.progress_current,
         progress_total=job.progress_total,
+        progress_percent=progress_percent,
+        elapsed_seconds=elapsed_seconds,
+        eta_seconds=eta_seconds,
+        resources=(
+            ResourceProfileResponse.model_validate(asdict(job.resources)) if job.resources else None
+        ),
+        subtasks=job.subtasks,
+        logs=job.logs,
         output_path=result.output_path if result else None,
         clip_count=result.clip_count if result else None,
         duration_seconds=result.duration_seconds if result else None,
@@ -172,3 +241,139 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         music_mode=result.music_mode if result else None,
         music_profile=result.music_profile if result else None,
     )
+
+
+def _append_log(job: _MovieJob, message: str, *, level: str = "info") -> None:
+    progress_percent = _progress_percent(job.progress_current, job.progress_total)
+    if job.logs and job.logs[-1].message == message and job.logs[-1].level == level:
+        return
+    job.logs.append(
+        JobLogEntry(
+            timestamp=datetime.now(UTC),
+            level=level,
+            phase=job.phase,
+            message=message,
+            progress_percent=progress_percent,
+        )
+    )
+    del job.logs[:-250]
+
+
+def _build_subtasks(settings: QuickMontageSettings) -> list[JobSubtaskProgress]:
+    semantic_only = {
+        "scene_detection",
+        "frame_sampling",
+        "quality_analysis",
+        "vision_analysis",
+        "speech_analysis",
+        "story_builder",
+    }
+    subtasks = []
+    for task_id, (_, _, label) in _SUBTASK_RANGES.items():
+        skipped = (
+            task_id in semantic_only
+            and not settings.semantic_analysis
+            or task_id == "quality_analysis"
+            and not settings.quality_analysis
+            or task_id == "speech_analysis"
+            and not settings.speech_analysis
+        )
+        subtasks.append(
+            JobSubtaskProgress(
+                id=task_id,
+                label=label,
+                status="skipped" if skipped else "pending",
+                progress_percent=100 if skipped else 0,
+                message="Отключено в настройках" if skipped else "Ожидание",
+            )
+        )
+    return subtasks
+
+
+def _update_subtasks(
+    job: _MovieJob,
+    phase: str,
+    global_percent: float,
+    message: str,
+) -> None:
+    if phase not in _SUBTASK_RANGES:
+        return
+    updated = []
+    for task in job.subtasks:
+        if task.status == "skipped":
+            updated.append(task)
+            continue
+        start, end, _ = _SUBTASK_RANGES[task.id]
+        if task.id == phase:
+            local_percent = min(100.0, max(0.0, (global_percent - start) / (end - start) * 100))
+            updated.append(
+                task.model_copy(
+                    update={
+                        "status": "completed" if local_percent >= 100 else "running",
+                        "progress_percent": local_percent,
+                        "message": message,
+                    }
+                )
+            )
+        elif end <= global_percent:
+            updated.append(
+                task.model_copy(
+                    update={
+                        "status": "completed",
+                        "progress_percent": 100,
+                        "message": (task.message if task.message != "Ожидание" else "Завершено"),
+                    }
+                )
+            )
+        else:
+            updated.append(task)
+    job.subtasks = updated
+
+
+def _complete_subtasks(job: _MovieJob) -> None:
+    job.subtasks = [
+        task
+        if task.status == "skipped"
+        else task.model_copy(
+            update={
+                "status": "completed",
+                "progress_percent": 100,
+                "message": task.message if task.message != "Ожидание" else "Завершено",
+            }
+        )
+        for task in job.subtasks
+    ]
+
+
+def _fail_active_subtask(job: _MovieJob, error: str) -> None:
+    job.subtasks = [
+        task.model_copy(update={"status": "failed", "message": error})
+        if task.status == "running"
+        else task
+        for task in job.subtasks
+    ]
+
+
+def _progress_percent(current: int, total: int) -> float:
+    return min(100.0, current / total * 100) if total > 0 else 0.0
+
+
+def _phase_from_message(message: str) -> str:
+    normalized = message.casefold()
+    phases = (
+        (("профиль ресурсов", "проверка медиатеки", "media scan"), "media_scan"),
+        (("детектирование сцен", "найдено сцен"), "scene_detection"),
+        (("кадры",), "frame_sampling"),
+        (("opencv", "качества"), "quality_analysis"),
+        (("ai-анализ", "ai-кэш", "vision"), "vision_analysis"),
+        (("whisper", "реч"), "speech_analysis"),
+        (("повтор", "описан", "событи", "сценари", "ai-отбор"), "story_builder"),
+        (("музык",), "music"),
+        (("timeline",), "timeline"),
+        (("рендер", "клип", "переход", "сборка"), "rendering"),
+        (("ffprobe", "фильм готов"), "validation"),
+    )
+    for markers, phase in phases:
+        if any(marker in normalized for marker in markers):
+            return phase
+    return "processing"

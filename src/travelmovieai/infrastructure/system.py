@@ -1,8 +1,11 @@
 """Local executable readiness checks."""
 
 import importlib
+import os
 import shutil
 import subprocess
+import sys
+from ctypes import Structure, byref, c_ulong, c_ulonglong, sizeof
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +32,35 @@ class CudaStatus:
     torch_cuda: bool = False
     torch_version: str | None = None
     note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceProfile:
+    logical_cores: int
+    memory_mb: int | None
+    gpu_name: str | None
+    gpu_memory_mb: int | None
+    nvenc: bool
+    frame_workers: int
+    analysis_workers: int
+    render_workers: int
+    ffmpeg_threads: int
+    model_batch_size: int
+    summary: str
+
+
+class _MemoryStatus(Structure):
+    _fields_ = [
+        ("length", c_ulong),
+        ("memory_load", c_ulong),
+        ("total_physical", c_ulonglong),
+        ("available_physical", c_ulonglong),
+        ("total_page_file", c_ulonglong),
+        ("available_page_file", c_ulonglong),
+        ("total_virtual", c_ulonglong),
+        ("available_virtual", c_ulonglong),
+        ("available_extended_virtual", c_ulonglong),
+    ]
 
 
 def check_executable(binary: str, *, timeout_seconds: float = 5) -> ExecutableStatus:
@@ -121,6 +153,93 @@ def check_cuda(ffmpeg_binary: str = "ffmpeg") -> CudaStatus:
         torch_version=torch_version,
         note=note,
     )
+
+
+def detect_resource_profile(
+    ffmpeg_binary: str = "ffmpeg",
+    *,
+    cuda: CudaStatus | None = None,
+    worker_override: int = 0,
+    batch_override: int = 0,
+) -> ResourceProfile:
+    logical_cores = max(1, os.cpu_count() or 1)
+    memory_mb = _system_memory_mb()
+    resolved_cuda = cuda or check_cuda(ffmpeg_binary)
+
+    memory_factor = 1.0
+    if memory_mb is not None:
+        if memory_mb < 8 * 1024:
+            memory_factor = 0.45
+        elif memory_mb < 16 * 1024:
+            memory_factor = 0.7
+
+    automatic_frames = max(1, min(12, round(logical_cores * 0.6 * memory_factor)))
+    automatic_analysis = max(1, min(16, round(logical_cores * 0.8 * memory_factor)))
+    automatic_render = max(
+        1,
+        min(
+            4 if resolved_cuda.ffmpeg_nvenc else 3,
+            round(logical_cores / 4 * memory_factor),
+        ),
+    )
+    frame_workers = worker_override or automatic_frames
+    analysis_workers = worker_override or automatic_analysis
+    render_workers = min(worker_override, 6) if worker_override else automatic_render
+    render_workers = max(1, render_workers)
+    ffmpeg_threads = max(1, logical_cores // render_workers)
+
+    gpu_memory = resolved_cuda.memory_mb or 0
+    automatic_batch = (
+        16
+        if gpu_memory >= 16 * 1024
+        else 8
+        if gpu_memory >= 10 * 1024
+        else 4
+        if gpu_memory >= 6 * 1024
+        else max(1, min(4, logical_cores // 4))
+    )
+    model_batch_size = batch_override or automatic_batch
+    accelerator = (
+        f"{resolved_cuda.gpu_name}, NVENC"
+        if resolved_cuda.available and resolved_cuda.ffmpeg_nvenc
+        else resolved_cuda.gpu_name
+        if resolved_cuda.available
+        else "CPU"
+    )
+    memory_label = f"{memory_mb // 1024} GB RAM" if memory_mb else "RAM unknown"
+    summary = (
+        f"{logical_cores} CPU threads, {memory_label}, {accelerator}; "
+        f"frames {frame_workers}x, analysis {analysis_workers}x, "
+        f"render {render_workers}x/{ffmpeg_threads} threads"
+    )
+    return ResourceProfile(
+        logical_cores=logical_cores,
+        memory_mb=memory_mb,
+        gpu_name=resolved_cuda.gpu_name,
+        gpu_memory_mb=resolved_cuda.memory_mb,
+        nvenc=resolved_cuda.ffmpeg_nvenc,
+        frame_workers=frame_workers,
+        analysis_workers=analysis_workers,
+        render_workers=render_workers,
+        ffmpeg_threads=ffmpeg_threads,
+        model_batch_size=model_batch_size,
+        summary=summary,
+    )
+
+
+def _system_memory_mb() -> int | None:
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    status = _MemoryStatus()
+    status.length = sizeof(_MemoryStatus)
+    try:
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(byref(status)):
+            return None
+    except (AttributeError, OSError):
+        return None
+    return int(status.total_physical // (1024 * 1024))
 
 
 def _nvidia_gpu() -> dict[str, str] | None:

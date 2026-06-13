@@ -2,6 +2,8 @@
 
 import importlib
 import math
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -74,29 +76,57 @@ class VisualQualityAnalyzer:
 def analyze_scene_quality(
     scenes: list[Scene],
     analyzer: VisualQualityAnalyzer | None = None,
+    workers: int = 1,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> QualityAnalysisReport:
     resolved_analyzer = analyzer or VisualQualityAnalyzer()
-    analyzed: list[Scene] = []
-    for scene in scenes:
-        if scene.keyframe_path is None:
-            analyzed.append(scene)
-            continue
-        metrics = resolved_analyzer.analyze(scene.keyframe_path)
-        analyzed.append(
-            scene.model_copy(
-                update={
-                    "quality_score": metrics.quality_score,
-                    "metadata": {
-                        **scene.metadata,
-                        "quality_metrics": metrics.model_dump(),
-                        "technical_rejection_reasons": metrics.rejection_reasons,
-                    },
-                }
-            )
-        )
+    if workers <= 1 or len(scenes) <= 1:
+        analyzed = []
+        for index, scene in enumerate(scenes, start=1):
+            analyzed.append(_analyze_scene_quality(scene, resolved_analyzer))
+            if progress:
+                progress(index, len(scenes), f"OpenCV: сцена {index}/{len(scenes)}")
+    else:
+        analyzed_by_index: dict[int, Scene] = {}
+        with ThreadPoolExecutor(
+            max_workers=min(workers, len(scenes)),
+            thread_name_prefix="travelmovieai-quality",
+        ) as executor:
+            futures = {
+                executor.submit(_analyze_scene_quality, scene, resolved_analyzer): index
+                for index, scene in enumerate(scenes)
+            }
+            for completed, future in enumerate(as_completed(futures), start=1):
+                analyzed_by_index[futures[future]] = future.result()
+                if progress:
+                    progress(
+                        completed,
+                        len(scenes),
+                        f"OpenCV: сцена {completed}/{len(scenes)}, workers={workers}",
+                    )
+        analyzed = [analyzed_by_index[index] for index in range(len(scenes))]
     return QualityAnalysisReport(
         created_at=datetime.now(UTC),
         scenes=analyzed,
+    )
+
+
+def _analyze_scene_quality(
+    scene: Scene,
+    analyzer: VisualQualityAnalyzer,
+) -> Scene:
+    if scene.keyframe_path is None:
+        return scene
+    metrics = analyzer.analyze(scene.keyframe_path)
+    return scene.model_copy(
+        update={
+            "quality_score": metrics.quality_score,
+            "metadata": {
+                **scene.metadata,
+                "quality_metrics": metrics.model_dump(),
+                "technical_rejection_reasons": metrics.rejection_reasons,
+            },
+        }
     )
 
 
@@ -163,9 +193,7 @@ def _opencv_panel_metrics(
     yellow_blue = 0.5 * (red + green) - blue
     colorfulness_raw = math.sqrt(
         float(red_green.std()) ** 2 + float(yellow_blue.std()) ** 2
-    ) + 0.3 * math.sqrt(
-        float(red_green.mean()) ** 2 + float(yellow_blue.mean()) ** 2
-    )
+    ) + 0.3 * math.sqrt(float(red_green.mean()) ** 2 + float(yellow_blue.mean()) ** 2)
     colorfulness = _clamp(colorfulness_raw / 90 * 100)
     residual = cv2.absdiff(gray, cv2.GaussianBlur(gray, (5, 5), 0))
     noise_score = _clamp(float(residual.std()) / 22 * 100)

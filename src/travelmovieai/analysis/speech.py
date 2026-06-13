@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -32,21 +33,29 @@ def analyze_speech(
     provider: SpeechProvider,
     ffmpeg_binary: str,
     audio_dir: Path,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> SpeechAnalysisReport:
     assets_by_id = {asset.id: asset for asset in assets}
     updated: list[Scene] = []
     transcribed_count = 0
     cached_count = 0
-    for scene in scenes:
+    total = len(scenes)
+    for index, scene in enumerate(scenes, start=1):
         asset = assets_by_id.get(scene.asset_id)
         if asset is None or asset.media_type is not MediaType.VIDEO or not _has_audio(asset):
             updated.append(scene)
+            if progress:
+                progress(index, total, f"Whisper: сцена {index}/{total}, без речи")
             continue
         cache_key = _speech_cache_key(scene, asset, provider.model)
         if scene.metadata.get("speech_cache_key") == cache_key and scene.transcript is not None:
             updated.append(scene)
             cached_count += 1
+            if progress:
+                progress(index, total, f"Whisper-кэш: сцена {index}/{total}")
             continue
+        if progress:
+            progress(index - 1, total, f"Whisper: сцена {index}/{total}")
         audio_path = audio_dir / f"{scene.id}-{cache_key[:12]}.wav"
         _extract_scene_audio(ffmpeg_binary, asset.path, scene, audio_path)
         transcript = provider.transcribe(audio_path)
@@ -66,6 +75,8 @@ def analyze_speech(
             )
         )
         transcribed_count += 1
+        if progress:
+            progress(index, total, f"Whisper: готово {index}/{total}")
     return SpeechAnalysisReport(
         created_at=datetime.now(UTC),
         provider=provider.name,

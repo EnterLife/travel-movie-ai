@@ -45,6 +45,15 @@ const movieStatus = document.querySelector("#movie-status");
 const movieProgressTitle = document.querySelector("#movie-progress-title");
 const movieProgressMessage = document.querySelector("#movie-progress-message");
 const movieProgressBar = document.querySelector("#movie-progress-bar");
+const movieProgressPercent = document.querySelector("#movie-progress-percent");
+const movieProgressPhase = document.querySelector("#movie-progress-phase");
+const movieProgressElapsed = document.querySelector("#movie-progress-elapsed");
+const movieProgressEta = document.querySelector("#movie-progress-eta");
+const movieProgressResources = document.querySelector("#movie-progress-resources");
+const movieSubtasksList = document.querySelector("#movie-subtasks-list");
+const movieSubtasksSummary = document.querySelector("#movie-subtasks-summary");
+const movieLog = document.querySelector("#movie-log");
+const movieLogCount = document.querySelector("#movie-log-count");
 const movieResult = document.querySelector("#movie-result");
 const movieResultSummary = document.querySelector("#movie-result-summary");
 const sceneReview = document.querySelector("#scene-review");
@@ -65,6 +74,25 @@ const statusLabels = {
   running: "Выполняется",
   completed: "Готово",
   failed: "Ошибка",
+};
+
+const phaseLabels = {
+  queued: "Ожидание",
+  preparing: "Подготовка",
+  media_scan: "Медиатека",
+  scene_detection: "Детектирование сцен",
+  frame_sampling: "Извлечение кадров",
+  quality_analysis: "OpenCV-анализ",
+  vision_analysis: "Vision AI",
+  speech_analysis: "Распознавание речи",
+  story_builder: "Сценарий и отбор",
+  music: "Музыка",
+  timeline: "Timeline",
+  rendering: "Рендеринг",
+  validation: "Проверка результата",
+  completed: "Завершено",
+  failed: "Ошибка",
+  processing: "Обработка",
 };
 
 async function requestJson(url, options = {}) {
@@ -153,6 +181,10 @@ function renderCapabilities(capabilities) {
     capabilityChip(
       capabilities.opencv_available ? "OpenCV готов" : "OpenCV fallback: Pillow",
       capabilities.opencv_available,
+    ),
+    capabilityChip(
+      `${capabilities.resources.logical_cores} CPU · кадры ${capabilities.resources.frame_workers}× · рендер ${capabilities.resources.render_workers}×`,
+      true,
     ),
   );
 }
@@ -357,6 +389,15 @@ movieButton.addEventListener("click", async () => {
   movieProgressTitle.textContent = "Подготовка фильма";
   movieProgressMessage.textContent = "Монтаж ожидает запуска.";
   movieProgressBar.style.width = "2%";
+  movieProgressPercent.textContent = "0%";
+  movieProgressPhase.textContent = "Ожидание";
+  movieProgressElapsed.textContent = "00:00";
+  movieProgressEta.textContent = "—";
+  movieProgressResources.textContent = "Определяются...";
+  movieSubtasksList.replaceChildren();
+  movieSubtasksSummary.textContent = "0 / 0";
+  movieLog.replaceChildren();
+  movieLogCount.textContent = "0 сообщений";
 
   try {
     currentMovieJob = await requestJson("/api/movies", {
@@ -395,7 +436,7 @@ movieButton.addEventListener("click", async () => {
 
 async function pollMovie(jobId) {
   while (currentMovieJob && currentMovieJob.id === jobId) {
-    await sleep(800);
+    await sleep(500);
     try {
       currentMovieJob = await requestJson(`/api/movies/${jobId}`);
       showMovieProgress(currentMovieJob);
@@ -428,11 +469,75 @@ function showMovieProgress(job) {
         ? "Ошибка монтажа"
         : "Идёт монтаж";
   movieProgressMessage.textContent = job.message;
-  const percent =
-    job.progress_total > 0
-      ? Math.max(2, Math.round((job.progress_current / job.progress_total) * 100))
-      : 2;
-  movieProgressBar.style.width = `${percent}%`;
+  const percent = Math.max(0, Math.min(100, job.progress_percent || 0));
+  movieProgressBar.style.width = `${Math.max(2, percent)}%`;
+  movieProgressPercent.textContent = `${Math.round(percent)}%`;
+  movieProgressPhase.textContent = phaseLabels[job.phase] || job.phase;
+  movieProgressElapsed.textContent = formatClock(job.elapsed_seconds);
+  movieProgressEta.textContent =
+    job.eta_seconds == null ? "—" : `≈ ${formatClock(job.eta_seconds)}`;
+  movieProgressResources.textContent = job.resources?.summary || "Определяются...";
+  renderMovieSubtasks(job.subtasks || []);
+  renderMovieLogs(job.logs || []);
+}
+
+function renderMovieSubtasks(subtasks) {
+  movieSubtasksList.replaceChildren();
+  const finished = subtasks.filter((task) =>
+    ["completed", "skipped"].includes(task.status),
+  ).length;
+  movieSubtasksSummary.textContent = `${finished} / ${subtasks.length}`;
+
+  for (const task of subtasks) {
+    const row = document.createElement("article");
+    row.className = `movie-subtask ${task.status}`;
+
+    const header = document.createElement("div");
+    header.className = "movie-subtask-header";
+    const label = document.createElement("strong");
+    label.textContent = task.label;
+    const state = document.createElement("span");
+    state.textContent =
+      task.status === "skipped"
+        ? "Отключено"
+        : task.status === "completed"
+          ? "Готово"
+          : task.status === "failed"
+            ? "Ошибка"
+            : `${Math.round(task.progress_percent)}%`;
+    header.append(label, state);
+
+    const track = document.createElement("div");
+    track.className = "movie-subtask-track";
+    const bar = document.createElement("span");
+    bar.style.width = `${Math.max(0, Math.min(100, task.progress_percent))}%`;
+    track.append(bar);
+
+    const message = document.createElement("p");
+    message.textContent = task.message;
+    row.append(header, track, message);
+    movieSubtasksList.append(row);
+  }
+}
+
+function renderMovieLogs(logs) {
+  const keepPinned =
+    movieLog.scrollHeight - movieLog.scrollTop - movieLog.clientHeight < 36;
+  movieLog.replaceChildren();
+  for (const entry of logs) {
+    const row = document.createElement("div");
+    row.className = `movie-log-row ${entry.level}`;
+    const time = document.createElement("time");
+    time.textContent = new Date(entry.timestamp).toLocaleTimeString("ru-RU");
+    const phase = document.createElement("span");
+    phase.textContent = `${Math.round(entry.progress_percent)}%`;
+    const message = document.createElement("p");
+    message.textContent = entry.message;
+    row.append(time, phase, message);
+    movieLog.append(row);
+  }
+  movieLogCount.textContent = `${logs.length} сообщений`;
+  if (keepPinned) movieLog.scrollTop = movieLog.scrollHeight;
 }
 
 function showMovieResult(job) {
@@ -666,6 +771,15 @@ function formatDuration(seconds) {
   const total = Math.round(seconds);
   const minutes = Math.floor(total / 60);
   return `${String(minutes).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function formatClock(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const tail = `${String(minutes).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  return hours > 0 ? `${String(hours).padStart(2, "0")}:${tail}` : tail;
 }
 
 function formatResolution(asset) {

@@ -1,428 +1,150 @@
-# TravelMovieAI
+# Техническое задание TravelMovieAI
 
-## Technical Specification (MVP + Architecture)
+TravelMovieAI — local-first система автоматического монтажа, превращающая
+видео, фотографии и аудио из поездки в связный фильм.
 
-Version: 1.0
+Статус реализации ведётся в [README.md](../README.md), план развития — в
+[roadmap.md](roadmap.md).
 
-Repository: travel-movie-ai
+## 1. Цель продукта
 
-> Implementation note: this document describes the target MVP and architecture.
-> It is not a statement that every stage is already available. Current
-> implementation status and installation instructions are maintained in
-> [README.md](../README.md) and
-> [installation-and-usage.md](installation-and-usage.md).
+Пользователь выбирает папку с материалами. Система должна:
 
-Tagline:
+1. проиндексировать медиа;
+2. разделить видео на сцены;
+3. понять содержание, качество, речь и звук;
+4. найти дубли и объединить сцены в события;
+5. построить историю;
+6. создать timeline;
+7. отрендерить готовый фильм.
 
-> Your personal AI travel filmmaker.
+Результат должен быть осмысленным travel movie, а не случайной нарезкой.
 
----
+## 2. Принципы
 
-# 1. Project Overview
+- **Local first:** обычная работа полностью локальна.
+- **Story before editing:** сначала история, затем монтаж.
+- **Vision first:** смысл сцены определяет Vision AI, не OpenCV.
+- **Non-destructive:** исходные файлы не изменяются и не удаляются.
+- **Deterministic where practical:** решения и параметры сохраняются.
+- **Incremental:** повторный запуск переиспользует валидный кэш.
+- **Optional acceleration:** CUDA/DirectML ускоряют работу, но CPU остаётся
+  доступным.
+- **Explicit cloud:** облачные провайдеры никогда не включаются автоматически.
 
-TravelMovieAI is a local AI-powered video editing system that automatically transforms raw travel footage into a story-driven movie.
+## 3. Поддерживаемые медиа
 
-The user provides a folder containing videos and photos from a trip.
+| Тип | Форматы |
+| --- | --- |
+| Видео | `.mp4`, `.mov`, `.avi`, `.mkv`, `.m4v` |
+| Фото | `.jpg`, `.jpeg`, `.png`, `.heic` |
+| Аудио | `.mp3`, `.wav`, `.flac`, `.m4a` |
 
-The system automatically:
+Пути могут содержать пробелы, Unicode и длинные имена.
 
-* analyzes media content;
-* understands scenes and events;
-* detects people, landmarks, activities, and emotions;
-* removes duplicates and low-quality footage;
-* creates a coherent story;
-* generates titles and optional narration;
-* selects music;
-* builds a timeline;
-* renders a complete movie.
+## 4. Технологии
 
-The primary goal is to create a fully automated travel movie with minimal user interaction.
+- Python 3.12+;
+- Typer CLI;
+- FastAPI/Uvicorn web UI;
+- Pydantic/Pydantic Settings;
+- SQLite/SQLAlchemy;
+- FFmpeg/FFprobe;
+- PySceneDetect/OpenCV/Pillow;
+- Faster Whisper;
+- Qwen2.5-VL через LM Studio;
+- Florence-2 как локальная альтернатива;
+- sentence-transformers/FAISS;
+- pytest, Ruff, mypy.
 
----
+Тяжёлые AI-зависимости должны оставаться optional dependency groups.
 
-# 2. Core Principles
+## 5. Pipeline
 
-## Local First
-
-The system must work completely offline.
-
-Supported local AI:
-
-* Whisper
-* Qwen2.5-VL
-* Florence-2
-* LM Studio
-
-Cloud AI is optional.
-
----
-
-## AI Director Approach
-
-The system should behave as:
-
-* video editor;
-* director;
-* storyteller;
-* archivist.
-
-The objective is not to create a clip compilation.
-
-The objective is to create a meaningful movie.
-
----
-
-## Story Before Editing
-
-Editing decisions must be based on story structure.
-
-The pipeline should first understand:
-
-* what happened;
-* where it happened;
-* who participated;
-* why it is important.
-
-Only then should editing begin.
-
----
-
-# 3. Supported Media
-
-## Video
-
-Supported formats:
-
-* mp4
-* mov
-* avi
-* mkv
-* m4v
-
----
-
-## Photos
-
-Supported formats:
-
-* jpg
-* jpeg
-* png
-* heic
-
-Photos may be inserted into the final movie.
-
----
-
-## Audio
-
-Supported formats:
-
-* mp3
-* wav
-* flac
-* m4a
-
-Used for:
-
-* music
-* narration
-* soundtrack replacement
-
----
-
-# 4. Technology Stack
-
-## Core
-
-Python 3.12+
-
----
-
-## Video Processing
-
-* FFmpeg
-* FFprobe
-* PySceneDetect
-* OpenCV
-
----
-
-## AI Speech
-
-* Faster Whisper
-
-Models:
-
-* medium
-* large-v3
-
----
-
-## Vision AI
-
-Primary:
-
-* Qwen2.5-VL
-
-Supported:
-
-* 7B
-* 32B
-
-Alternative:
-
-* Florence-2
-
-Supported:
-
-* base
-* large
-
----
-
-## LLM
-
-Local:
-
-* LM Studio
-
-Cloud:
-
-* Yandex GPT OSS 120B
-
----
-
-## Embeddings
-
-* sentence-transformers
-* FAISS
-
----
-
-## Database
-
-* SQLite
-* SQLAlchemy
-
----
-
-## UI
-
-MVP:
-
-* CLI
-* Local web interface
-
-Future:
-
-PySide6 Desktop UI
-
----
-
-# 5. High-Level Architecture
-
-Media Folder
-
-↓
-
+```text
 Media Scan
+→ Scene Detection
+→ Frame Sampling
+→ Visual Quality Analysis
+→ Vision AI Analysis
+→ Speech Analysis
+→ Audio Analysis
+→ Embeddings
+→ Duplicate Detection
+→ Scene Captioning
+→ Event Detection
+→ Story Builder
+→ Scene Ranking
+→ Music Selection
+→ Narration / Voice
+→ Timeline Builder
+→ Rendering
+```
 
-↓
+Изменение порядка или контракта стадии требует синхронного обновления domain
+models, serialization, consumers, tests и architecture docs.
 
-Scene Detection
+## 6. Контракты стадий
 
-↓
+### 6.1 Media Scan
 
-Frame Sampling
+Извлекает:
 
-↓
+- путь и тип;
+- размер и timestamps;
+- duration, resolution, FPS;
+- GPS/EXIF при наличии;
+- streams и сокращённые probe metadata.
 
-Visual Quality Analysis (OpenCV)
+Результат сохраняется в SQLite и `analysis.json`.
 
-↓
+### 6.2 Scene Detection
 
-Vision AI Analysis
+Для каждого видео создаёт сцены с:
 
-↓
+- `start_seconds`;
+- `end_seconds`;
+- detector/cache metadata.
 
-Speech Analysis
+Используется PySceneDetect, при невозможности — ограниченные по длине
+равномерные сегменты.
 
-↓
+### 6.3 Frame Sampling
 
-Audio Analysis
+Для сцены извлекаются начало, середина и конец. Представление должно:
 
-↓
+- быть компактным;
+- подходить Vision AI и web preview;
+- кэшироваться;
+- корректно обрабатывать limited/full-range YUV.
 
-Embeddings
+Текущий целевой формат contact sheet — RGB PNG.
 
-↓
+### 6.4 Visual Quality Analysis
 
-Duplicate Detection
+OpenCV измеряет только технические признаки:
 
-↓
+- sharpness/blur;
+- brightness/exposure;
+- contrast;
+- saturation/colorfulness;
+- noise;
+- motion;
+- camera shake.
 
-Scene Captioning
+Выход: score 0–100 и объяснимые причины брака. Пользователь может вручную
+сохранить сцену.
 
-↓
+### 6.5 Vision AI Analysis
 
-Event Detection
+Основная модель: Qwen2.5-VL 7B/32B. Альтернатива: Florence-2 base/large.
 
-↓
-
-Story Builder
-
-↓
-
-Scene Ranking
-
-↓
-
-Timeline Builder
-
-↓
-
-Music Selection
-
-↓
-
-Narration
-
-↓
-
-FFmpeg Renderer
-
-↓
-
-Movie
-
----
-
-# 6. Pipeline Stages
-
-## Stage 1. Media Scan
-
-Scan all media files.
-
-Extract:
-
-* path
-* file type
-* duration
-* resolution
-* FPS
-* size
-* creation date
-* GPS metadata
-
-Store in SQLite.
-
-Output:
-
-project.db
-
----
-
-## Stage 2. Scene Detection
-
-Split videos into scenes.
-
-For each scene:
-
-* start time
-* end time
-* duration
-* keyframe
-
-Output:
-
-scenes.json
-
----
-
-## Stage 3. Frame Sampling
-
-Extract representative frames.
-
-Required frames:
-
-* scene start
-* scene middle
-* scene end
-* keyframes
-
-Output:
-
-frames/
-
----
-
-## Stage 4. Visual Quality Analysis
-
-OpenCV-based metrics are calculated before Vision AI:
-
-* blur/sharpness;
-* brightness;
-* contrast;
-* saturation and colorfulness;
-* noise;
-* motion;
-* camera shake.
-
-These metrics describe technical quality only. They must not be used for
-semantic scene interpretation. The normalized quality score is passed into
-Stage 4.5 as one factor of the final visual importance score.
-
-The implementation records explicit technical rejection reasons. A manual
-include override can retain a rejected scene without modifying source media.
-
----
-
-## Stage 4.5. Vision AI Analysis
-
-IMPORTANT:
-
-Vision AI is the primary source of scene understanding.
-
-OpenCV acts only as a supplementary quality-analysis tool.
-
----
-
-### Vision Models
-
-Primary:
-
-Qwen2.5-VL
-
-Fallback:
-
-Florence-2
-
----
-
-### Objectives
-
-Understand:
-
-* people
-* places
-* activities
-* landmarks
-* emotions
-* story relevance
-
----
-
-### Scene Understanding
-
-Generate structured metadata.
-
-Example:
+Модель получает representative frames и возвращает валидированный JSON:
 
 ```json
 {
-  "caption": "A family walking on a beach during sunset.",
-  "detailed_description": "Three chronological frames show a family continuing a sunset walk along the shoreline.",
+  "caption": "A family walking along the beach during sunset.",
+  "detailed_description": "The family continues walking along the shoreline.",
   "location_type": "beach",
   "activity": "walking",
   "emotion": "relaxing",
@@ -438,546 +160,210 @@ Example:
     "landmark": 0,
     "unusual_event": 35
   },
-  "story_relevance": "A warm family moment suitable for the middle of the film.",
+  "story_relevance": "Warm family moment.",
   "tags": ["family", "beach", "sunset"]
 }
 ```
 
----
+Landmark нельзя выдумывать без визуального или текстового подтверждения.
+Provider, model, prompt/schema version и параметры входят в cache metadata.
 
-### Location Detection
+### 6.6 Speech Analysis
 
-Categories:
+Faster Whisper извлекает:
 
-* beach
-* sea
-* city
-* mountains
-* airport
-* hotel
-* museum
-* restaurant
-* forest
-* park
-* landmark
+- transcript;
+- language;
+- confidence;
+- в целевой версии — timestamps реплик.
 
----
+Модель загружается лениво и поддерживает CPU/CUDA.
 
-### Activity Detection
+### 6.7 Audio Analysis
 
-Examples:
+Определяет:
 
-* walking
-* swimming
-* sightseeing
-* dining
-* hiking
-* cycling
-* traveling
+- speech;
+- music;
+- silence;
+- crowd;
+- laughter;
+- applause;
+- значимые ambient sounds.
 
----
+Выход должен использоваться при ranking, music ducking и сохранении атмосферы.
 
-### Emotion Detection
+### 6.8 Embeddings и дубли
 
-Categories:
+Perceptual hash находит визуально почти одинаковые сцены. Embeddings/FAISS
+должны расширить поиск на семантически похожие материалы.
 
-* joyful
-* exciting
-* relaxing
-* romantic
-* emotional
-* adventurous
-* cinematic
+Дубли группируются, но не удаляются. Keeper выбирается по manual override,
+importance и quality.
 
----
+### 6.9 Scene Captioning
 
-### Landmark Detection
+Единое описание сцены строится из:
 
-Examples:
+- Vision AI;
+- Whisper transcript;
+- OpenCV quality;
+- Audio Analysis.
 
-* Eiffel Tower
-* Colosseum
-* Louvre
-* Tokyo Tower
+Все model outputs валидируются до сохранения.
 
----
+### 6.10 Event Detection
 
-### Importance Detection
+Сцены объединяются по:
 
-Vision AI must estimate scene importance.
+- времени;
+- GPS;
+- location/activity;
+- landmarks;
+- embeddings;
+- transcript/audio context.
 
-Output:
+Пример: аэропорт → такси → отель = `Arrival Day`.
 
-0–100 score
+### 6.11 Story Builder
 
-The application recomputes the final score from validated model factors and
-the measured OpenCV quality. Provider, model, prompt/schema version and cache
-key must be persisted with the result.
+Строит секции:
 
----
+- opening;
+- journey;
+- highlights;
+- finale;
+- optional credits.
 
-### Event Clustering
+Поддерживаемые стили: `cinematic`, `documentary`, `family`, `vlog`,
+`adventure`, `romantic`.
 
-Scenes should be grouped into events.
+Story Builder получает metadata, но не raw media.
 
-Example:
+### 6.12 Scene Ranking
 
-Airport
+Итоговая оценка учитывает:
 
-↓
+- vision importance;
+- quality;
+- emotion;
+- uniqueness/diversity;
+- landmark value;
+- transcript/audio importance;
+- event importance;
+- duplicate/technical penalties;
+- manual include/exclude.
 
-Taxi
+Для каждой сцены сохраняется причина выбора или отклонения.
 
-↓
+### 6.13 Music и narration
 
-Hotel
+Музыка может быть:
 
-↓
+- сгенерированной локально;
+- выбрана из локальной библиотеки;
+- указана вручную;
+- отключена.
 
-Event: Arrival Day
+Целевая версия учитывает storyboard, BPM и beat grid. Narration и voice
+synthesis опциональны.
 
----
+### 6.14 Timeline и Rendering
 
-## Stage 5. Speech Analysis
+Timeline декларативно хранит:
 
-Use Faster Whisper.
+- порядок и границы сцен;
+- transitions;
+- titles/subtitles;
+- music;
+- narration.
 
-Extract:
+Renderer:
 
-* transcript
-* language
-* confidence
+- нормализует media streams;
+- создаёт silent audio при необходимости;
+- применяет transitions и ducking;
+- использует NVENC или CPU;
+- пишет результат атомарно;
+- проверяет итоговый MP4 через FFprobe.
 
-Store per scene.
+## 7. Пользовательский интерфейс
 
----
+MVP web UI должен поддерживать:
 
-## Stage 6. Audio Analysis
+- выбор input и workspace;
+- запуск и прогресс анализа;
+- выбор backend/model/device;
+- preview и final render;
+- просмотр кадров и scores;
+- `Авто / Обязательно / Исключить`;
+- скачивание MP4;
+- понятные ошибки зависимостей и моделей.
 
-Detect:
+Сервер по умолчанию доступен только на loopback-интерфейсе.
 
-* speech
-* music
-* applause
-* laughter
-* silence
-* crowd noise
+CLI остаётся стабильным интерфейсом для `analyze` и `create`.
 
-Generate audio importance score.
+## 8. Workspace и данные
 
----
+Все generated data записываются внутрь workspace:
 
-## Stage 7. Embeddings
-
-Generate embeddings for:
-
-* captions
-* transcripts
-* events
-
-Use:
-
-* sentence-transformers
-* FAISS
-
-Tasks:
-
-* duplicate detection
-* similarity search
-* clustering
-
----
-
-## Stage 7.5. Duplicate Detection
-
-Group visually near-identical scenes with a local perceptual fingerprint.
-Never delete source media. Keep the strongest representative based on manual
-override, semantic importance, and technical quality.
-
-Output:
-
-duplicates.json
-
----
-
-## Stage 8. Scene Captioning
-
-Build a validated multimodal description per scene from:
-
-* Vision AI caption and detailed description;
-* Whisper transcript when available;
-* OpenCV quality metrics;
-* audio context when available.
-
-Output:
-
-scene_descriptions.json
-
----
-
-## Stage 9. Event Detection
-
-Combine:
-
-* Vision AI
-* Whisper
-* Audio
-
-Into logical events.
-
-Examples:
-
-* Arrival
-* City Walk
-* Museum Visit
-* Beach Day
-* Dinner
-* Sunset
-
-Output:
-
-events.json
-
----
-
-## Stage 10. Story Builder
-
-Most important AI component.
-
-Input:
-
-* scenes
-* events
-* transcripts
-* scores
-
-Output:
-
-storyboard.json
-
----
-
-### Story Structure
-
-Example:
-
-Introduction
-
-↓
-
-Arrival
-
-↓
-
-Exploration
-
-↓
-
-Highlights
-
-↓
-
-Best Moments
-
-↓
-
-Finale
-
-↓
-
-Credits
-
----
-
-### Story Styles
-
-Supported:
-
-* cinematic
-* documentary
-* family
-* vlog
-* adventure
-* romantic
-
----
-
-## Stage 11. Scene Ranking
-
-Generate final score.
-
-Factors:
-
-* vision score
-* emotion score
-* uniqueness
-* video quality
-* transcript importance
-* event importance
-
-Output:
-
-0–100
-
----
-
-## Stage 12. Music Selection
-
-Music categories:
-
-* cinematic
-* emotional
-* calm
-* energetic
-* travel
-
-Music stored locally.
-
-Output:
-
-music_plan.json
-
----
-
-## Stage 13. Narration Generation
-
-Optional.
-
-Generate movie narration.
-
-Providers:
-
-Local:
-
-* LM Studio
-
-Cloud:
-
-* Yandex GPT OSS 120B
-
-Example:
-
-"On the third day of the trip, the family visited Kyoto..."
-
----
-
-## Stage 14. Voice Synthesis
-
-Optional.
-
-Supported:
-
-* XTTS
-* Piper
-* Edge TTS
-
-Output:
-
-voiceover.wav
-
----
-
-## Stage 15. Timeline Builder
-
-Generate final editing plan.
-
-Output:
-
-timeline.json
-
-Contains:
-
-* scene order
-* transitions
-* music
-* narration
-* subtitles
-
----
-
-## Stage 16. Rendering
-
-Use FFmpeg.
-
-Features:
-
-* crossfade
-* fade in
-* fade out
-* subtitles
-* music
-* narration
-* titles
-
-Output:
-
-final.mp4
-
----
-
-# 7. Cloud Integration
-
-Optional mode.
-
-Flag:
-
-```bash
---cloud
-```
-
-Provider:
-
-Yandex GPT OSS 120B
-
-Usage:
-
-* advanced story generation
-* narration writing
-* title generation
-* alternate movie versions
-
-Cloud must never be required.
-
----
-
-# 8. CLI
-
-Create movie:
-
-```bash
-travelmovieai create
-```
-
-Analyze media:
-
-```bash
-travelmovieai analyze
-```
-
-Generate storyboard:
-
-```bash
-travelmovieai storyboard
-```
-
-Render movie:
-
-```bash
-travelmovieai render
-```
-
-Generate report:
-
-```bash
-travelmovieai report
-```
-
----
-
-# 9. Output Files
-
+```text
 project.db
+frames/
+cache/
+artifacts/
+```
 
-analysis.json
+Обязательные свойства:
 
-events.json
+- атомарная запись критичных JSON и media outputs;
+- schema/version metadata;
+- bounded worker pools;
+- отсутствие raw media в логах и fixtures;
+- возможность полного сброса удалением workspace;
+- исходная папка только для чтения.
 
-storyboard.json
+## 9. Производительность
 
-timeline.json
+Целевая нагрузка:
 
-render_config.json
+- 500+ видео;
+- 100+ GB исходных материалов.
 
-final.mp4
+Необходимо:
 
-report.html
+- batch processing;
+- bounded concurrency;
+- proxy media для тяжёлых форматов;
+- повторное использование моделей;
+- инкрементальный кэш;
+- CPU fallback;
+- оценка времени и дискового пространства.
 
-Current implementation note:
+## 10. Приватность
 
-* `scenes.json`, `frame_sampling.json`, start/middle/end contact sheets,
-  `quality_analysis.json`, and `vision_analysis.json` are available;
-* local Qwen-compatible semantic analysis runs through LM Studio; Florence-2
-  can run directly from a preloaded local model cache;
-* strict scene understanding includes detailed descriptions, people groups,
-  landmarks, score factors, story relevance, and versioned cache metadata;
-* `scene_descriptions.json`, `events.json`, event persistence in SQLite, and
-  event-aware scene ranking are available;
-* motion/shake/noise quality analysis, perceptual duplicate detection,
-  explainable selection decisions, and user include/exclude overrides are
-  available;
-* optional Faster Whisper scene transcription and deterministic
-  opening/journey/highlight/finale storyboard sections are available;
-* preview rendering uses at most 854x480 and 24 FPS, and every resulting MP4
-  is validated with FFprobe;
-* the web interface discovers loaded LM Studio models and CUDA/NVENC;
-* scene ranking, OpenCV-guided generated music, ducking, transitions,
-  CUDA rendering, `music_plan.json`, `quick_timeline.json`, and `final.mp4`
-  are available;
-* LLM-assisted narrative, narration, subtitles, embedding similarity, and
-  manual event editing are not yet implemented.
+Приватными считаются:
 
----
+- исходные медиа;
+- кадры;
+- лица и голоса;
+- transcripts;
+- GPS;
+- project database.
 
-# 10. Performance Requirements
+Телеметрия не требуется. Cloud mode должен отправлять только минимально
+необходимый контекст и не загружать raw media без отдельного явно
+документированного разрешения.
 
-Must support:
+## 11. Критерии MVP
 
-* 500+ videos
-* 100+ GB footage
+MVP считается готовым, когда пользователь может:
 
-Support:
-
-* CUDA
-* DirectML
-* CPU fallback
-
-Batch processing required.
-
-Multi-threading required.
-
-Incremental caching required.
-
----
-
-# 11. Future Versions
-
-## v2
-
-Desktop GUI
-
-PySide6
-
----
-
-## v3
-
-Natural language editing
-
-Example:
-
-"Create a movie focused on beaches and sunsets."
-
----
-
-## v4
-
-Personal media archive search
-
-Example:
-
-"Show all beach videos from the last 5 years."
-
----
-
-## v5
-
-AI Director Mode
-
-Generate multiple movie versions automatically:
-
-* cinematic
-* documentary
-* family
-* adventure
-
-and rank them by predicted viewer engagement.
+1. выбрать большую папку с медиа;
+2. получить повторяемый локальный анализ;
+3. создать разумный preview;
+4. исправить выбор сцен;
+5. повторно собрать фильм без повторного дорогого анализа;
+6. получить валидный H.264/AAC MP4;
+7. понять причины выбора и отклонения сцен.

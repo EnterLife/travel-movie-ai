@@ -26,6 +26,7 @@ from travelmovieai.infrastructure.system import (
     ExecutableStatus,
     check_cuda,
     check_executable,
+    detect_resource_profile,
 )
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager
@@ -38,6 +39,7 @@ from travelmovieai.web.schemas import (
     ModelOption,
     MovieJobResponse,
     MovieRequest,
+    ResourceProfileResponse,
     ScanJobHistory,
     ScanJobResponse,
     ScanRequest,
@@ -108,6 +110,13 @@ def create_app(
             discovered.models,
             resolved_settings.vision_model,
         )
+        cuda_status = cuda_checker(resolved_settings.ffmpeg_binary)
+        resources = detect_resource_profile(
+            resolved_settings.ffmpeg_binary,
+            cuda=cuda_status,
+            worker_override=resolved_settings.workers,
+            batch_override=resolved_settings.batch_size,
+        )
         return CapabilitiesResponse(
             ai=AIProviderStatus(
                 available=discovered.available,
@@ -116,9 +125,8 @@ def create_app(
                 models=model_options,
                 error=discovered.error,
             ),
-            cuda=CudaStatusResponse.model_validate(
-                asdict(cuda_checker(resolved_settings.ffmpeg_binary))
-            ),
+            cuda=CudaStatusResponse.model_validate(asdict(cuda_status)),
+            resources=ResourceProfileResponse.model_validate(asdict(resources)),
             opencv_available=find_spec("cv2") is not None,
             scenedetect_available=find_spec("scenedetect") is not None,
             music_modes=["auto", "generated", "library", "manual", "none"],
@@ -222,9 +230,7 @@ def create_app(
         workspace: str | None = Query(default=None),
     ) -> SceneListResponse:
         paths = _validated_paths(service, input_path, workspace)
-        repository = MediaAssetRepository(
-            paths.workspace / resolved_settings.database_filename
-        )
+        repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
         repository.initialize()
         return SceneListResponse(scenes=repository.list_scenes())
 
@@ -234,9 +240,7 @@ def create_app(
         payload: SceneOverrideRequest,
     ) -> SceneListResponse:
         paths = _validated_paths(service, payload.input_path, payload.workspace)
-        repository = MediaAssetRepository(
-            paths.workspace / resolved_settings.database_filename
-        )
+        repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
         repository.initialize()
         scene = repository.set_scene_selection_override(scene_id, payload.decision)
         if scene is None:
@@ -250,9 +254,7 @@ def create_app(
         workspace: str | None = Query(default=None),
     ) -> FileResponse:
         paths = _validated_paths(service, input_path, workspace)
-        repository = MediaAssetRepository(
-            paths.workspace / resolved_settings.database_filename
-        )
+        repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
         repository.initialize()
         scene = next(
             (item for item in repository.list_scenes() if item.id == scene_id),

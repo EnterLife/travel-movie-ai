@@ -25,7 +25,11 @@ from travelmovieai.domain.models import (
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.lm_studio import LMStudioModels
-from travelmovieai.infrastructure.system import CudaStatus, ExecutableStatus
+from travelmovieai.infrastructure.system import (
+    CudaStatus,
+    ExecutableStatus,
+    ResourceProfile,
+)
 from travelmovieai.web.app import create_app
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager
@@ -66,6 +70,21 @@ class BlockingScanService(FakeScanService):
 
 
 class FakeMovieService(FakeScanService):
+    def get_resource_profile(self) -> ResourceProfile:
+        return ResourceProfile(
+            logical_cores=16,
+            memory_mb=32768,
+            gpu_name="RTX Test",
+            gpu_memory_mb=12288,
+            nvenc=True,
+            frame_workers=10,
+            analysis_workers=13,
+            render_workers=4,
+            ffmpeg_threads=4,
+            model_batch_size=8,
+            summary="16 CPU threads, 32 GB RAM, RTX Test, NVENC",
+        )
+
     def create_quick_montage(
         self,
         *,
@@ -157,6 +176,8 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     assert payload["ai"]["models"][1]["likely_vision"] is True
     assert payload["ai"]["models"][1]["recommended"] is True
     assert payload["cuda"]["ffmpeg_nvenc"] is True
+    assert payload["resources"]["render_workers"] >= 1
+    assert payload["resources"]["model_batch_size"] == 4
 
 
 def test_web_scan_job_reaches_completed_result(tmp_path: Path) -> None:
@@ -232,6 +253,19 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert job["status"] == "completed"
     assert job["clip_count"] == 3
     assert job["selection_mode"] == "semantic"
+    assert job["progress_percent"] == 100
+    assert job["phase"] == "completed"
+    assert job["resources"]["render_workers"] == 4
+    assert len(job["subtasks"]) == 11
+    assert all(
+        task["status"] == "completed" for task in job["subtasks"] if task["id"] != "speech_analysis"
+    )
+    assert (
+        next(task for task in job["subtasks"] if task["id"] == "speech_analysis")["status"]
+        == "skipped"
+    )
+    assert len(job["logs"]) >= 3
+    assert job["logs"][-1]["message"] == "Фильм готов."
     assert download.status_code == 200
     assert download.content == b"fake mp4"
 

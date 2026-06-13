@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local configuration and model caches
+.env
+models/
+.cache/
+
+# TravelMovieAI runtime data
+workspace/
+output/
+*.db
+*.sqlite
+*.sqlite3
+*.mp4
+*.wav
+

@@ -6,12 +6,22 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, create_engine, delete
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    delete,
+)
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from travelmovieai.domain.enums import MediaType
-from travelmovieai.domain.models import MediaAsset
+from travelmovieai.domain.models import MediaAsset, Scene
 
 
 class Base(DeclarativeBase):
@@ -39,6 +49,25 @@ class MediaAssetRecord(Base):
     probe_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     scan_error: Mapped[str | None] = mapped_column(Text)
     last_scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SceneRecord(Base):
+    __tablename__ = "scenes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("media_assets.id", ondelete="CASCADE"),
+        index=True,
+    )
+    start_seconds: Mapped[float] = mapped_column(Float)
+    end_seconds: Mapped[float] = mapped_column(Float)
+    keyframe_path: Mapped[str | None] = mapped_column(Text)
+    caption: Mapped[str | None] = mapped_column(Text)
+    transcript: Mapped[str | None] = mapped_column(Text)
+    quality_score: Mapped[float | None] = mapped_column(Float)
+    importance_score: Mapped[float | None] = mapped_column(Float)
+    scene_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class MediaAssetRepository:
@@ -88,6 +117,33 @@ class MediaAssetRepository:
 
             _delete_missing_records(session, seen_paths)
 
+    def list_scenes(self) -> list[Scene]:
+        with self._session_factory() as session:
+            records = session.query(SceneRecord).order_by(
+                SceneRecord.asset_id,
+                SceneRecord.start_seconds,
+            )
+            return [_record_to_scene(record) for record in records]
+
+    def synchronize_scenes(self, scenes: Sequence[Scene]) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(delete(SceneRecord))
+            session.add_all(
+                SceneRecord(
+                    id=str(scene.id),
+                    asset_id=str(scene.asset_id),
+                    start_seconds=scene.start_seconds,
+                    end_seconds=scene.end_seconds,
+                    keyframe_path=str(scene.keyframe_path) if scene.keyframe_path else None,
+                    caption=scene.caption,
+                    transcript=scene.transcript,
+                    quality_score=scene.quality_score,
+                    importance_score=scene.importance_score,
+                    scene_metadata=scene.metadata,
+                )
+                for scene in scenes
+            )
+
 
 def _delete_missing_records(session: Session, seen_paths: set[str]) -> None:
     statement = delete(MediaAssetRecord)
@@ -134,6 +190,21 @@ def _record_to_asset(record: MediaAssetRecord) -> MediaAsset:
         longitude=record.longitude,
         probe_metadata=record.probe_metadata or {},
         scan_error=record.scan_error,
+    )
+
+
+def _record_to_scene(record: SceneRecord) -> Scene:
+    return Scene(
+        id=UUID(record.id),
+        asset_id=UUID(record.asset_id),
+        start_seconds=record.start_seconds,
+        end_seconds=record.end_seconds,
+        keyframe_path=Path(record.keyframe_path) if record.keyframe_path else None,
+        caption=record.caption,
+        transcript=record.transcript,
+        quality_score=record.quality_score,
+        importance_score=record.importance_score,
+        metadata=record.scene_metadata or {},
     )
 
 

@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from travelmovieai.domain.enums import MediaType
-from travelmovieai.domain.models import MediaAsset
+from travelmovieai.domain.models import MediaAsset, Scene
 from travelmovieai.infrastructure.database import MediaAssetRepository
 
 
@@ -34,3 +34,25 @@ def test_repository_synchronizes_updates_and_deletions(tmp_path: Path) -> None:
     assert len(assets) == 1
     assert assets[0].id == first.id
     assert assets[0].duration_seconds == 9.0
+
+
+def test_repository_persists_scenes_and_cascades_deleted_assets(tmp_path: Path) -> None:
+    repository = MediaAssetRepository(tmp_path / "project.db")
+    repository.initialize()
+    asset = _asset(tmp_path / "first.mp4", "first.mp4")
+    repository.synchronize([asset], datetime.now(UTC))
+    scene = Scene(
+        asset_id=asset.id,
+        start_seconds=1,
+        end_seconds=3,
+        caption="City walk",
+        importance_score=82,
+        metadata={"cache_key": "test"},
+    )
+
+    repository.synchronize_scenes([scene])
+    stored = repository.list_scenes()
+    repository.synchronize([], datetime.now(UTC))
+
+    assert stored == [scene]
+    assert repository.list_scenes() == []

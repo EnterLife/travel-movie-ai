@@ -68,7 +68,7 @@ def create(
         StoryStyle,
         typer.Option(
             case_sensitive=False,
-            help="Reserved for the future AI story pipeline.",
+            help="Story style used by semantic scene analysis and music selection.",
         ),
     ] = StoryStyle.CINEMATIC,
     cloud: Annotated[
@@ -78,8 +78,15 @@ def create(
             help="Reserved for future optional cloud providers.",
         ),
     ] = False,
+    semantic: Annotated[
+        bool,
+        typer.Option(
+            "--semantic/--quick",
+            help="Use local LM Studio vision analysis to select scenes.",
+        ),
+    ] = False,
 ) -> None:
-    """Create the currently available chronological quick montage."""
+    """Create a quick or locally AI-directed montage."""
     _run(
         lambda: _service().create(
             input_path=input_path,
@@ -87,6 +94,7 @@ def create(
             workspace=workspace,
             style=style,
             cloud=cloud,
+            semantic=semantic,
         )
     )
 

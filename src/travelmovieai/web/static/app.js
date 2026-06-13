@@ -25,6 +25,10 @@ const movieButton = document.querySelector("#movie-button");
 const movieDuration = document.querySelector("#movie-duration");
 const clipDuration = document.querySelector("#clip-duration");
 const photoDuration = document.querySelector("#photo-duration");
+const storyStyle = document.querySelector("#story-style");
+const transitionType = document.querySelector("#transition-type");
+const semanticAnalysis = document.querySelector("#semantic-analysis");
+const musicPath = document.querySelector("#music-path");
 const movieProgress = document.querySelector("#movie-progress");
 const movieStatus = document.querySelector("#movie-status");
 const movieProgressTitle = document.querySelector("#movie-progress-title");
@@ -280,6 +284,11 @@ movieButton.addEventListener("click", async () => {
           target_duration_seconds: Number(movieDuration.value),
           max_video_clip_seconds: Number(clipDuration.value),
           photo_duration_seconds: Number(photoDuration.value),
+          semantic_analysis: semanticAnalysis.checked,
+          story_style: storyStyle.value,
+          transition: transitionType.value,
+          music_enabled: true,
+          music_path: musicPath.value.trim() || null,
         },
       }),
     });
@@ -336,7 +345,9 @@ function showMovieProgress(job) {
 function showMovieResult(job) {
   const downloadUrl = `/api/movies/${job.id}/download`;
   movieResultSummary.textContent =
-    `${job.clip_count} фрагментов · ${formatDuration(job.duration_seconds)}`;
+    `${job.clip_count} фрагментов · ${formatDuration(job.duration_seconds)} · ${
+      job.selection_mode === "semantic" ? "AI-отбор" : "быстрый режим"
+    }`;
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");

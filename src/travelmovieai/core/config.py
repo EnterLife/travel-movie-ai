@@ -25,7 +25,11 @@ class Settings(BaseSettings):
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     lm_studio_url: str = "http://localhost:1234/v1"
+    lm_studio_api_key: str | None = None
+    vision_model: str = "qwen2.5-vl-7b-instruct"
+    vision_timeout_seconds: float = Field(default=120, ge=5, le=1800)
     vision_provider: Literal["qwen", "florence"] = "qwen"
+    music_library: Path = Path("assets/music")
     whisper_model: Literal["medium", "large-v3"] = "medium"
     device: Literal["auto", "cuda", "directml", "cpu"] = "auto"
     cloud_enabled: bool = False

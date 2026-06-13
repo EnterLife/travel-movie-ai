@@ -6,7 +6,7 @@ and audio into a story-driven movie.
 The target product will detect scenes, analyze image and sound, build a story,
 create an editing timeline, and render a finished video. Development is
 incremental: the media catalog and SQLite project storage are currently
-implemented, while the later AI and rendering stages are still scaffolds.
+implemented. The first local semantic montage flow is also available.
 
 ## Current Status
 
@@ -22,22 +22,28 @@ Implemented:
 - local web interface with background scan jobs;
 - persistent web job history and workspace conflict protection;
 - one-click quick montage from videos and photos;
+- PySceneDetect scene boundaries with a deterministic uniform fallback;
+- representative frame extraction and cached scene metadata;
+- local Qwen-compatible vision analysis through LM Studio;
+- explainable semantic scene ranking;
+- local soundtrack selection, audio ducking, and FFmpeg transitions;
 - H.264/AAC MP4 preview and download from the web interface;
 - one-click Windows launcher in `scripts\run_web.bat`;
 - Windows paths containing spaces and Unicode characters.
 
 Not implemented yet:
 
-- scene detection and frame sampling;
-- vision, speech, audio, and quality analysis;
+- full start/middle/end frame sampling and thumbnail gallery;
+- speech, audio classification, and visual quality analysis;
 - embeddings and duplicate detection;
 - event grouping and storyboard generation;
-- AI-directed scene selection, music, narration, and transitions;
+- narration, subtitles, titles, and manual storyboard editing;
 - HTML report generation.
 
-The web interface and `travelmovieai create` can already produce a chronological
-quick montage. The `storyboard`, advanced `render`, and `report` commands remain
-reserved for later pipeline stages.
+The web interface can create either a chronological quick montage or a locally
+AI-ranked montage. The latter requires LM Studio with a loaded vision model.
+The `storyboard`, advanced `render`, and `report` commands remain reserved for
+later pipeline stages.
 
 ## Requirements
 
@@ -73,9 +79,10 @@ Paste the full path to the media folder, optionally set a workspace, and click
 After the scan:
 
 1. Adjust the target movie duration and clip limits.
-2. Click `Собрать фильм`.
-3. Wait for FFmpeg rendering.
-4. Preview or download the generated MP4.
+2. Keep semantic selection enabled for AI mode, or disable it for quick mode.
+3. Select a story style, transition, and optional local music file.
+4. Click `Собрать фильм`.
+5. Preview or download the generated MP4.
 
 Stop the server with `Ctrl+C` or close its console window.
 
@@ -117,6 +124,17 @@ travelmovieai create `
   --output "D:\Movies\Japan2026.mp4"
 ```
 
+Create a semantic montage through local LM Studio:
+
+```powershell
+travelmovieai create `
+  --input "D:\Vacation\Japan2026" `
+  --workspace "D:\TravelMovieAI\Japan2026" `
+  --output "D:\Movies\Japan2026.mp4" `
+  --semantic `
+  --style cinematic
+```
+
 The web interface and CLI create:
 
 ```text
@@ -126,15 +144,17 @@ D:\TravelMovieAI\Japan2026\
 ├── cache\
 └── artifacts\
     ├── analysis.json
+    ├── scenes.json
+    ├── vision_analysis.json
     ├── quick_timeline.json
     └── final.mp4
 ```
 
 Run the same command again to reuse cached metadata for unchanged files.
 
-## Quick Montage Behavior
+## Movie Builder Behavior
 
-The current movie builder:
+Quick mode:
 
 - orders usable videos and photos chronologically;
 - takes a centered excerpt from long videos;
@@ -142,11 +162,24 @@ The current movie builder:
 - skips files with scan errors;
 - normalizes all clips to a shared H.264/AAC profile;
 - adds silent audio when a source has no audio track;
-- writes `quick_timeline.json` before rendering;
-- creates `artifacts/final.mp4`.
+- works without an AI server.
 
-It does not yet understand scene meaning, remove duplicates, select music, add
-transitions, or make AI story decisions.
+Semantic mode additionally:
+
+- detects cuts with PySceneDetect when the optional video group is installed;
+- falls back to bounded uniform scenes when PySceneDetect is unavailable;
+- extracts one representative frame per scene;
+- asks the configured local vision model for a validated JSON description;
+- ranks scenes by importance and semantic diversity;
+- preserves chronological order after selecting the strongest scenes;
+- reuses valid scene and vision cache data on repeated runs.
+
+Both modes can apply FFmpeg video/audio transitions and select music from an
+explicit path, music-named source audio, or `assets/music`. Music is faded and ducked
+under source audio. The builder writes `quick_timeline.json` and `final.mp4`.
+
+This is not yet the complete Story Builder: event clustering, duplicate
+removal, quality scoring, speech context, titles, and narration are pending.
 
 ## Supported Media
 
@@ -213,6 +246,10 @@ The default Media Scan setup usually needs no changes. Important settings:
 - `TRAVELMOVIEAI_DATABASE_FILENAME`: SQLite filename;
 - `TRAVELMOVIEAI_FFMPEG_BINARY`: FFmpeg executable name or full path;
 - `TRAVELMOVIEAI_FFPROBE_BINARY`: FFprobe executable name or full path;
+- `TRAVELMOVIEAI_LM_STUDIO_URL`: local OpenAI-compatible endpoint;
+- `TRAVELMOVIEAI_VISION_MODEL`: identifier of the loaded vision model;
+- `TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS`: finite request timeout;
+- `TRAVELMOVIEAI_MUSIC_LIBRARY`: local soundtrack directory;
 - `TRAVELMOVIEAI_WORKERS`: worker limit reserved for processing stages;
 - `TRAVELMOVIEAI_BATCH_SIZE`: batch size reserved for processing stages;
 - `TRAVELMOVIEAI_WEB_HOST`: local web server host;

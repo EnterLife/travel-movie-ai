@@ -837,9 +837,12 @@ report.html
 
 Current implementation note:
 
-* `quick_timeline.json` and `final.mp4` are available through Quick Montage;
-* Quick Montage uses chronological selection and is not yet the full AI Director
-  pipeline described in this specification.
+* `scenes.json`, representative frames, and `vision_analysis.json` are available;
+* local Qwen-compatible semantic analysis runs through LM Studio;
+* scene ranking, local music, ducking, transitions, `quick_timeline.json`, and
+  `final.mp4` are available;
+* event clustering, multimodal Story Builder, narration, subtitles, and full
+  quality-aware ranking are not yet implemented.
 
 ---
 

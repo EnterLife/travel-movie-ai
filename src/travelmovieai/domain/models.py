@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -53,6 +53,32 @@ class Scene(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SceneDetectionReport(BaseModel):
+    created_at: datetime
+    scenes: list[Scene] = Field(default_factory=list)
+    detected_count: int = 0
+    cached_count: int = 0
+    fallback_count: int = 0
+
+
+class SceneUnderstanding(BaseModel):
+    caption: str = Field(min_length=1, max_length=500)
+    location_type: str = Field(default="unknown", max_length=100)
+    activity: str = Field(default="unknown", max_length=100)
+    emotion: str = Field(default="neutral", max_length=100)
+    people_count: int = Field(default=0, ge=0, le=1000)
+    importance_score: float = Field(default=50, ge=0, le=100)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+
+
+class VisionAnalysisReport(BaseModel):
+    created_at: datetime
+    provider: str
+    model: str
+    prompt_version: str
+    scenes: list[Scene] = Field(default_factory=list)
+
+
 class Event(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     title: str
@@ -89,6 +115,16 @@ class QuickMontageSettings(BaseModel):
     width: int = Field(default=1280, ge=320, le=3840)
     height: int = Field(default=720, ge=240, le=2160)
     fps: int = Field(default=30, ge=15, le=60)
+    semantic_analysis: bool = False
+    story_style: StoryStyle = StoryStyle.CINEMATIC
+    scene_threshold: float = Field(default=27, ge=1, le=100)
+    min_scene_duration_seconds: float = Field(default=1.5, ge=0.5, le=30)
+    max_scene_duration_seconds: float = Field(default=12, ge=2, le=120)
+    transition: Literal["none", "fade", "dissolve", "wipeleft", "slideright"] = "fade"
+    transition_duration_seconds: float = Field(default=0.5, ge=0, le=3)
+    music_enabled: bool = True
+    music_path: Path | None = None
+    music_volume: float = Field(default=0.16, ge=0, le=1)
 
 
 class MontageClip(BaseModel):
@@ -99,6 +135,9 @@ class MontageClip(BaseModel):
     source_start_seconds: float = Field(default=0, ge=0)
     duration_seconds: float = Field(gt=0)
     has_audio: bool = False
+    scene_id: UUID | None = None
+    caption: str | None = None
+    semantic_score: float | None = Field(default=None, ge=0, le=100)
 
 
 class QuickMontagePlan(BaseModel):
@@ -106,6 +145,8 @@ class QuickMontagePlan(BaseModel):
     settings: QuickMontageSettings
     clips: list[MontageClip] = Field(default_factory=list)
     total_duration_seconds: float = Field(default=0, ge=0)
+    music_path: Path | None = None
+    selection_mode: Literal["chronological", "semantic"] = "chronological"
 
 
 class QuickMontageResult(BaseModel):
@@ -113,6 +154,7 @@ class QuickMontageResult(BaseModel):
     timeline_path: Path
     clip_count: int
     duration_seconds: float
+    selection_mode: Literal["chronological", "semantic"] = "chronological"
 
 
 class StageResult(BaseModel):

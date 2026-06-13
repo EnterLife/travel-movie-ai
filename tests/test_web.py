@@ -83,6 +83,7 @@ class FakeMovieService(FakeScanService):
             timeline_path=timeline_path,
             clip_count=3,
             duration_seconds=settings.target_duration_seconds,
+            selection_mode="semantic" if settings.semantic_analysis else "chronological",
         )
 
 
@@ -185,7 +186,11 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
             json={
                 "input_path": str(media),
                 "workspace": str(workspace),
-                "settings": {"target_duration_seconds": 12},
+                "settings": {
+                    "target_duration_seconds": 12,
+                    "semantic_analysis": True,
+                    "transition": "dissolve",
+                },
             },
         )
         assert response.status_code == 202
@@ -195,6 +200,7 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
 
     assert job["status"] == "completed"
     assert job["clip_count"] == 3
+    assert job["selection_mode"] == "semantic"
     assert download.status_code == 200
     assert download.content == b"fake mp4"
 

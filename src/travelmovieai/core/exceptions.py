@@ -27,3 +27,7 @@ class WorkspaceBusyError(TravelMovieError):
 
 class MontageError(TravelMovieError):
     """Raised when a quick montage cannot be planned or rendered."""
+
+
+class VisionAnalysisError(TravelMovieError):
+    """Raised when local semantic scene analysis cannot complete."""

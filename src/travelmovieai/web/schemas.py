@@ -76,3 +76,4 @@ class MovieJobResponse(BaseModel):
     output_path: Path | None = None
     clip_count: int | None = None
     duration_seconds: float | None = None
+    selection_mode: str | None = None

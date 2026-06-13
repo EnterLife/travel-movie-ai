@@ -41,7 +41,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -719,7 +720,9 @@ input::placeholder {
   margin: 0;
 }
 
-.movie-settings input {
+.movie-settings input,
+.movie-settings select,
+.music-path {
   width: 100%;
   height: 38px;
   border: 1px solid var(--line);
@@ -728,6 +731,66 @@ input::placeholder {
   color: var(--text);
   background: rgba(5, 7, 9, 0.55);
   text-align: center;
+}
+
+.movie-settings select {
+  padding: 0 8px;
+}
+
+.movie-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.toggle-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: flex-start;
+  margin: 0;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.toggle-row span,
+.toggle-row strong,
+.toggle-row small {
+  display: block;
+}
+
+.toggle-row strong {
+  color: var(--muted-light);
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.toggle-row small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.music-label {
+  margin: 2px 0 0;
+}
+
+.music-path {
+  padding: 0 10px;
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(5, 7, 9, 0.55);
+  font-size: 11px;
+  text-align: left;
 }
 
 .movie-button {

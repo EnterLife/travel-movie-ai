@@ -44,15 +44,13 @@ Roadmap построен от надёжного локального проек
 workspace/.web/jobs.json
 ```
 
-Следующая активная задача: этап 2, Scene Detection.
+Следующая активная задача: расширение Frame Sampling и Quality Analysis.
 
 ## Этап 2. Scene Detection
 
 Приоритет: следующий после этапа 1.
 
-Текущий промежуточный результат: реализован Quick Montage, который создаёт
-хронологический MP4 напрямую из Media Scan. Он обеспечивает рабочую основную
-функцию продукта, но не заменяет Scene Detection и AI Director.
+Статус: реализован базовый рабочий вариант.
 
 Задачи:
 
@@ -72,9 +70,22 @@ workspace/.web/jobs.json
 - удаление asset удаляет связанные scenes;
 - synthetic video integration tests проходят без GPU.
 
+Реализовано:
+
+- таблица `scenes`;
+- PySceneDetect adapter с lazy import;
+- равномерный fallback;
+- min/max duration и cache key;
+- `artifacts/scenes.json`;
+- каскадное удаление сцен вместе с asset.
+
+Отображение галереи и расширенного прогресса остаётся в этапе 3.
+
 ## Этап 3. Frame Sampling
 
 Приоритет: высокий.
+
+Статус: частично реализован representative midpoint frame для AI-монтажа.
 
 Задачи:
 
@@ -132,6 +143,8 @@ workspace/.web/jobs.json
 
 Приоритет: высокий.
 
+Статус: частично реализован Qwen-compatible provider через локальный LM Studio.
+
 Задачи:
 
 - provider contracts для Qwen2.5-VL и Florence-2;
@@ -146,6 +159,10 @@ workspace/.web/jobs.json
 - невалидный ответ модели не попадает в domain без validation;
 - provider/model/prompt version входят в cache key;
 - cloud fallback никогда не включается автоматически.
+
+Реализованы строгая JSON schema, versioned prompt, cache metadata и явная
+ошибка при недоступном LM Studio. Florence-2 и ручная коррекция в UI ожидают
+следующего расширения.
 
 ## Этап 7. Audio, embeddings и duplicate detection
 
@@ -167,6 +184,8 @@ workspace/.web/jobs.json
 ## Этап 8. Event Detection и Scene Ranking
 
 Приоритет: средний.
+
+Статус: Scene Ranking частично реализован без Event Detection.
 
 Задачи:
 
@@ -204,8 +223,8 @@ workspace/.web/jobs.json
 
 Приоритет: финальный MVP.
 
-Статус: частично реализован Quick Montage renderer без AI-story, музыки,
-переходов и субтитров.
+Статус: частично реализован renderer с semantic scene selection, локальной
+музыкой, ducking и переходами. Storyboard, титры и субтитры не реализованы.
 
 Задачи:
 
@@ -236,12 +255,12 @@ workspace/.web/jobs.json
 
 ## Ближайшая последовательность
 
-1. Завершить этап 1.
-2. Реализовать Scene Detection и таблицу scenes.
-3. Добавить Frame Sampling и thumbnail gallery.
-4. Реализовать Quality Analysis.
-5. Подключить Faster Whisper.
-6. Подключить Vision AI.
+1. Расширить Frame Sampling до start/middle/end и thumbnail gallery.
+2. Реализовать Quality Analysis.
+3. Добавить ручной просмотр и исправление vision metadata.
+4. Подключить Faster Whisper.
+5. Реализовать duplicate detection и Event Detection.
+6. Построить полноценный Story Builder поверх проверенных событий.
 
 Не следует начинать Story Builder или renderer до появления проверенных scenes,
 frames и quality metadata.

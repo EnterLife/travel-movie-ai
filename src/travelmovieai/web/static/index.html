@@ -181,10 +181,10 @@
         <article class="panel movie-panel">
           <div class="movie-panel-copy">
             <span class="section-number">04</span>
-            <h3>Собрать быстрый фильм</h3>
+            <h3>Собрать фильм с AI-отбором</h3>
             <p>
-              TravelMovieAI выберет материалы по времени съёмки, укоротит длинные
-              видео, добавит фотографии и создаст готовый MP4.
+              Локальная vision-модель оценит сцены, выберет выразительные моменты,
+              добавит музыку и плавные переходы. Быстрый режим работает без AI.
             </p>
           </div>
 
@@ -206,14 +206,59 @@
               <span>секунды</span>
             </label>
             <input id="photo-duration" type="number" min="1" max="15" value="3">
+
+            <label for="story-style">
+              Стиль истории
+              <span>AI</span>
+            </label>
+            <select id="story-style">
+              <option value="cinematic">Кинематографичный</option>
+              <option value="documentary">Документальный</option>
+              <option value="family">Семейный</option>
+              <option value="vlog">Влог</option>
+              <option value="adventure">Приключение</option>
+              <option value="romantic">Романтический</option>
+            </select>
+
+            <label for="transition-type">
+              Переходы
+              <span>FFmpeg</span>
+            </label>
+            <select id="transition-type">
+              <option value="fade">Fade</option>
+              <option value="dissolve">Dissolve</option>
+              <option value="wipeleft">Wipe left</option>
+              <option value="slideright">Slide right</option>
+              <option value="none">Без переходов</option>
+            </select>
           </div>
 
           <div class="movie-actions">
+            <label class="toggle-row" for="semantic-analysis">
+              <input id="semantic-analysis" type="checkbox" checked>
+              <span>
+                <strong>Семантический AI-отбор</strong>
+                <small>Требуется запущенный LM Studio с vision-моделью</small>
+              </span>
+            </label>
+            <label for="music-path" class="music-label">
+              Музыкальный файл
+              <span>необязательно</span>
+            </label>
+            <input
+              id="music-path"
+              class="music-path"
+              type="text"
+              placeholder="D:\Music\travel-theme.mp3"
+              autocomplete="off"
+            >
             <button class="primary-button movie-button" id="movie-button" type="button">
               <span>Собрать фильм</span>
               <span class="button-arrow" aria-hidden="true">▶</span>
             </button>
-            <p id="movie-hint">Результат появится в workspace/artifacts/final.mp4</p>
+            <p id="movie-hint">
+              Без пути музыка ищется по имени файла и в assets/music.
+            </p>
           </div>
         </article>
 

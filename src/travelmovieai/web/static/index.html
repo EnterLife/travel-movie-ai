@@ -196,6 +196,12 @@
           <div class="ai-config-grid">
             <section class="config-card">
               <h4>Нейросеть и анализ</h4>
+              <label for="vision-provider">Vision backend <span>локально</span></label>
+              <select id="vision-provider">
+                <option value="qwen">Qwen / VLM через LM Studio</option>
+                <option value="florence">Florence-2 напрямую</option>
+              </select>
+
               <label for="vision-model">Vision-модель <span>LM Studio</span></label>
               <select id="vision-model">
                 <option value="">Загрузка моделей...</option>

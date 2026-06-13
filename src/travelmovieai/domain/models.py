@@ -7,7 +7,15 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from travelmovieai.domain.enums import MediaType, PipelineStage, StoryStyle
+from travelmovieai.domain.enums import (
+    ActivityType,
+    EmotionType,
+    LocationType,
+    MediaType,
+    PersonGroup,
+    PipelineStage,
+    StoryStyle,
+)
 
 
 class MediaAsset(BaseModel):
@@ -61,13 +69,40 @@ class SceneDetectionReport(BaseModel):
     fallback_count: int = 0
 
 
+class FrameSamplingReport(BaseModel):
+    created_at: datetime
+    scenes: list[Scene] = Field(default_factory=list)
+    extracted_count: int = 0
+    cached_count: int = 0
+
+
+class LandmarkDetection(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    confidence: float = Field(ge=0, le=1)
+    evidence: str = Field(default="", max_length=300)
+
+
+class VisionScoreFactors(BaseModel):
+    uniqueness: float = Field(ge=0, le=100)
+    people: float = Field(ge=0, le=100)
+    emotion: float = Field(ge=0, le=100)
+    visual_quality: float = Field(ge=0, le=100)
+    landmark: float = Field(ge=0, le=100)
+    unusual_event: float = Field(ge=0, le=100)
+
+
 class SceneUnderstanding(BaseModel):
     caption: str = Field(min_length=1, max_length=500)
-    location_type: str = Field(default="unknown", max_length=100)
-    activity: str = Field(default="unknown", max_length=100)
-    emotion: str = Field(default="neutral", max_length=100)
+    detailed_description: str = Field(min_length=1, max_length=1500)
+    location_type: LocationType = LocationType.UNKNOWN
+    activity: ActivityType = ActivityType.UNKNOWN
+    emotion: EmotionType = EmotionType.NEUTRAL
     people_count: int = Field(default=0, ge=0, le=1000)
-    importance_score: float = Field(default=50, ge=0, le=100)
+    people_groups: list[PersonGroup] = Field(default_factory=list, max_length=6)
+    landmarks: list[LandmarkDetection] = Field(default_factory=list, max_length=10)
+    vision_score: float = Field(default=50, ge=0, le=100)
+    score_factors: VisionScoreFactors
+    story_relevance: str = Field(default="", max_length=500)
     tags: list[str] = Field(default_factory=list, max_length=20)
 
 
@@ -77,6 +112,8 @@ class VisionAnalysisReport(BaseModel):
     model: str
     prompt_version: str
     scenes: list[Scene] = Field(default_factory=list)
+    analyzed_count: int = 0
+    cached_count: int = 0
 
 
 class VisualQualityMetrics(BaseModel):
@@ -109,6 +146,34 @@ class Event(BaseModel):
     scene_ids: list[UUID] = Field(default_factory=list)
     summary: str = ""
     importance_score: float = Field(default=0, ge=0, le=100)
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    location_type: LocationType = LocationType.UNKNOWN
+    activity: ActivityType = ActivityType.UNKNOWN
+    landmarks: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0, ge=0, le=1)
+
+
+class EventDetectionReport(BaseModel):
+    created_at: datetime
+    events: list[Event] = Field(default_factory=list)
+
+
+class MultimodalSceneDescription(BaseModel):
+    scene_id: UUID
+    description: str
+    vision_caption: str
+    transcript: str | None = None
+    quality_score: float | None = Field(default=None, ge=0, le=100)
+    audio_context: list[str] = Field(default_factory=list)
+    source_modalities: list[
+        Literal["vision", "speech", "opencv", "audio"]
+    ] = Field(default_factory=list)
+
+
+class MultimodalDescriptionReport(BaseModel):
+    created_at: datetime
+    descriptions: list[MultimodalSceneDescription] = Field(default_factory=list)
 
 
 class Storyboard(BaseModel):
@@ -142,6 +207,7 @@ class QuickMontageSettings(BaseModel):
     semantic_analysis: bool = False
     quality_analysis: bool = True
     story_style: StoryStyle = StoryStyle.CINEMATIC
+    vision_provider: Literal["qwen", "florence"] = "qwen"
     vision_model: str | None = Field(default=None, max_length=300)
     render_device: Literal["auto", "cuda", "cpu"] = "auto"
     scene_threshold: float = Field(default=27, ge=1, le=100)

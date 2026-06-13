@@ -28,11 +28,23 @@ class FakeVisionProvider:
         self.calls += 1
         return SceneUnderstanding(
             caption=f"Travel scene {self.calls}",
+            detailed_description=f"Detailed travel scene {self.calls}.",
             location_type="city" if self.calls == 1 else "beach",
             activity="walking",
             emotion="joyful",
             people_count=2,
-            importance_score=90 if self.calls == 1 else 70,
+            people_groups=["group"],
+            landmarks=[],
+            vision_score=90 if self.calls == 1 else 70,
+            score_factors={
+                "uniqueness": 80,
+                "people": 70,
+                "emotion": 80,
+                "visual_quality": 50,
+                "landmark": 20,
+                "unusual_event": 30,
+            },
+            story_relevance="Useful travel moment.",
             tags=["travel", f"scene-{self.calls}"],
         )
 
@@ -173,6 +185,8 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     )
     timeline = json.loads(first.timeline_path.read_text(encoding="utf-8"))
     assert len(vision["scenes"]) >= 2
+    assert (workspace / "artifacts" / "events.json").is_file()
+    assert (workspace / "artifacts" / "scene_descriptions.json").is_file()
     assert timeline["selection_mode"] == "semantic"
     assert timeline["music_path"].endswith("cinematic theme.wav")
     assert all(clip["semantic_score"] is not None for clip in timeline["clips"])

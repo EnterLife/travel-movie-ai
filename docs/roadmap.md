@@ -85,7 +85,7 @@ workspace/.web/jobs.json
 
 Приоритет: высокий.
 
-Статус: частично реализован representative midpoint frame для AI-монтажа.
+Статус: реализована базовая стадия с start/middle/end contact sheet.
 
 Задачи:
 
@@ -145,11 +145,11 @@ workspace/.web/jobs.json
 - provider покрыт fake-contract tests;
 - отсутствующая модель или CUDA не ломает базовый Media Scan.
 
-## Этап 6. Vision Analysis
+## Этап 4.5. Vision AI Analysis
 
 Приоритет: высокий.
 
-Статус: частично реализован Qwen-compatible provider через локальный LM Studio.
+Статус: реализован базовый Stage 4.5.
 
 Задачи:
 
@@ -166,9 +166,11 @@ workspace/.web/jobs.json
 - provider/model/prompt version входят в cache key;
 - cloud fallback никогда не включается автоматически.
 
-Реализованы строгая JSON schema, versioned prompt, cache metadata и явная
-ошибка при недоступном LM Studio. Florence-2 и ручная коррекция в UI ожидают
-следующего расширения.
+Реализованы Qwen-compatible provider через LM Studio, ленивый Florence-2
+adapter, строгая JSON schema, versioned prompt, cache metadata, landmarks,
+people groups, score factors и пересчёт vision score с измеренным OpenCV
+quality. В web UI выбираются backend и модель. Ручная коррекция metadata,
+batch inference и расширенная gallery остаются следующими улучшениями.
 
 ## Этап 7. Audio, embeddings и duplicate detection
 
@@ -191,7 +193,7 @@ workspace/.web/jobs.json
 
 Приоритет: средний.
 
-Статус: Scene Ranking частично реализован без Event Detection.
+Статус: базовые Event Detection и event-aware Scene Ranking реализованы.
 
 Задачи:
 
@@ -205,6 +207,10 @@ workspace/.web/jobs.json
 
 - `events.json` стабилен и версионирован;
 - пользователь может исправить clustering до Story Builder.
+
+Реализованы temporal/semantic clustering, `events.json`, таблица `events` в
+SQLite, event title/summary/confidence и участие event importance и landmarks
+в итоговом ranking. GPS clustering и ручной event editor пока не реализованы.
 
 ## Этап 9. Story Builder
 
@@ -262,12 +268,11 @@ CUDA/NVENC с CPU fallback. Storyboard, титры и субтитры не ре
 
 ## Ближайшая последовательность
 
-1. Расширить Frame Sampling до start/middle/end и thumbnail gallery.
-2. Реализовать Quality Analysis.
-3. Добавить ручной просмотр и исправление vision metadata.
-4. Подключить Faster Whisper.
-5. Реализовать duplicate detection и Event Detection.
-6. Построить полноценный Story Builder поверх проверенных событий.
+1. Добавить gallery и ручное исправление vision/event metadata.
+2. Подключить Faster Whisper.
+3. Реализовать audio analysis и duplicate detection.
+4. Добавить GPS/embedding признаки в Event Detection.
+5. Построить полноценный Story Builder поверх проверенных событий.
 
 Не следует начинать Story Builder или renderer до появления проверенных scenes,
 frames и quality metadata.

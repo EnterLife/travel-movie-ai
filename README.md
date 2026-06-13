@@ -26,8 +26,12 @@ Implemented:
 - representative frame extraction and cached scene metadata;
 - start/middle/end contact sheets for stronger scene understanding;
 - local Qwen-compatible vision analysis through LM Studio;
+- optional local Florence-2 analysis with CPU/CUDA selection;
 - selectable loaded LM Studio models in the web interface;
 - OpenCV visual quality scoring used by scene ranking;
+- structured landmark, people, activity, emotion, and score-factor metadata;
+- temporal and semantic event clustering persisted to JSON and SQLite;
+- multimodal scene descriptions prepared for the Story Builder;
 - explainable semantic scene ranking;
 - local procedural soundtrack generation guided by scene metrics;
 - local soundtrack selection, audio ducking, and FFmpeg transitions;
@@ -38,10 +42,10 @@ Implemented:
 
 Not implemented yet:
 
-- full start/middle/end frame sampling and thumbnail gallery;
-- speech, audio classification, and visual quality analysis;
+- thumbnail gallery and manual scene metadata editing;
+- speech and audio classification;
 - embeddings and duplicate detection;
-- event grouping and storyboard generation;
+- full storyboard generation;
 - narration, subtitles, titles, and manual storyboard editing;
 - HTML report generation.
 
@@ -84,7 +88,7 @@ Paste the full path to the media folder, optionally set a workspace, and click
 After the scan:
 
 1. Adjust the target movie duration and clip limits.
-2. Select one of the vision models currently loaded in LM Studio.
+2. Select Qwen/LM Studio or Florence-2 and choose the model.
 3. Keep semantic and OpenCV analysis enabled for the best automatic selection.
 4. Select `Auto`, CUDA, or CPU rendering and configure the music director.
 5. Click `Запустить AI-монтаж`.
@@ -151,7 +155,11 @@ D:\TravelMovieAI\Japan2026\
 └── artifacts\
     ├── analysis.json
     ├── scenes.json
+    ├── frame_sampling.json
+    ├── quality_analysis.json
     ├── vision_analysis.json
+    ├── scene_descriptions.json
+    ├── events.json
     ├── quick_timeline.json
     └── final.mp4
 ```
@@ -176,7 +184,9 @@ Semantic mode additionally:
 - falls back to bounded uniform scenes when PySceneDetect is unavailable;
 - extracts one representative frame per scene;
 - asks the configured local vision model for a validated JSON description;
-- ranks scenes by importance and semantic diversity;
+- combines measured OpenCV quality with Vision AI score factors;
+- detects landmarks and groups related scenes into events;
+- ranks scenes by importance, quality, landmarks, events, and diversity;
 - preserves chronological order after selecting the strongest scenes;
 - reuses valid scene and vision cache data on repeated runs.
 
@@ -194,8 +204,8 @@ Music is faded and ducked under source audio. Rendering uses NVIDIA
 for `Auto`. The builder writes `quality_analysis.json`, `music_plan.json`,
 `quick_timeline.json`, and `final.mp4`.
 
-This is not yet the complete Story Builder: event clustering, duplicate
-removal, quality scoring, speech context, titles, and narration are pending.
+This is not yet the complete Story Builder: duplicate removal, speech context,
+storyboard ordering, titles, and narration are pending.
 
 ## Supported Media
 
@@ -264,6 +274,7 @@ The default Media Scan setup usually needs no changes. Important settings:
 - `TRAVELMOVIEAI_FFPROBE_BINARY`: FFprobe executable name or full path;
 - `TRAVELMOVIEAI_LM_STUDIO_URL`: local OpenAI-compatible endpoint;
 - `TRAVELMOVIEAI_VISION_MODEL`: `auto` or a loaded vision model identifier;
+- `TRAVELMOVIEAI_VISION_PROVIDER`: `qwen` or `florence`;
 - `TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS`: finite request timeout;
 - `TRAVELMOVIEAI_MUSIC_LIBRARY`: local soundtrack directory;
 - `TRAVELMOVIEAI_GENERATED_MUSIC_FILENAME`: generated WAV filename;

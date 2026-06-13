@@ -33,11 +33,23 @@ def test_lm_studio_provider_validates_structured_response(
     image.write_bytes(b"fake jpeg")
     content = {
         "caption": "Family walking near the sea",
+        "detailed_description": "A family walks together along a sunny beach.",
         "location_type": "beach",
         "activity": "walking",
         "emotion": "joyful",
         "people_count": 3,
-        "importance_score": 88,
+        "people_groups": ["family", "adults", "children"],
+        "landmarks": [],
+        "vision_score": 88,
+        "score_factors": {
+            "uniqueness": 70,
+            "people": 80,
+            "emotion": 85,
+            "visual_quality": 50,
+            "landmark": 0,
+            "unusual_event": 30,
+        },
+        "story_relevance": "A warm family travel moment.",
         "tags": ["family", "sunset"],
     }
     monkeypatch.setattr(
@@ -55,7 +67,7 @@ def test_lm_studio_provider_validates_structured_response(
     ).analyze(image, StoryStyle.FAMILY)
 
     assert result.caption == content["caption"]
-    assert result.importance_score == 88
+    assert result.vision_score == 88
 
 
 def test_lm_studio_provider_reports_unavailable_server(
@@ -78,6 +90,26 @@ def test_lm_studio_provider_reports_unavailable_server(
         ).analyze(image, StoryStyle.CINEMATIC)
 
 
+def test_lm_studio_provider_reports_inference_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"fake jpeg")
+
+    def timeout(request: object, timeout: float) -> FakeResponse:
+        raise TimeoutError
+
+    monkeypatch.setattr(vision, "urlopen", timeout)
+
+    with pytest.raises(VisionAnalysisError, match="не завершила анализ"):
+        LMStudioVisionProvider(
+            "http://localhost:1234/v1",
+            "slow-vision",
+            10,
+        ).analyze(image, StoryStyle.CINEMATIC)
+
+
 def test_lm_studio_provider_retries_without_json_schema(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -95,8 +127,14 @@ def test_lm_studio_provider_retries_without_json_schema(
                                 "content": (
                                     "Result:\n"
                                     '{"caption":"Beach","location_type":"beach",'
-                                    '"activity":"walking","emotion":"calm",'
-                                    '"people_count":1,"importance_score":75,"tags":[]}'
+                                    '"detailed_description":"A person walks on a beach.",'
+                                    '"activity":"walking","emotion":"relaxing",'
+                                    '"people_count":1,"people_groups":["solo"],'
+                                    '"landmarks":[],"vision_score":75,'
+                                    '"score_factors":{"uniqueness":50,"people":30,'
+                                    '"emotion":60,"visual_quality":50,"landmark":0,'
+                                    '"unusual_event":20},"story_relevance":"Travel walk.",'
+                                    '"tags":[]}'
                                 )
                             }
                         }

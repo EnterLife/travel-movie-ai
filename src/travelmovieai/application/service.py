@@ -35,10 +35,15 @@ from travelmovieai.infrastructure.lm_studio import (
     list_lm_studio_models,
     resolve_vision_model,
 )
-from travelmovieai.infrastructure.vision import LMStudioVisionProvider
+from travelmovieai.infrastructure.vision import (
+    Florence2VisionProvider,
+    LMStudioVisionProvider,
+)
 from travelmovieai.pipeline.registry import build_default_pipeline
 from travelmovieai.pipeline.runner import PipelineRunner
 from travelmovieai.pipeline.stages.scene_detection import SceneDetectionStage
+from travelmovieai.story.builder import build_multimodal_descriptions
+from travelmovieai.story.events import detect_events
 from travelmovieai.story.music import build_music_plan
 
 
@@ -67,6 +72,12 @@ class TravelMovieService:
             settings=QuickMontageSettings(
                 semantic_analysis=semantic,
                 story_style=style,
+                vision_provider=self.settings.vision_provider,
+                vision_model=(
+                    None
+                    if self.settings.vision_model == "auto"
+                    else self.settings.vision_model
+                ),
             ),
             output_path=output_path,
         )
@@ -181,36 +192,48 @@ class TravelMovieService:
             frame_path = extractor.extract(scene, asset, context.frames_dir)
             prepared_scenes.append(scene.model_copy(update={"keyframe_path": frame_path}))
 
+        quality_report = (
+            analyze_scene_quality(prepared_scenes)
+            if settings.quality_analysis
+            else QualityAnalysisReport(
+                created_at=scene_report.created_at,
+                scenes=prepared_scenes,
+            )
+        )
+        quality_path = context.artifacts_dir / "quality_analysis.json"
+        write_json_atomic(quality_path, quality_report)
         vision_report = analyze_scenes(
-            prepared_scenes,
-            self._vision_provider(settings.vision_model),
+            quality_report.scenes,
+            self._vision_provider(settings.vision_provider, settings.vision_model),
             settings.story_style,
             progress,
         )
         vision_path = context.artifacts_dir / "vision_analysis.json"
         write_json_atomic(vision_path, vision_report)
-        quality_report = (
-            analyze_scene_quality(vision_report.scenes)
-            if settings.quality_analysis
-            else QualityAnalysisReport(
-                created_at=vision_report.created_at,
-                scenes=vision_report.scenes,
-            )
+        descriptions = build_multimodal_descriptions(vision_report.scenes)
+        write_json_atomic(
+            context.artifacts_dir / "scene_descriptions.json",
+            descriptions,
         )
-        quality_path = context.artifacts_dir / "quality_analysis.json"
-        write_json_atomic(quality_path, quality_report)
+        event_report, event_scenes = detect_events(
+            vision_report.scenes,
+            report.assets,
+        )
+        events_path = context.artifacts_dir / "events.json"
+        write_json_atomic(events_path, event_report)
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
-        repository.synchronize_scenes(quality_report.scenes)
+        repository.synchronize_scenes(event_scenes)
+        repository.synchronize_events(event_report.events)
         plan = build_semantic_montage_plan(
             report.assets,
-            quality_report.scenes,
+            event_scenes,
             settings,
         )
         music_plan = self._build_music_plan(
             context,
             report,
-            quality_report.scenes,
+            event_scenes,
             settings,
             plan.total_duration_seconds,
         )
@@ -240,9 +263,22 @@ class TravelMovieService:
         write_json_atomic(context.artifacts_dir / "music_plan.json", music_plan)
         return music_plan
 
-    def _vision_provider(self, model: str | None = None) -> VisionProvider:
+    def _vision_provider(
+        self,
+        provider: str = "qwen",
+        model: str | None = None,
+    ) -> VisionProvider:
         if self._vision_provider_factory is not None:
             return self._vision_provider_factory(self.settings)
+        if provider == "florence":
+            return Florence2VisionProvider(
+                model=(
+                    model
+                    if model and model != "auto"
+                    else "microsoft/Florence-2-large"
+                ),
+                device=self.settings.device,
+            )
         resolved_model = model
         if not resolved_model:
             discovered = list_lm_studio_models(

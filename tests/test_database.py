@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from travelmovieai.domain.enums import MediaType
-from travelmovieai.domain.models import MediaAsset, Scene
+from travelmovieai.domain.enums import ActivityType, LocationType, MediaType
+from travelmovieai.domain.models import Event, MediaAsset, Scene
 from travelmovieai.infrastructure.database import MediaAssetRepository
 
 
@@ -56,3 +56,28 @@ def test_repository_persists_scenes_and_cascades_deleted_assets(tmp_path: Path) 
 
     assert stored == [scene]
     assert repository.list_scenes() == []
+
+
+def test_repository_persists_detected_events(tmp_path: Path) -> None:
+    repository = MediaAssetRepository(tmp_path / "project.db")
+    repository.initialize()
+    asset = _asset(tmp_path / "first.mp4", "first.mp4")
+    repository.synchronize([asset], datetime.now(UTC))
+    scene = Scene(asset_id=asset.id, start_seconds=0, end_seconds=2)
+    repository.synchronize_scenes([scene])
+    event = Event(
+        title="City Exploration",
+        scene_ids=[scene.id],
+        summary="Walking through the city.",
+        importance_score=84,
+        start_at=datetime(2026, 1, 1, tzinfo=UTC),
+        end_at=datetime(2026, 1, 1, 0, 0, 2, tzinfo=UTC),
+        location_type=LocationType.CITY,
+        activity=ActivityType.WALKING,
+        landmarks=["Old Town"],
+        confidence=0.9,
+    )
+
+    repository.synchronize_events([event])
+
+    assert repository.list_events() == [event]

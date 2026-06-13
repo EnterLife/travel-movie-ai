@@ -31,6 +31,7 @@ speech = [
   "faster-whisper>=1.1,<2",
 ]
 vision = [
+  "torch>=2.5,<3",
   "transformers>=4.48,<5",
 ]
 embeddings = [
@@ -50,6 +51,7 @@ all = [
   "opencv-python>=4.10,<5",
   "scenedetect>=0.6.5,<1",
   "sentence-transformers>=3.4,<4",
+  "torch>=2.5,<3",
   "transformers>=4.48,<5",
 ]
 

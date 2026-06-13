@@ -82,19 +82,20 @@ The canonical stage order is defined by `PipelineStage` and registered in
 1. Media scan.
 2. Scene detection.
 3. Frame sampling.
-4. Vision analysis.
-5. Visual quality analysis.
+4. Visual quality analysis.
+5. Vision analysis.
 6. Speech analysis.
 7. Audio analysis.
 8. Embeddings.
-9. Event detection.
-10. Story builder.
-11. Scene ranking.
-12. Music selection.
-13. Narration.
-14. Voice synthesis.
-15. Timeline builder.
-16. Rendering.
+9. Scene captioning.
+10. Event detection.
+11. Story builder.
+12. Scene ranking.
+13. Music selection.
+14. Narration.
+15. Voice synthesis.
+16. Timeline builder.
+17. Rendering.
 
 Do not reorder stages or change artifact contracts casually. When a stage
 contract changes, update its domain model, serialization, downstream consumers,

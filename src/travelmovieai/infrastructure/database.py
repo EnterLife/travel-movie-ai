@@ -20,8 +20,8 @@ from sqlalchemy import (
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from travelmovieai.domain.enums import MediaType
-from travelmovieai.domain.models import MediaAsset, Scene
+from travelmovieai.domain.enums import ActivityType, LocationType, MediaType
+from travelmovieai.domain.models import Event, MediaAsset, Scene
 
 
 class Base(DeclarativeBase):
@@ -68,6 +68,22 @@ class SceneRecord(Base):
     quality_score: Mapped[float | None] = mapped_column(Float)
     importance_score: Mapped[float | None] = mapped_column(Float)
     scene_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class EventRecord(Base):
+    __tablename__ = "events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    scene_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    importance_score: Mapped[float] = mapped_column(Float)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    location_type: Mapped[str] = mapped_column(String(32), index=True)
+    activity: Mapped[str] = mapped_column(String(32), index=True)
+    landmarks: Mapped[list[str]] = mapped_column(JSON, default=list)
+    confidence: Mapped[float] = mapped_column(Float)
 
 
 class MediaAssetRepository:
@@ -144,6 +160,34 @@ class MediaAssetRepository:
                 for scene in scenes
             )
 
+    def list_events(self) -> list[Event]:
+        with self._session_factory() as session:
+            records = session.query(EventRecord).order_by(
+                EventRecord.start_at,
+                EventRecord.title,
+            )
+            return [_record_to_event(record) for record in records]
+
+    def synchronize_events(self, events: Sequence[Event]) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(delete(EventRecord))
+            session.add_all(
+                EventRecord(
+                    id=str(event.id),
+                    title=event.title,
+                    scene_ids=[str(scene_id) for scene_id in event.scene_ids],
+                    summary=event.summary,
+                    importance_score=event.importance_score,
+                    start_at=event.start_at,
+                    end_at=event.end_at,
+                    location_type=event.location_type.value,
+                    activity=event.activity.value,
+                    landmarks=event.landmarks,
+                    confidence=event.confidence,
+                )
+                for event in events
+            )
+
 
 def _delete_missing_records(session: Session, seen_paths: set[str]) -> None:
     statement = delete(MediaAssetRecord)
@@ -205,6 +249,22 @@ def _record_to_scene(record: SceneRecord) -> Scene:
         quality_score=record.quality_score,
         importance_score=record.importance_score,
         metadata=record.scene_metadata or {},
+    )
+
+
+def _record_to_event(record: EventRecord) -> Event:
+    return Event(
+        id=UUID(record.id),
+        title=record.title,
+        scene_ids=[UUID(scene_id) for scene_id in record.scene_ids],
+        summary=record.summary,
+        importance_score=record.importance_score,
+        start_at=_ensure_aware(record.start_at) if record.start_at else None,
+        end_at=_ensure_aware(record.end_at) if record.end_at else None,
+        location_type=LocationType(record.location_type),
+        activity=ActivityType(record.activity),
+        landmarks=record.landmarks or [],
+        confidence=record.confidence,
     )
 
 

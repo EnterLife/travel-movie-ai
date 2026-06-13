@@ -26,6 +26,7 @@ const movieDuration = document.querySelector("#movie-duration");
 const clipDuration = document.querySelector("#clip-duration");
 const photoDuration = document.querySelector("#photo-duration");
 const storyStyle = document.querySelector("#story-style");
+const visionProvider = document.querySelector("#vision-provider");
 const visionModel = document.querySelector("#vision-model");
 const renderDevice = document.querySelector("#render-device");
 const transitionType = document.querySelector("#transition-type");
@@ -160,6 +161,10 @@ function capabilityChip(label, available) {
 }
 
 function populateModels(ai) {
+  if (visionProvider.value === "florence") {
+    populateFlorenceModels();
+    return;
+  }
   visionModel.replaceChildren();
   if (!ai.models.length) {
     visionModel.append(new Option(ai.configured_model || "Нет моделей", ai.configured_model));
@@ -171,6 +176,13 @@ function populateModels(ai) {
     option.selected = model.recommended;
     visionModel.append(option);
   }
+}
+
+function populateFlorenceModels() {
+  visionModel.replaceChildren(
+    new Option("microsoft/Florence-2-large", "microsoft/Florence-2-large", true, true),
+    new Option("microsoft/Florence-2-base", "microsoft/Florence-2-base"),
+  );
 }
 
 form.addEventListener("submit", async (event) => {
@@ -354,6 +366,7 @@ movieButton.addEventListener("click", async () => {
           photo_duration_seconds: Number(photoDuration.value),
           semantic_analysis: semanticAnalysis.checked,
           quality_analysis: qualityAnalysis.checked,
+          vision_provider: visionProvider.value,
           vision_model: visionModel.value || null,
           render_device: renderDevice.value,
           story_style: storyStyle.value,
@@ -571,6 +584,13 @@ function lastPathPart(value) {
 }
 
 refreshJobs.addEventListener("click", loadHistory);
+visionProvider.addEventListener("change", () => {
+  if (visionProvider.value === "florence") {
+    populateFlorenceModels();
+  } else {
+    loadCapabilities();
+  }
+});
 musicMode.addEventListener("change", () => {
   musicPath.disabled = musicMode.value !== "manual";
   musicProfile.disabled = ["manual", "library", "none"].includes(musicMode.value);

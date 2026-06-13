@@ -238,6 +238,10 @@ Frame Sampling
 
 ↓
 
+Visual Quality Analysis (OpenCV)
+
+↓
+
 Vision AI Analysis
 
 ↓
@@ -251,6 +255,10 @@ Audio Analysis
 ↓
 
 Embeddings
+
+↓
+
+Scene Captioning
 
 ↓
 
@@ -345,7 +353,23 @@ frames/
 
 ---
 
-## Stage 4. Vision AI Analysis
+## Stage 4. Visual Quality Analysis
+
+OpenCV-based metrics are calculated before Vision AI:
+
+* blur/sharpness;
+* brightness;
+* contrast;
+* saturation and colorfulness;
+* later: noise, motion, and camera shake.
+
+These metrics describe technical quality only. They must not be used for
+semantic scene interpretation. The normalized quality score is passed into
+Stage 4.5 as one factor of the final visual importance score.
+
+---
+
+## Stage 4.5. Vision AI Analysis
 
 IMPORTANT:
 
@@ -388,11 +412,25 @@ Example:
 
 ```json
 {
-  "caption": "Family walking on a beach during sunset",
+  "caption": "A family walking on a beach during sunset.",
+  "detailed_description": "Three chronological frames show a family continuing a sunset walk along the shoreline.",
   "location_type": "beach",
   "activity": "walking",
   "emotion": "relaxing",
-  "people_count": 4
+  "people_count": 4,
+  "people_groups": ["family", "adults", "children"],
+  "landmarks": [],
+  "vision_score": 82,
+  "score_factors": {
+    "uniqueness": 70,
+    "people": 85,
+    "emotion": 80,
+    "visual_quality": 76,
+    "landmark": 0,
+    "unusual_event": 35
+  },
+  "story_relevance": "A warm family moment suitable for the middle of the film.",
+  "tags": ["family", "beach", "sunset"]
 }
 ```
 
@@ -463,6 +501,10 @@ Output:
 
 0–100 score
 
+The application recomputes the final score from validated model factors and
+the measured OpenCV quality. Provider, model, prompt/schema version and cache
+key must be persisted with the result.
+
 ---
 
 ### Event Clustering
@@ -487,28 +529,7 @@ Event: Arrival Day
 
 ---
 
-## Stage 5. Visual Quality Analysis
-
-OpenCV-based metrics.
-
-Calculate:
-
-* blur score
-* brightness
-* contrast
-* noise
-* motion
-* camera shake
-
-Purpose:
-
-quality ranking only.
-
-Not scene understanding.
-
----
-
-## Stage 6. Speech Analysis
+## Stage 5. Speech Analysis
 
 Use Faster Whisper.
 
@@ -522,7 +543,7 @@ Store per scene.
 
 ---
 
-## Stage 7. Audio Analysis
+## Stage 6. Audio Analysis
 
 Detect:
 
@@ -537,7 +558,7 @@ Generate audio importance score.
 
 ---
 
-## Stage 8. Embeddings
+## Stage 7. Embeddings
 
 Generate embeddings for:
 
@@ -555,6 +576,21 @@ Tasks:
 * duplicate detection
 * similarity search
 * clustering
+
+---
+
+## Stage 8. Scene Captioning
+
+Build a validated multimodal description per scene from:
+
+* Vision AI caption and detailed description;
+* Whisper transcript when available;
+* OpenCV quality metrics;
+* audio context when available.
+
+Output:
+
+scene_descriptions.json
 
 ---
 
@@ -837,15 +873,20 @@ report.html
 
 Current implementation note:
 
-* `scenes.json`, start/middle/end contact sheets, `vision_analysis.json`, and
-  `quality_analysis.json` are available;
-* local Qwen-compatible semantic analysis runs through LM Studio;
+* `scenes.json`, `frame_sampling.json`, start/middle/end contact sheets,
+  `quality_analysis.json`, and `vision_analysis.json` are available;
+* local Qwen-compatible semantic analysis runs through LM Studio; Florence-2
+  can run directly from a preloaded local model cache;
+* strict scene understanding includes detailed descriptions, people groups,
+  landmarks, score factors, story relevance, and versioned cache metadata;
+* `scene_descriptions.json`, `events.json`, event persistence in SQLite, and
+  event-aware scene ranking are available;
 * the web interface discovers loaded LM Studio models and CUDA/NVENC;
 * scene ranking, OpenCV-guided generated music, ducking, transitions,
   CUDA rendering, `music_plan.json`, `quick_timeline.json`, and `final.mp4`
   are available;
-* event clustering, multimodal Story Builder, narration, subtitles, and full
-  quality-aware ranking are not yet implemented.
+* full storyboard generation, narration, subtitles, duplicate detection, and
+  manual scene/event editing are not yet implemented.
 
 ---
 

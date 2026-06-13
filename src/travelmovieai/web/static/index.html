@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>TravelMovieAI</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="background-glow background-glow-one"></div>
+    <div class="background-glow background-glow-two"></div>
+
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="TravelMovieAI">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span>
+          </span>
+          <span>
+            <strong>TravelMovieAI</strong>
+            <small>Локальная медиатека путешествий</small>
+          </span>
+        </a>
+
+        <div class="server-state" id="server-state">
+          <span class="server-dot"></span>
+          <span>Проверка сервера</span>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div class="eyebrow">MEDIA SCAN / STAGE 01</div>
+        <h1>Соберите поездку<br>в один понятный проект</h1>
+        <p>
+          Укажите папку с видео и фотографиями. TravelMovieAI локально
+          проиндексирует материалы, извлечёт метаданные и подготовит проект
+          к следующим этапам монтажа.
+        </p>
+      </section>
+
+      <section class="workspace-grid">
+        <article class="panel form-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-number">01</span>
+              <h2>Новый анализ</h2>
+            </div>
+            <span class="privacy-badge">Только локально</span>
+          </div>
+
+          <form id="scan-form">
+            <label for="input-path">
+              Папка с материалами
+              <span>обязательно</span>
+            </label>
+            <div class="field-shell">
+              <span class="field-icon" aria-hidden="true">↳</span>
+              <input
+                id="input-path"
+                name="input_path"
+                type="text"
+                placeholder="D:\Vacation\Japan2026"
+                autocomplete="off"
+                required
+              >
+            </div>
+            <p class="field-help">
+              Вставьте полный путь. Вложенные папки будут просканированы автоматически.
+            </p>
+
+            <label for="workspace">
+              Workspace
+              <span>необязательно</span>
+            </label>
+            <div class="field-shell">
+              <span class="field-icon" aria-hidden="true">◇</span>
+              <input
+                id="workspace"
+                name="workspace"
+                type="text"
+                placeholder="D:\TravelMovieAI\Japan2026"
+                autocomplete="off"
+              >
+            </div>
+            <p class="field-help">
+              Здесь появятся SQLite-база, JSON-отчёт и будущие артефакты проекта.
+            </p>
+
+            <button class="primary-button" id="submit-button" type="submit">
+              <span>Запустить анализ</span>
+              <span class="button-arrow" aria-hidden="true">→</span>
+            </button>
+          </form>
+
+          <div class="error-box hidden" id="error-box" role="alert"></div>
+        </article>
+
+        <aside class="panel process-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-number">02</span>
+              <h2>Текущий процесс</h2>
+            </div>
+          </div>
+
+          <div class="empty-state" id="empty-state">
+            <div class="orbit" aria-hidden="true">
+              <div class="orbit-core"></div>
+            </div>
+            <h3>Ожидает материалы</h3>
+            <p>После запуска здесь появится прогресс и итоговая статистика.</p>
+          </div>
+
+          <div class="job-state hidden" id="job-state">
+            <div class="job-status-line">
+              <span class="status-chip" id="status-chip">В очереди</span>
+              <span class="job-time" id="job-time">00:00</span>
+            </div>
+            <h3 id="job-title">Подготовка задания</h3>
+            <p id="job-message">Задание ожидает запуска.</p>
+            <div class="progress-track">
+              <span id="progress-bar"></span>
+            </div>
+            <dl class="path-summary">
+              <div>
+                <dt>Источник</dt>
+                <dd id="source-summary">—</dd>
+              </div>
+              <div>
+                <dt>Workspace</dt>
+                <dd id="workspace-summary">—</dd>
+              </div>
+            </dl>
+          </div>
+        </aside>
+      </section>
+
+      <section class="results hidden" id="results">
+        <div class="results-heading">
+          <div>
+            <span class="section-number">03</span>
+            <h2>Результат сканирования</h2>
+          </div>
+          <button class="secondary-button" id="new-scan-button" type="button">
+            Новый анализ
+          </button>
+        </div>
+
+        <div class="stats-grid">
+          <article class="stat-card">
+            <span>Найдено</span>
+            <strong id="stat-discovered">0</strong>
+            <small>поддерживаемых файлов</small>
+          </article>
+          <article class="stat-card">
+            <span>Проверено</span>
+            <strong id="stat-probed">0</strong>
+            <small>через FFprobe</small>
+          </article>
+          <article class="stat-card">
+            <span>Из кэша</span>
+            <strong id="stat-cached">0</strong>
+            <small>без повторной обработки</small>
+          </article>
+          <article class="stat-card accent-card">
+            <span>Ошибки</span>
+            <strong id="stat-errors">0</strong>
+            <small>требуют внимания</small>
+          </article>
+        </div>
+
+        <article class="panel files-panel">
+          <div class="files-toolbar">
+            <div>
+              <h3>Медиатека</h3>
+              <p id="files-caption">Файлы текущего проекта</p>
+            </div>
+            <input
+              id="file-filter"
+              class="filter-input"
+              type="search"
+              placeholder="Поиск по имени..."
+            >
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Файл</th>
+                  <th>Тип</th>
+                  <th>Размер</th>
+                  <th>Длительность</th>
+                  <th>Разрешение</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody id="files-body"></tbody>
+            </table>
+          </div>
+          <p class="table-note hidden" id="table-note"></p>
+        </article>
+      </section>
+
+      <footer>
+        <span>TravelMovieAI · локальный режим</span>
+        <a href="/api/docs" target="_blank" rel="noreferrer">API</a>
+      </footer>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

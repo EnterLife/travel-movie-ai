@@ -16,6 +16,7 @@ pipeline must remain usable without a GUI.
 
 - Runtime: Python 3.12+.
 - CLI: Typer.
+- Local web UI: FastAPI, Uvicorn, and package-local HTML/CSS/JavaScript.
 - Configuration and schemas: Pydantic and Pydantic Settings.
 - Storage: SQLite and SQLAlchemy.
 - Video processing: FFmpeg, FFprobe, PySceneDetect, and OpenCV.
@@ -33,6 +34,9 @@ initializing model-heavy dependencies.
 ## Repository Structure
 
 - `src/travelmovieai/cli.py` - Typer commands and CLI option definitions.
+- `main.py` - repository entry point for the local web server.
+- `scripts/run_web.bat` - one-click Windows environment bootstrap and web launch.
+- `src/travelmovieai/web/` - HTTP API, background jobs, and static web interface.
 - `src/travelmovieai/core/` - settings and shared exceptions.
 - `src/travelmovieai/domain/` - stable enums and Pydantic data contracts.
 - `src/travelmovieai/application/` - use cases and per-project execution context.

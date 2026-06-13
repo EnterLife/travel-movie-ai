@@ -32,6 +32,16 @@ class TravelMovieService:
         )
         return PipelineRunner(build_default_pipeline()).run_until(context, PipelineStage.RENDERING)
 
+    def analyze(self, *, input_path: Path, workspace: Path | None) -> StageResult:
+        return self.run_until(
+            PipelineStage.MEDIA_SCAN,
+            input_path=input_path,
+            workspace=workspace,
+        )
+
+    def resolve_workspace(self, input_path: Path, workspace: Path | None) -> Path:
+        return (workspace or self.settings.workspace / input_path.name).resolve()
+
     def run_until(
         self,
         target: PipelineStage,
@@ -72,7 +82,7 @@ class TravelMovieService:
         style: StoryStyle = StoryStyle.CINEMATIC,
         cloud: bool = False,
     ) -> ProjectContext:
-        project_workspace = workspace or self.settings.workspace / input_path.name
+        project_workspace = self.resolve_workspace(input_path, workspace)
         return ProjectContext(
             input_path=input_path,
             workspace=project_workspace,

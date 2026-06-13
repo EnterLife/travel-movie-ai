@@ -13,11 +13,13 @@ authors = [
   { name = "TravelMovieAI contributors" },
 ]
 dependencies = [
+  "fastapi>=0.115,<1",
   "pillow>=11,<12",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
   "sqlalchemy>=2.0,<3",
   "typer>=0.15,<1",
+  "uvicorn[standard]>=0.34,<1",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +38,7 @@ embeddings = [
   "sentence-transformers>=3.4,<4",
 ]
 dev = [
+  "httpx>=0.28,<1",
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
@@ -52,9 +55,17 @@ all = [
 
 [project.scripts]
 travelmovieai = "travelmovieai.cli:app"
+travelmovieai-web = "travelmovieai.web.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/travelmovieai"]
+
+[tool.hatch.build]
+include = [
+  "src/travelmovieai/**/*.py",
+  "src/travelmovieai/py.typed",
+  "src/travelmovieai/web/static/*",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"

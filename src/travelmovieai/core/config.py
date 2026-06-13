@@ -31,3 +31,5 @@ class Settings(BaseSettings):
     cloud_enabled: bool = False
     batch_size: int = Field(default=8, ge=1)
     workers: int = Field(default=4, ge=1)
+    web_host: str = "127.0.0.1"
+    web_port: int = Field(default=8000, ge=1, le=65535)

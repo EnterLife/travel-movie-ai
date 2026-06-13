@@ -19,6 +19,8 @@ Implemented:
 - incremental SQLite indexing;
 - atomic `analysis.json` generation;
 - CLI command `travelmovieai analyze`;
+- local web interface with background scan jobs;
+- one-click Windows launcher in `scripts\run_web.bat`;
 - Windows paths containing spaces and Unicode characters.
 
 Not implemented yet:
@@ -45,36 +47,49 @@ Media Scan stage.
 
 ## Quick Start
 
-Open PowerShell in the repository directory:
+Install Python 3.12+ and FFmpeg, then run:
 
 ```powershell
 Set-Location C:\Users\bdo\travel-movie-ai
+.\scripts\run_web.bat
 ```
 
-Create and activate a virtual environment:
+You can also double-click `scripts\run_web.bat` in Explorer.
+
+On the first launch, the script:
+
+- creates `.venv`;
+- installs the base project dependencies;
+- starts the server at `http://127.0.0.1:8000`;
+- opens the interface in the default browser.
+
+Paste the full path to the media folder, optionally set a workspace, and click
+`Запустить анализ`.
+
+Stop the server with `Ctrl+C` or close its console window.
+
+## Manual Server Launch
+
+After installing the project, start the interface with:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+python main.py
 ```
 
-Install TravelMovieAI:
+Options:
 
 ```powershell
-python -m pip install --upgrade pip
-python -m pip install -e .
+python main.py --port 8080
+python main.py --no-browser
+travelmovieai-web --host 127.0.0.1 --port 8000
 ```
 
-Verify Python, FFmpeg, and the CLI:
+The server binds to `127.0.0.1` by default. API documentation is available at
+`http://127.0.0.1:8000/api/docs`.
 
-```powershell
-python --version
-ffmpeg -version
-ffprobe -version
-travelmovieai --help
-```
+## CLI Usage
 
-Scan a media folder:
+The original CLI remains available:
 
 ```powershell
 travelmovieai analyze `
@@ -82,7 +97,7 @@ travelmovieai analyze `
   --workspace "D:\TravelMovieAI\Japan2026"
 ```
 
-The command creates:
+Both the web interface and CLI create:
 
 ```text
 D:\TravelMovieAI\Japan2026\
@@ -161,7 +176,9 @@ The default Media Scan setup usually needs no changes. Important settings:
 - `TRAVELMOVIEAI_FFMPEG_BINARY`: FFmpeg executable name or full path;
 - `TRAVELMOVIEAI_FFPROBE_BINARY`: FFprobe executable name or full path;
 - `TRAVELMOVIEAI_WORKERS`: worker limit reserved for processing stages;
-- `TRAVELMOVIEAI_BATCH_SIZE`: batch size reserved for processing stages.
+- `TRAVELMOVIEAI_BATCH_SIZE`: batch size reserved for processing stages;
+- `TRAVELMOVIEAI_WEB_HOST`: local web server host;
+- `TRAVELMOVIEAI_WEB_PORT`: local web server port.
 
 Do not commit `.env`, model files, source media, databases, caches, or rendered
 movies.

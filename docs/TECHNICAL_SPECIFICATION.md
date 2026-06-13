@@ -211,7 +211,8 @@ Cloud:
 
 MVP:
 
-CLI
+* CLI
+* Local web interface
 
 Future:
 

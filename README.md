@@ -21,6 +21,8 @@ Implemented:
 - CLI command `travelmovieai analyze`;
 - local web interface with background scan jobs;
 - persistent web job history and workspace conflict protection;
+- one-click quick montage from videos and photos;
+- H.264/AAC MP4 preview and download from the web interface;
 - one-click Windows launcher in `scripts\run_web.bat`;
 - Windows paths containing spaces and Unicode characters.
 
@@ -30,11 +32,12 @@ Not implemented yet:
 - vision, speech, audio, and quality analysis;
 - embeddings and duplicate detection;
 - event grouping and storyboard generation;
-- music, narration, timeline creation, and rendering;
+- AI-directed scene selection, music, narration, and transitions;
 - HTML report generation.
 
-The commands `create`, `storyboard`, `render`, and `report` are reserved in the
-CLI, but they do not yet create their final artifacts.
+The web interface and `travelmovieai create` can already produce a chronological
+quick montage. The `storyboard`, advanced `render`, and `report` commands remain
+reserved for later pipeline stages.
 
 ## Requirements
 
@@ -67,6 +70,13 @@ On the first launch, the script:
 Paste the full path to the media folder, optionally set a workspace, and click
 `Запустить анализ`.
 
+After the scan:
+
+1. Adjust the target movie duration and clip limits.
+2. Click `Собрать фильм`.
+3. Wait for FFmpeg rendering.
+4. Preview or download the generated MP4.
+
 Stop the server with `Ctrl+C` or close its console window.
 
 ## Manual Server Launch
@@ -98,7 +108,16 @@ travelmovieai analyze `
   --workspace "D:\TravelMovieAI\Japan2026"
 ```
 
-Both the web interface and CLI create:
+Create a quick montage directly from CLI:
+
+```powershell
+travelmovieai create `
+  --input "D:\Vacation\Japan2026" `
+  --workspace "D:\TravelMovieAI\Japan2026" `
+  --output "D:\Movies\Japan2026.mp4"
+```
+
+The web interface and CLI create:
 
 ```text
 D:\TravelMovieAI\Japan2026\
@@ -106,10 +125,28 @@ D:\TravelMovieAI\Japan2026\
 ├── frames\
 ├── cache\
 └── artifacts\
-    └── analysis.json
+    ├── analysis.json
+    ├── quick_timeline.json
+    └── final.mp4
 ```
 
 Run the same command again to reuse cached metadata for unchanged files.
+
+## Quick Montage Behavior
+
+The current movie builder:
+
+- orders usable videos and photos chronologically;
+- takes a centered excerpt from long videos;
+- displays photos for a configurable duration;
+- skips files with scan errors;
+- normalizes all clips to a shared H.264/AAC profile;
+- adds silent audio when a source has no audio track;
+- writes `quick_timeline.json` before rendering;
+- creates `artifacts/final.mp4`.
+
+It does not yet understand scene meaning, remove duplicates, select music, add
+transitions, or make AI story decisions.
 
 ## Supported Media
 

@@ -50,6 +50,10 @@ workspace/.web/jobs.json
 
 Приоритет: следующий после этапа 1.
 
+Текущий промежуточный результат: реализован Quick Montage, который создаёт
+хронологический MP4 напрямую из Media Scan. Он обеспечивает рабочую основную
+функцию продукта, но не заменяет Scene Detection и AI Director.
+
 Задачи:
 
 - таблица `scenes` в SQLite;
@@ -199,6 +203,9 @@ workspace/.web/jobs.json
 ## Этап 10. Timeline, music и rendering
 
 Приоритет: финальный MVP.
+
+Статус: частично реализован Quick Montage renderer без AI-story, музыки,
+переходов и субтитров.
 
 Задачи:
 

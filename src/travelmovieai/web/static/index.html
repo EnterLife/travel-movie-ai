@@ -178,6 +178,70 @@
           </article>
         </div>
 
+        <article class="panel movie-panel">
+          <div class="movie-panel-copy">
+            <span class="section-number">04</span>
+            <h3>Собрать быстрый фильм</h3>
+            <p>
+              TravelMovieAI выберет материалы по времени съёмки, укоротит длинные
+              видео, добавит фотографии и создаст готовый MP4.
+            </p>
+          </div>
+
+          <div class="movie-settings">
+            <label for="movie-duration">
+              Длительность фильма
+              <span>секунды</span>
+            </label>
+            <input id="movie-duration" type="number" min="5" max="3600" value="90">
+
+            <label for="clip-duration">
+              Максимум одного видео
+              <span>секунды</span>
+            </label>
+            <input id="clip-duration" type="number" min="1" max="60" value="6">
+
+            <label for="photo-duration">
+              Показ фотографии
+              <span>секунды</span>
+            </label>
+            <input id="photo-duration" type="number" min="1" max="15" value="3">
+          </div>
+
+          <div class="movie-actions">
+            <button class="primary-button movie-button" id="movie-button" type="button">
+              <span>Собрать фильм</span>
+              <span class="button-arrow" aria-hidden="true">▶</span>
+            </button>
+            <p id="movie-hint">Результат появится в workspace/artifacts/final.mp4</p>
+          </div>
+        </article>
+
+        <article class="panel movie-progress hidden" id="movie-progress">
+          <div>
+            <span class="status-chip running" id="movie-status">Монтаж</span>
+            <h3 id="movie-progress-title">Подготовка фильма</h3>
+            <p id="movie-progress-message">Задание ожидает запуска.</p>
+          </div>
+          <div class="movie-progress-meter">
+            <span id="movie-progress-bar"></span>
+          </div>
+        </article>
+
+        <article class="panel movie-result hidden" id="movie-result">
+          <div class="movie-result-heading">
+            <div>
+              <span class="section-number">ГОТОВО</span>
+              <h3>Ваш фильм собран</h3>
+              <p id="movie-result-summary"></p>
+            </div>
+            <a class="download-button" id="movie-download" href="#" download>
+              Скачать MP4
+            </a>
+          </div>
+          <video id="movie-preview" controls preload="metadata"></video>
+        </article>
+
         <article class="panel files-panel">
           <div class="files-toolbar">
             <div>

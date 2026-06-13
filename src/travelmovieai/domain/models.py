@@ -82,6 +82,39 @@ class Timeline(BaseModel):
     narration_path: Path | None = None
 
 
+class QuickMontageSettings(BaseModel):
+    target_duration_seconds: float = Field(default=90, ge=5, le=3600)
+    max_video_clip_seconds: float = Field(default=6, ge=1, le=60)
+    photo_duration_seconds: float = Field(default=3, ge=1, le=15)
+    width: int = Field(default=1280, ge=320, le=3840)
+    height: int = Field(default=720, ge=240, le=2160)
+    fps: int = Field(default=30, ge=15, le=60)
+
+
+class MontageClip(BaseModel):
+    asset_id: UUID
+    source_path: Path
+    relative_path: Path
+    media_type: MediaType
+    source_start_seconds: float = Field(default=0, ge=0)
+    duration_seconds: float = Field(gt=0)
+    has_audio: bool = False
+
+
+class QuickMontagePlan(BaseModel):
+    created_at: datetime
+    settings: QuickMontageSettings
+    clips: list[MontageClip] = Field(default_factory=list)
+    total_duration_seconds: float = Field(default=0, ge=0)
+
+
+class QuickMontageResult(BaseModel):
+    output_path: Path
+    timeline_path: Path
+    clip_count: int
+    duration_seconds: float
+
+
 class StageResult(BaseModel):
     stage: PipelineStage
     skipped: bool = False

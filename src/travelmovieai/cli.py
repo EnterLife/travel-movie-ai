@@ -64,10 +64,22 @@ def create(
         typer.Option("--output", "-o", dir_okay=False, resolve_path=True),
     ],
     workspace: WorkspaceOption = None,
-    style: Annotated[StoryStyle, typer.Option(case_sensitive=False)] = StoryStyle.CINEMATIC,
-    cloud: Annotated[bool, typer.Option("--cloud", help="Allow optional cloud providers.")] = False,
+    style: Annotated[
+        StoryStyle,
+        typer.Option(
+            case_sensitive=False,
+            help="Reserved for the future AI story pipeline.",
+        ),
+    ] = StoryStyle.CINEMATIC,
+    cloud: Annotated[
+        bool,
+        typer.Option(
+            "--cloud",
+            help="Reserved for future optional cloud providers.",
+        ),
+    ] = False,
 ) -> None:
-    """Run the complete analysis, story, timeline, and rendering pipeline."""
+    """Create the currently available chronological quick montage."""
     _run(
         lambda: _service().create(
             input_path=input_path,

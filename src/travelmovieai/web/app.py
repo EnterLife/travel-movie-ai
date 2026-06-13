@@ -16,9 +16,12 @@ from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusy
 from travelmovieai.domain.models import MediaScanReport
 from travelmovieai.infrastructure.system import ExecutableStatus, check_executable
 from travelmovieai.web.jobs import ScanJobManager
+from travelmovieai.web.movie_jobs import MovieJobManager
 from travelmovieai.web.schemas import (
     DependencyStatus,
     HealthResponse,
+    MovieJobResponse,
+    MovieRequest,
     ScanJobHistory,
     ScanJobResponse,
     ScanRequest,
@@ -30,19 +33,23 @@ STATIC_DIR = Path(__file__).with_name("static")
 def create_app(
     settings: Settings | None = None,
     job_manager: ScanJobManager | None = None,
+    movie_job_manager: MovieJobManager | None = None,
     executable_checker: Callable[[str], ExecutableStatus] = check_executable,
 ) -> FastAPI:
     resolved_settings = settings or Settings()
+    service = TravelMovieService(resolved_settings)
     manager = job_manager or ScanJobManager(
-        TravelMovieService(resolved_settings),
+        service,
         state_path=resolved_settings.workspace.resolve() / ".web" / "jobs.json",
         history_limit=resolved_settings.web_history_limit,
     )
+    movie_manager = movie_job_manager or MovieJobManager(service)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
         manager.shutdown()
+        movie_manager.shutdown()
 
     app = FastAPI(
         title="TravelMovieAI",
@@ -52,6 +59,7 @@ def create_app(
         redoc_url=None,
     )
     app.state.job_manager = manager
+    app.state.movie_job_manager = movie_manager
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
@@ -80,7 +88,10 @@ def create_app(
         )
         manager_from_app = _manager(request)
         try:
-            return manager_from_app.submit(Path(payload.input_path), workspace)
+            paths = manager_from_app.resolve_project_paths(Path(payload.input_path), workspace)
+            if _movie_manager(request).is_workspace_active(paths.workspace):
+                raise WorkspaceBusyError("Для этого workspace уже выполняется монтаж фильма.")
+            return manager_from_app.submit(paths.input_path, paths.workspace)
         except InvalidProjectPathError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except WorkspaceBusyError as error:
@@ -113,9 +124,58 @@ def create_app(
             raise HTTPException(status_code=409, detail="Результат ещё не готов.")
         return report
 
+    @app.post(
+        "/api/movies",
+        response_model=MovieJobResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def create_movie(payload: MovieRequest, request: Request) -> MovieJobResponse:
+        workspace = (
+            Path(payload.workspace) if payload.workspace and payload.workspace.strip() else None
+        )
+        movie_manager_from_app = _movie_manager(request)
+        try:
+            paths = movie_manager_from_app.resolve_project_paths(
+                Path(payload.input_path), workspace
+            )
+            if _manager(request).is_workspace_active(paths.workspace):
+                raise WorkspaceBusyError("Для этого workspace уже выполняется анализ медиатеки.")
+            return movie_manager_from_app.submit(
+                paths.input_path,
+                paths.workspace,
+                payload.settings,
+            )
+        except InvalidProjectPathError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except WorkspaceBusyError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/api/movies/{job_id}", response_model=MovieJobResponse)
+    def get_movie(job_id: UUID, request: Request) -> MovieJobResponse:
+        job = _movie_manager(request).get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+        return job
+
+    @app.get("/api/movies/{job_id}/download", response_class=FileResponse)
+    def download_movie(job_id: UUID, request: Request) -> FileResponse:
+        output_path = _movie_manager(request).output_path(job_id)
+        if output_path is None or not output_path.is_file():
+            raise HTTPException(status_code=409, detail="Фильм ещё не готов.")
+        return FileResponse(
+            output_path,
+            media_type="video/mp4",
+            filename=output_path.name,
+        )
+
     return app
 
 
 def _manager(request: Request) -> ScanJobManager:
     manager: ScanJobManager = request.app.state.job_manager
+    return manager
+
+
+def _movie_manager(request: Request) -> MovieJobManager:
+    manager: MovieJobManager = request.app.state.movie_job_manager
     return manager

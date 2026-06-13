@@ -103,6 +103,10 @@ class ScanJobManager:
             )
             return [_to_response(job) for job in jobs[:limit]]
 
+    def is_workspace_active(self, workspace: Path) -> bool:
+        with self._lock:
+            return self._workspace_is_active(workspace)
+
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=False)
 

@@ -13,11 +13,17 @@ from travelmovieai.application.validation import (
 )
 from travelmovieai.core.exceptions import WorkspaceBusyError
 from travelmovieai.domain.enums import PipelineStage
-from travelmovieai.domain.models import MediaScanReport, StageResult
+from travelmovieai.domain.models import (
+    MediaScanReport,
+    QuickMontageResult,
+    QuickMontageSettings,
+    StageResult,
+)
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.system import ExecutableStatus
 from travelmovieai.web.app import create_app
 from travelmovieai.web.jobs import ScanJobManager
+from travelmovieai.web.movie_jobs import MovieJobManager
 from travelmovieai.web.schemas import JobStatus, ScanJobHistory, ScanJobResponse
 
 
@@ -52,6 +58,32 @@ class BlockingScanService(FakeScanService):
         self.started.set()
         self.release.wait(timeout=5)
         return super().analyze(input_path=input_path, workspace=workspace)
+
+
+class FakeMovieService(FakeScanService):
+    def create_quick_montage(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        settings: QuickMontageSettings,
+        output_path: Path | None = None,
+        progress: object | None = None,
+    ) -> QuickMontageResult:
+        assert workspace is not None
+        movie_path = workspace / "artifacts" / "final.mp4"
+        movie_path.parent.mkdir(parents=True, exist_ok=True)
+        movie_path.write_bytes(b"fake mp4")
+        timeline_path = workspace / "artifacts" / "quick_timeline.json"
+        timeline_path.write_text("{}", encoding="utf-8")
+        if callable(progress):
+            progress(1, 1, "Фильм готов")
+        return QuickMontageResult(
+            output_path=movie_path,
+            timeline_path=timeline_path,
+            clip_count=3,
+            duration_seconds=settings.target_duration_seconds,
+        )
 
 
 def test_web_interface_serves_page_and_health() -> None:
@@ -135,6 +167,36 @@ def test_web_scan_rejects_invalid_paths(tmp_path: Path) -> None:
 
     assert missing_response.status_code == 400
     assert unsafe_workspace.status_code == 400
+
+
+def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    workspace = tmp_path / "workspace"
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(FakeMovieService()),
+        )
+    ) as client:
+        response = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "workspace": str(workspace),
+                "settings": {"target_duration_seconds": 12},
+            },
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = _wait_for_movie_job(client, job_id)
+        download = client.get(f"/api/movies/{job_id}/download")
+
+    assert job["status"] == "completed"
+    assert job["clip_count"] == 3
+    assert download.status_code == 200
+    assert download.content == b"fake mp4"
 
 
 def test_job_manager_rejects_active_workspace(tmp_path: Path) -> None:
@@ -252,3 +314,13 @@ def _wait_for_manager_job(manager: ScanJobManager, job_id: UUID) -> ScanJobRespo
             return job
         time.sleep(0.01)
     raise AssertionError("Scan job did not finish")
+
+
+def _wait_for_movie_job(client: TestClient, job_id: str) -> dict[str, object]:
+    for _ in range(100):
+        response = client.get(f"/api/movies/{job_id}")
+        payload: dict[str, object] = response.json()
+        if payload["status"] in {"completed", "failed"}:
+            return payload
+        time.sleep(0.01)
+    raise AssertionError("Movie job did not finish")

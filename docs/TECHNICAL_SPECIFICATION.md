@@ -835,6 +835,12 @@ final.mp4
 
 report.html
 
+Current implementation note:
+
+* `quick_timeline.json` and `final.mp4` are available through Quick Montage;
+* Quick Montage uses chronological selection and is not yet the full AI Director
+  pipeline described in this specification.
+
 ---
 
 # 10. Performance Requirements

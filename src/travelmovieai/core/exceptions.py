@@ -23,3 +23,7 @@ class InvalidProjectPathError(TravelMovieError):
 
 class WorkspaceBusyError(TravelMovieError):
     """Raised when another active job already owns a workspace."""
+
+
+class MontageError(TravelMovieError):
+    """Raised when a quick montage cannot be planned or rendered."""

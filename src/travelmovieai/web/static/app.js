@@ -21,12 +21,27 @@ const serverState = document.querySelector("#server-state");
 const recentJobs = document.querySelector("#recent-jobs");
 const recentJobsList = document.querySelector("#recent-jobs-list");
 const refreshJobs = document.querySelector("#refresh-jobs");
+const movieButton = document.querySelector("#movie-button");
+const movieDuration = document.querySelector("#movie-duration");
+const clipDuration = document.querySelector("#clip-duration");
+const photoDuration = document.querySelector("#photo-duration");
+const movieProgress = document.querySelector("#movie-progress");
+const movieStatus = document.querySelector("#movie-status");
+const movieProgressTitle = document.querySelector("#movie-progress-title");
+const movieProgressMessage = document.querySelector("#movie-progress-message");
+const movieProgressBar = document.querySelector("#movie-progress-bar");
+const movieResult = document.querySelector("#movie-result");
+const movieResultSummary = document.querySelector("#movie-result-summary");
+const movieDownload = document.querySelector("#movie-download");
+const moviePreview = document.querySelector("#movie-preview");
 
 let currentJob = null;
 let currentAssets = [];
 let startedAt = null;
 let timerId = null;
 let serverReady = false;
+let movieReady = false;
+let currentMovieJob = null;
 
 const statusLabels = {
   queued: "В очереди",
@@ -58,6 +73,7 @@ async function checkHealth() {
   try {
     const health = await requestJson("/api/health");
     serverReady = health.ready;
+    movieReady = health.ffmpeg.available && health.ffprobe.available;
     serverState.classList.toggle("online", health.ready);
     serverState.classList.toggle("offline", !health.ready);
     serverState.querySelector("span:last-child").textContent = health.ready
@@ -66,6 +82,7 @@ async function checkHealth() {
         : "FFmpeg требует настройки"
       : "FFprobe не найден";
     submitButton.disabled = !health.ready;
+    movieButton.disabled = !movieReady;
     if (!health.ready) {
       showError(
         health.ffprobe.error ||
@@ -74,10 +91,12 @@ async function checkHealth() {
     }
   } catch (error) {
     serverReady = false;
+    movieReady = false;
     serverState.classList.add("offline");
     serverState.classList.remove("online");
     serverState.querySelector("span:last-child").textContent = "Нет связи";
     submitButton.disabled = true;
+    movieButton.disabled = true;
     showError(error.message);
   }
 }
@@ -226,8 +245,102 @@ function showResults(report) {
   document.querySelector("#files-caption").textContent =
     `${report.discovered_count} файлов · ${formatDate(report.scanned_at)}`;
   results.classList.remove("hidden");
+  movieButton.disabled = !movieReady;
   renderFiles(currentAssets);
   results.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+movieButton.addEventListener("click", async () => {
+  if (!currentJob || currentJob.status !== "completed") {
+    showError("Сначала завершите анализ медиатеки.");
+    return;
+  }
+  if (!movieReady) {
+    showError("Для монтажа требуется FFmpeg.");
+    return;
+  }
+
+  hideError();
+  movieResult.classList.add("hidden");
+  movieProgress.classList.remove("hidden");
+  movieButton.disabled = true;
+  movieStatus.textContent = "В очереди";
+  movieStatus.className = "status-chip running";
+  movieProgressTitle.textContent = "Подготовка фильма";
+  movieProgressMessage.textContent = "Монтаж ожидает запуска.";
+  movieProgressBar.style.width = "2%";
+
+  try {
+    currentMovieJob = await requestJson("/api/movies", {
+      method: "POST",
+      body: JSON.stringify({
+        input_path: currentJob.input_path,
+        workspace: currentJob.workspace,
+        settings: {
+          target_duration_seconds: Number(movieDuration.value),
+          max_video_clip_seconds: Number(clipDuration.value),
+          photo_duration_seconds: Number(photoDuration.value),
+        },
+      }),
+    });
+    await pollMovie(currentMovieJob.id);
+  } catch (error) {
+    showError(error.message);
+    movieProgress.classList.add("hidden");
+    movieButton.disabled = false;
+  }
+});
+
+async function pollMovie(jobId) {
+  while (currentMovieJob && currentMovieJob.id === jobId) {
+    await sleep(800);
+    try {
+      currentMovieJob = await requestJson(`/api/movies/${jobId}`);
+      showMovieProgress(currentMovieJob);
+      if (currentMovieJob.status === "completed") {
+        showMovieResult(currentMovieJob);
+        movieButton.disabled = false;
+        return;
+      }
+      if (currentMovieJob.status === "failed") {
+        showError(currentMovieJob.error || currentMovieJob.message);
+        movieButton.disabled = false;
+        return;
+      }
+    } catch (error) {
+      showError(error.message);
+      movieButton.disabled = false;
+      return;
+    }
+  }
+}
+
+function showMovieProgress(job) {
+  movieProgress.classList.remove("hidden");
+  movieStatus.textContent = statusLabels[job.status] || job.status;
+  movieStatus.className = `status-chip ${job.status}`;
+  movieProgressTitle.textContent =
+    job.status === "completed"
+      ? "Фильм готов"
+      : job.status === "failed"
+        ? "Ошибка монтажа"
+        : "Идёт монтаж";
+  movieProgressMessage.textContent = job.message;
+  const percent =
+    job.progress_total > 0
+      ? Math.max(2, Math.round((job.progress_current / job.progress_total) * 100))
+      : 2;
+  movieProgressBar.style.width = `${percent}%`;
+}
+
+function showMovieResult(job) {
+  const downloadUrl = `/api/movies/${job.id}/download`;
+  movieResultSummary.textContent =
+    `${job.clip_count} фрагментов · ${formatDuration(job.duration_seconds)}`;
+  movieDownload.href = downloadUrl;
+  moviePreview.src = downloadUrl;
+  movieResult.classList.remove("hidden");
+  movieResult.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function renderFiles(assets) {
@@ -291,6 +404,10 @@ newScanButton.addEventListener("click", () => {
   currentJob = null;
   currentAssets = [];
   results.classList.add("hidden");
+  movieProgress.classList.add("hidden");
+  movieResult.classList.add("hidden");
+  moviePreview.removeAttribute("src");
+  moviePreview.load();
   jobState.classList.add("hidden");
   emptyState.classList.remove("hidden");
   fileFilter.value = "";

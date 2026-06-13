@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from travelmovieai.domain.models import QuickMontageSettings
+
 
 class JobStatus(StrEnum):
     QUEUED = "queued"
@@ -51,3 +53,26 @@ class HealthResponse(BaseModel):
     ready: bool
     ffmpeg: DependencyStatus
     ffprobe: DependencyStatus
+
+
+class MovieRequest(BaseModel):
+    input_path: str = Field(min_length=1)
+    workspace: str | None = None
+    settings: QuickMontageSettings = Field(default_factory=QuickMontageSettings)
+
+
+class MovieJobResponse(BaseModel):
+    id: UUID
+    status: JobStatus
+    input_path: Path
+    workspace: Path
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    message: str = ""
+    error: str | None = None
+    progress_current: int = 0
+    progress_total: int = 0
+    output_path: Path | None = None
+    clip_count: int | None = None
+    duration_seconds: float | None = None

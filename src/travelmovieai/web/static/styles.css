@@ -680,6 +680,123 @@ input::placeholder {
   color: var(--accent);
 }
 
+.movie-panel {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(300px, 1.15fr) minmax(210px, 0.8fr);
+  gap: 28px;
+  align-items: end;
+  margin-top: 16px;
+  padding: 26px;
+}
+
+.movie-panel h3,
+.movie-progress h3,
+.movie-result h3 {
+  margin: 7px 0 0;
+  font-size: 21px;
+  font-weight: 540;
+  letter-spacing: -0.035em;
+}
+
+.movie-panel-copy p,
+.movie-actions p,
+.movie-progress p,
+.movie-result p {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.movie-settings {
+  display: grid;
+  grid-template-columns: 1fr 90px;
+  gap: 9px 12px;
+  align-items: center;
+}
+
+.movie-settings label {
+  margin: 0;
+}
+
+.movie-settings input {
+  width: 100%;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  outline: none;
+  color: var(--text);
+  background: rgba(5, 7, 9, 0.55);
+  text-align: center;
+}
+
+.movie-button {
+  margin-top: 0;
+}
+
+.movie-actions p {
+  text-align: center;
+}
+
+.movie-progress,
+.movie-result {
+  margin-top: 16px;
+  padding: 25px;
+}
+
+.movie-progress {
+  display: grid;
+  grid-template-columns: 1fr minmax(240px, 0.7fr);
+  gap: 30px;
+  align-items: center;
+}
+
+.movie-progress-meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.movie-progress-meter span {
+  display: block;
+  width: 2%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  box-shadow: 0 0 16px rgba(255, 107, 61, 0.45);
+  transition: width 300ms ease;
+}
+
+.movie-result-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.download-button {
+  display: inline-flex;
+  min-height: 42px;
+  padding: 0 17px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  color: #170b07;
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.movie-result video {
+  width: 100%;
+  max-height: 620px;
+  margin-top: 23px;
+  border-radius: 15px;
+  background: #000;
+}
+
 .files-panel {
   margin-top: 16px;
   overflow: hidden;
@@ -805,6 +922,14 @@ footer a {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  .movie-panel {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .movie-actions {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 580px) {
@@ -863,5 +988,15 @@ footer a {
 
   .filter-input {
     width: 100%;
+  }
+
+  .movie-panel,
+  .movie-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .movie-result-heading {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

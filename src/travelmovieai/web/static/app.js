@@ -18,11 +18,15 @@ const fileFilter = document.querySelector("#file-filter");
 const tableNote = document.querySelector("#table-note");
 const newScanButton = document.querySelector("#new-scan-button");
 const serverState = document.querySelector("#server-state");
+const recentJobs = document.querySelector("#recent-jobs");
+const recentJobsList = document.querySelector("#recent-jobs-list");
+const refreshJobs = document.querySelector("#refresh-jobs");
 
 let currentJob = null;
 let currentAssets = [];
 let startedAt = null;
 let timerId = null;
+let serverReady = false;
 
 const statusLabels = {
   queued: "В очереди",
@@ -52,14 +56,29 @@ async function requestJson(url, options = {}) {
 
 async function checkHealth() {
   try {
-    await requestJson("/api/health");
-    serverState.classList.add("online");
-    serverState.classList.remove("offline");
-    serverState.querySelector("span:last-child").textContent = "Сервер готов";
-  } catch {
+    const health = await requestJson("/api/health");
+    serverReady = health.ready;
+    serverState.classList.toggle("online", health.ready);
+    serverState.classList.toggle("offline", !health.ready);
+    serverState.querySelector("span:last-child").textContent = health.ready
+      ? health.status === "ok"
+        ? "Сервер готов"
+        : "FFmpeg требует настройки"
+      : "FFprobe не найден";
+    submitButton.disabled = !health.ready;
+    if (!health.ready) {
+      showError(
+        health.ffprobe.error ||
+          "FFprobe недоступен. Проверьте PATH или TRAVELMOVIEAI_FFPROBE_BINARY.",
+      );
+    }
+  } catch (error) {
+    serverReady = false;
     serverState.classList.add("offline");
     serverState.classList.remove("online");
     serverState.querySelector("span:last-child").textContent = "Нет связи";
+    submitButton.disabled = true;
+    showError(error.message);
   }
 }
 
@@ -67,6 +86,10 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   hideError();
   results.classList.add("hidden");
+  if (!serverReady) {
+    showError("Сервер не готов к анализу. Проверьте FFprobe.");
+    return;
+  }
   submitButton.disabled = true;
 
   try {
@@ -99,6 +122,7 @@ async function pollJob(jobId) {
         showResults(report);
         submitButton.disabled = false;
         stopTimer();
+        await loadHistory();
         return;
       }
 
@@ -114,6 +138,59 @@ async function pollJob(jobId) {
       stopTimer();
       return;
     }
+  }
+}
+
+async function loadHistory() {
+  try {
+    const history = await requestJson("/api/scans?limit=6");
+    renderHistory(history.jobs || []);
+  } catch {
+    recentJobs.classList.add("hidden");
+  }
+}
+
+function renderHistory(jobs) {
+  recentJobsList.replaceChildren();
+  recentJobs.classList.toggle("hidden", jobs.length === 0);
+
+  for (const job of jobs) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recent-job";
+    const dot = document.createElement("span");
+    dot.className = `recent-job-dot ${job.status}`;
+    const name = document.createElement("span");
+    name.className = "recent-job-name";
+    name.textContent = lastPathPart(job.input_path);
+    name.title = job.input_path;
+    const status = document.createElement("span");
+    status.className = "recent-job-status";
+    status.textContent = statusLabels[job.status] || job.status;
+    button.append(dot, name, status);
+    button.addEventListener("click", () => openHistoryJob(job));
+    recentJobsList.append(button);
+  }
+}
+
+async function openHistoryJob(job) {
+  currentJob = job;
+  startedAt = new Date(job.started_at || job.created_at);
+  showJob(job);
+  hideError();
+
+  if (job.status === "completed") {
+    try {
+      const report = await requestJson(`/api/scans/${job.id}/result`);
+      showResults(report);
+    } catch (error) {
+      showError(error.message);
+    }
+  } else if (job.status === "failed") {
+    showError(job.error || job.message);
+  } else {
+    startTimer();
+    await pollJob(job.id);
   }
 }
 
@@ -284,4 +361,12 @@ function sleep(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function lastPathPart(value) {
+  const normalized = value.replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]/).pop() || value;
+}
+
+refreshJobs.addEventListener("click", loadHistory);
+submitButton.disabled = true;
 checkHealth();
+loadHistory();

@@ -20,6 +20,7 @@ Implemented:
 - atomic `analysis.json` generation;
 - CLI command `travelmovieai analyze`;
 - local web interface with background scan jobs;
+- persistent web job history and workspace conflict protection;
 - one-click Windows launcher in `scripts\run_web.bat`;
 - Windows paths containing spaces and Unicode characters.
 
@@ -178,7 +179,8 @@ The default Media Scan setup usually needs no changes. Important settings:
 - `TRAVELMOVIEAI_WORKERS`: worker limit reserved for processing stages;
 - `TRAVELMOVIEAI_BATCH_SIZE`: batch size reserved for processing stages;
 - `TRAVELMOVIEAI_WEB_HOST`: local web server host;
-- `TRAVELMOVIEAI_WEB_PORT`: local web server port.
+- `TRAVELMOVIEAI_WEB_PORT`: local web server port;
+- `TRAVELMOVIEAI_WEB_HISTORY_LIMIT`: retained web job records.
 
 Do not commit `.env`, model files, source media, databases, caches, or rendered
 movies.
@@ -219,6 +221,7 @@ make unimplemented pipeline stages functional.
 
 - [Detailed installation and usage guide](docs/installation-and-usage.md)
 - [Architecture](docs/architecture.md)
+- [Development roadmap](docs/roadmap.md)
 - [Technical specification](docs/TECHNICAL_SPECIFICATION.md)
 - [Agent development rules](AGENTS.md)
 

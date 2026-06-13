@@ -159,6 +159,7 @@ HTTP API:
 ```text
 GET  /api/health
 POST /api/scans
+GET  /api/scans
 GET  /api/scans/{job_id}
 GET  /api/scans/{job_id}/result
 GET  /api/docs
@@ -166,8 +167,21 @@ GET  /api/docs
 
 Media Scan выполняется в `ThreadPoolExecutor` с одним worker. Это не блокирует
 HTTP-запрос, но предотвращает параллельную обработку нескольких проектов внутри
-одного процесса. Задания живут в памяти и не восстанавливаются после
-перезапуска сервера; готовые `project.db` и `analysis.json` остаются на диске.
+одного процесса. Повторное активное задание в тот же workspace получает HTTP
+409.
+
+История сохраняется атомарно:
+
+```text
+workspace/.web/jobs.json
+```
+
+После перезапуска completed jobs и их `analysis.json` снова доступны через API.
+Jobs, которые были `queued` или `running` во время остановки, переводятся в
+`failed` с причиной о прерывании.
+
+`/api/health` проверяет доступность и версии FFmpeg/FFprobe. Сервер считается
+готовым к Media Scan, когда доступен FFprobe.
 
 Сервер слушает только loopback-интерфейс по умолчанию. Авторизация пока не
 реализована, поэтому публикация через `0.0.0.0` допустима только в доверенной
@@ -314,6 +328,9 @@ device
 cloud_enabled
 batch_size
 workers
+web_host
+web_port
+web_history_limit
 ```
 
 `database_filename` валидируется как имя файла без каталогов.
@@ -362,6 +379,10 @@ Timeline должен оставаться декларативным. Renderer 
 - health endpoint;
 - валидацию web paths;
 - полный цикл фонового scan job через HTTP API.
+- HTTP 409 для занятого workspace;
+- восстановление job history после перезапуска;
+- перевод interrupted jobs в failed;
+- degraded health без FFprobe.
 
 Обычные тесты используют fake probe и не требуют моделей, GPU или интернета.
 Реальные FFmpeg integration tests должны использовать маленькие синтетические

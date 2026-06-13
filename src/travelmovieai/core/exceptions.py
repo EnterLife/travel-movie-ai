@@ -15,3 +15,11 @@ class MediaProbeError(TravelMovieError):
 
 class PipelineStageError(TravelMovieError):
     """Raised when a pipeline stage cannot complete."""
+
+
+class InvalidProjectPathError(TravelMovieError):
+    """Raised when input and workspace paths cannot form a safe project."""
+
+
+class WorkspaceBusyError(TravelMovieError):
+    """Raised when another active job already owns a workspace."""

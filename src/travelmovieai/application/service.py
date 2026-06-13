@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from travelmovieai.application.context import ProjectContext
+from travelmovieai.application.validation import ProjectPaths, validate_project_paths
 from travelmovieai.core.config import Settings
 from travelmovieai.domain.enums import PipelineStage, StoryStyle
 from travelmovieai.domain.models import StageResult
@@ -41,6 +42,10 @@ class TravelMovieService:
 
     def resolve_workspace(self, input_path: Path, workspace: Path | None) -> Path:
         return (workspace or self.settings.workspace / input_path.name).resolve()
+
+    def resolve_project_paths(self, input_path: Path, workspace: Path | None) -> ProjectPaths:
+        resolved_workspace = self.resolve_workspace(input_path, workspace)
+        return validate_project_paths(input_path, resolved_workspace)
 
     def run_until(
         self,
@@ -82,10 +87,10 @@ class TravelMovieService:
         style: StoryStyle = StoryStyle.CINEMATIC,
         cloud: bool = False,
     ) -> ProjectContext:
-        project_workspace = self.resolve_workspace(input_path, workspace)
+        project_paths = self.resolve_project_paths(input_path, workspace)
         return ProjectContext(
-            input_path=input_path,
-            workspace=project_workspace,
+            input_path=project_paths.input_path,
+            workspace=project_paths.workspace,
             output_path=output_path,
             settings=self.settings,
             style=style,

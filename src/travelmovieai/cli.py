@@ -1,5 +1,6 @@
 """Command-line interface for TravelMovieAI."""
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -7,7 +8,9 @@ import typer
 
 from travelmovieai.application.service import TravelMovieService
 from travelmovieai.core.config import Settings
+from travelmovieai.core.exceptions import TravelMovieError
 from travelmovieai.domain.enums import PipelineStage, StoryStyle
+from travelmovieai.domain.models import StageResult
 
 app = typer.Typer(
     name="travelmovieai",
@@ -44,6 +47,15 @@ def _service() -> TravelMovieService:
     return TravelMovieService(Settings())
 
 
+def _run(operation: Callable[[], StageResult]) -> None:
+    try:
+        result = operation()
+    except TravelMovieError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(result.message)
+
+
 @app.command()
 def create(
     input_path: InputOption,
@@ -56,14 +68,15 @@ def create(
     cloud: Annotated[bool, typer.Option("--cloud", help="Allow optional cloud providers.")] = False,
 ) -> None:
     """Run the complete analysis, story, timeline, and rendering pipeline."""
-    result = _service().create(
-        input_path=input_path,
-        output_path=output,
-        workspace=workspace,
-        style=style,
-        cloud=cloud,
+    _run(
+        lambda: _service().create(
+            input_path=input_path,
+            output_path=output,
+            workspace=workspace,
+            style=style,
+            cloud=cloud,
+        )
     )
-    typer.echo(result.message)
 
 
 @app.command()
@@ -72,12 +85,12 @@ def analyze(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Scan media and persist the currently implemented analysis metadata."""
-    result = _service().run_until(
-        PipelineStage.MEDIA_SCAN,
-        input_path=input_path,
-        workspace=workspace,
+    _run(
+        lambda: _service().analyze(
+            input_path=input_path,
+            workspace=workspace,
+        )
     )
-    typer.echo(result.message)
 
 
 @app.command()
@@ -87,13 +100,14 @@ def storyboard(
     style: Annotated[StoryStyle, typer.Option(case_sensitive=False)] = StoryStyle.CINEMATIC,
 ) -> None:
     """Build a storyboard from previously analyzed media."""
-    result = _service().run_until(
-        PipelineStage.STORY_BUILDER,
-        input_path=input_path,
-        workspace=workspace,
-        style=style,
+    _run(
+        lambda: _service().run_until(
+            PipelineStage.STORY_BUILDER,
+            input_path=input_path,
+            workspace=workspace,
+            style=style,
+        )
     )
-    typer.echo(result.message)
 
 
 @app.command()
@@ -106,13 +120,14 @@ def render(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Render a movie from the generated timeline."""
-    result = _service().run_until(
-        PipelineStage.RENDERING,
-        input_path=input_path,
-        output_path=output,
-        workspace=workspace,
+    _run(
+        lambda: _service().run_until(
+            PipelineStage.RENDERING,
+            input_path=input_path,
+            output_path=output,
+            workspace=workspace,
+        )
     )
-    typer.echo(result.message)
 
 
 @app.command()
@@ -121,5 +136,4 @@ def report(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Generate an HTML project report."""
-    result = _service().report(input_path=input_path, workspace=workspace)
-    typer.echo(result.message)
+    _run(lambda: _service().report(input_path=input_path, workspace=workspace))

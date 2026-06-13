@@ -32,6 +32,22 @@ class ScanJobResponse(BaseModel):
     error: str | None = None
 
 
+class ScanJobHistory(BaseModel):
+    jobs: list[ScanJobResponse] = Field(default_factory=list)
+
+
+class DependencyStatus(BaseModel):
+    name: str
+    configured_value: str
+    available: bool
+    resolved_path: Path | None = None
+    version: str | None = None
+    error: str | None = None
+
+
 class HealthResponse(BaseModel):
-    status: str = "ok"
+    status: str
     service: str = "travelmovieai"
+    ready: bool
+    ffmpeg: DependencyStatus
+    ffprobe: DependencyStatus

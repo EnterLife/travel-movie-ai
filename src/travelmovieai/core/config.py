@@ -33,3 +33,4 @@ class Settings(BaseSettings):
     workers: int = Field(default=4, ge=1)
     web_host: str = "127.0.0.1"
     web_port: int = Field(default=8000, ge=1, le=65535)
+    web_history_limit: int = Field(default=100, ge=1, le=1000)

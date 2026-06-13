@@ -1,19 +1,28 @@
 """FastAPI application for the local TravelMovieAI web interface."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from travelmovieai.application.service import TravelMovieService
 from travelmovieai.core.config import Settings
+from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusyError
 from travelmovieai.domain.models import MediaScanReport
+from travelmovieai.infrastructure.system import ExecutableStatus, check_executable
 from travelmovieai.web.jobs import ScanJobManager
-from travelmovieai.web.schemas import HealthResponse, ScanJobResponse, ScanRequest
+from travelmovieai.web.schemas import (
+    DependencyStatus,
+    HealthResponse,
+    ScanJobHistory,
+    ScanJobResponse,
+    ScanRequest,
+)
 
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -21,9 +30,14 @@ STATIC_DIR = Path(__file__).with_name("static")
 def create_app(
     settings: Settings | None = None,
     job_manager: ScanJobManager | None = None,
+    executable_checker: Callable[[str], ExecutableStatus] = check_executable,
 ) -> FastAPI:
     resolved_settings = settings or Settings()
-    manager = job_manager or ScanJobManager(TravelMovieService(resolved_settings))
+    manager = job_manager or ScanJobManager(
+        TravelMovieService(resolved_settings),
+        state_path=resolved_settings.workspace.resolve() / ".web" / "jobs.json",
+        history_limit=resolved_settings.web_history_limit,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -46,7 +60,14 @@ def create_app(
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
-        return HealthResponse()
+        ffmpeg = executable_checker(resolved_settings.ffmpeg_binary)
+        ffprobe = executable_checker(resolved_settings.ffprobe_binary)
+        return HealthResponse(
+            status="ok" if ffmpeg.available and ffprobe.available else "degraded",
+            ready=ffprobe.available,
+            ffmpeg=DependencyStatus.model_validate(asdict(ffmpeg)),
+            ffprobe=DependencyStatus.model_validate(asdict(ffprobe)),
+        )
 
     @app.post(
         "/api/scans",
@@ -54,25 +75,23 @@ def create_app(
         status_code=status.HTTP_202_ACCEPTED,
     )
     def create_scan(payload: ScanRequest, request: Request) -> ScanJobResponse:
-        input_path = Path(payload.input_path).expanduser().resolve()
-        if not input_path.exists():
-            raise HTTPException(status_code=400, detail="Исходная папка не существует.")
-        if not input_path.is_dir():
-            raise HTTPException(status_code=400, detail="Исходный путь должен быть папкой.")
-
         workspace = (
-            Path(payload.workspace).expanduser().resolve()
-            if payload.workspace and payload.workspace.strip()
-            else None
+            Path(payload.workspace) if payload.workspace and payload.workspace.strip() else None
         )
         manager_from_app = _manager(request)
-        resolved_workspace = manager_from_app.resolve_workspace(input_path, workspace)
-        if input_path.is_relative_to(resolved_workspace):
-            raise HTTPException(
-                status_code=400,
-                detail="Workspace не может совпадать с исходной папкой или быть её родителем.",
-            )
-        return manager_from_app.submit(input_path, workspace)
+        try:
+            return manager_from_app.submit(Path(payload.input_path), workspace)
+        except InvalidProjectPathError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except WorkspaceBusyError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get("/api/scans", response_model=ScanJobHistory)
+    def list_scans(
+        request: Request,
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> ScanJobHistory:
+        return ScanJobHistory(jobs=_manager(request).list(limit))
 
     @app.get("/api/scans/{job_id}", response_model=ScanJobResponse)
     def get_scan(job_id: UUID, request: Request) -> ScanJobResponse:

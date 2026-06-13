@@ -53,6 +53,7 @@ initializing model-heavy dependencies.
 - `assets/music/` - local soundtrack assets that are safe to distribute.
 - `assets/fonts/` - local fonts used by titles, subtitles, and reports.
 - `docs/` - architecture and setup documentation.
+- `docs/roadmap.md` - prioritized implementation stages and completion criteria.
 - `workspace/` - generated per-project data; never commit it.
 
 See `docs/TECHNICAL_SPECIFICATION.md` for product requirements and

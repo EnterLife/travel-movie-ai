@@ -246,9 +246,17 @@ class TravelMovieService:
             settings.vision_model,
         )
         tracker.emit(
-            46,
-            f"Vision AI: подготовка {vision_provider.model}. "
+            45,
+            f"Vision AI: загрузка {vision_provider.model}. "
             "При первом запуске модель может загружаться в локальный кэш",
+        )
+        prepare = getattr(vision_provider, "prepare", None)
+        if callable(prepare):
+            prepare()
+        runtime = getattr(vision_provider, "runtime_description", "готова")
+        tracker.emit(
+            45,
+            f"Vision AI: модель загружена ({runtime}), начало анализа сцен",
         )
         vision_report = analyze_scenes(
             quality_report.scenes,

@@ -32,6 +32,7 @@ speech = [
 ]
 vision = [
   "accelerate>=1.2,<2",
+  "bitsandbytes>=0.46,<1",
   "huggingface-hub>=0.27,<1",
   "safetensors>=0.4,<1",
   "torch>=2.5,<3",
@@ -50,6 +51,7 @@ dev = [
 ]
 all = [
   "accelerate>=1.2,<2",
+  "bitsandbytes>=0.46,<1",
   "faiss-cpu>=1.9,<2",
   "faster-whisper>=1.1,<2",
   "huggingface-hub>=0.27,<1",

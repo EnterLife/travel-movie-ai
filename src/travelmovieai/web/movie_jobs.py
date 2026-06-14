@@ -64,6 +64,9 @@ class _MovieJob:
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    phase_started_at: datetime | None = None
+    phase_last_progress_at: datetime | None = None
+    phase_last_progress_percent: float | None = None
     message: str = ""
     error: str | None = None
     progress_current: int = 0
@@ -135,6 +138,7 @@ class MovieJobManager:
             job = self._jobs[job_id]
             job.status = JobStatus.RUNNING
             job.started_at = datetime.now(UTC)
+            job.phase_started_at = job.started_at
             job.message = "Подготовка монтажа..."
             job.phase = "preparing"
             profile_getter = getattr(self._service, "get_resource_profile", None)
@@ -148,11 +152,28 @@ class MovieJobManager:
 
         def progress(current: int, total: int, message: str) -> None:
             with self._lock:
+                now = datetime.now(UTC)
+                progress_percent = _progress_percent(current, total)
+                phase = _phase_from_message(message)
+                reset_phase = (
+                    phase != job.phase
+                    or "начало анализа сцен" in message.casefold()
+                )
+                if reset_phase:
+                    job.phase_started_at = now
+                    job.phase_last_progress_at = None
+                    job.phase_last_progress_percent = None
                 job.progress_current = current
                 job.progress_total = total
                 job.message = message
-                job.phase = _phase_from_message(message)
-                _update_subtasks(job, job.phase, _progress_percent(current, total), message)
+                job.phase = phase
+                if (
+                    job.phase_last_progress_percent is None
+                    or progress_percent > job.phase_last_progress_percent
+                ):
+                    job.phase_last_progress_at = now
+                    job.phase_last_progress_percent = progress_percent
+                _update_subtasks(job, job.phase, progress_percent, message)
                 _append_log(job, message)
 
         try:
@@ -210,8 +231,22 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         else 0.0
     )
     eta_seconds = None
-    if 0 < progress_percent < 100 and elapsed_seconds > 0:
-        eta_seconds = elapsed_seconds * (100 - progress_percent) / progress_percent
+    phase_range = _SUBTASK_RANGES.get(job.phase)
+    if (
+        job.status == JobStatus.RUNNING
+        and phase_range is not None
+        and job.phase_started_at is not None
+        and job.phase_last_progress_at is not None
+        and job.phase_last_progress_percent is not None
+    ):
+        eta_seconds = _estimate_phase_eta(
+            phase_started_at=job.phase_started_at,
+            last_progress_at=job.phase_last_progress_at,
+            now=now,
+            phase_start_percent=phase_range[0],
+            phase_end_percent=phase_range[1],
+            last_progress_percent=job.phase_last_progress_percent,
+        )
     return MovieJobResponse(
         id=job.id,
         status=job.status,
@@ -356,6 +391,33 @@ def _fail_active_subtask(job: _MovieJob, error: str) -> None:
 
 def _progress_percent(current: int, total: int) -> float:
     return min(100.0, current / total * 100) if total > 0 else 0.0
+
+
+def _estimate_phase_eta(
+    *,
+    phase_started_at: datetime,
+    last_progress_at: datetime,
+    now: datetime,
+    phase_start_percent: float,
+    phase_end_percent: float,
+    last_progress_percent: float,
+) -> float | None:
+    phase_size = phase_end_percent - phase_start_percent
+    if phase_size <= 0:
+        return None
+    completed_fraction = (last_progress_percent - phase_start_percent) / phase_size
+    if not 0 < completed_fraction < 1:
+        return None
+    measured_seconds = (last_progress_at - phase_started_at).total_seconds()
+    if measured_seconds <= 0:
+        return None
+    eta_at_last_progress = (
+        measured_seconds / completed_fraction * (1 - completed_fraction)
+    )
+    seconds_since_progress = max(0.0, (now - last_progress_at).total_seconds())
+    if seconds_since_progress > eta_at_last_progress:
+        return None
+    return eta_at_last_progress - seconds_since_progress
 
 
 def _phase_from_message(message: str) -> str:

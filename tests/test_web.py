@@ -1,5 +1,5 @@
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 from uuid import UUID
@@ -32,7 +32,7 @@ from travelmovieai.infrastructure.system import (
 )
 from travelmovieai.web.app import create_app
 from travelmovieai.web.jobs import ScanJobManager
-from travelmovieai.web.movie_jobs import MovieJobManager
+from travelmovieai.web.movie_jobs import MovieJobManager, _estimate_phase_eta
 from travelmovieai.web.schemas import JobStatus, ScanJobHistory, ScanJobResponse
 
 
@@ -128,11 +128,37 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "Выбрать папку" in page.text
     assert 'class="section-number"' not in page.text
     assert "STAGE 01" not in page.text
+    assert "Соберите клип путешествия" in page.text
     assert health.json()["status"] == "ok"
     assert health.json()["ready"] is True
     assert health.json()["ffprobe"]["available"] is True
     assert styles.status_code == 200
     assert "--accent" in styles.text
+
+
+def test_phase_eta_counts_down_between_progress_updates() -> None:
+    started = datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
+    last_progress = started + timedelta(seconds=20)
+
+    first = _estimate_phase_eta(
+        phase_started_at=started,
+        last_progress_at=last_progress,
+        now=last_progress,
+        phase_start_percent=45,
+        phase_end_percent=70,
+        last_progress_percent=50,
+    )
+    later = _estimate_phase_eta(
+        phase_started_at=started,
+        last_progress_at=last_progress,
+        now=last_progress + timedelta(seconds=10),
+        phase_start_percent=45,
+        phase_end_percent=70,
+        last_progress_percent=50,
+    )
+
+    assert first == 80
+    assert later == 70
 
 
 def test_web_directory_dialog_returns_selected_path(tmp_path: Path) -> None:

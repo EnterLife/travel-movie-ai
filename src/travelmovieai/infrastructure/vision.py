@@ -58,14 +58,27 @@ class LocalQwenVisionProvider:
         device: str = "auto",
         cache_dir: Path = Path("models"),
         allow_download: bool = True,
+        quantize_4bit: bool = False,
     ) -> None:
         self.model = model
         self.device = device
         self.cache_dir = cache_dir
         self.allow_download = allow_download
+        self.quantize_4bit = quantize_4bit
         self._processor: Any = None
         self._loaded_model: Any = None
         self._torch: Any = None
+
+    @property
+    def runtime_description(self) -> str:
+        if self._loaded_model is None:
+            return "не загружена"
+        device = str(self._loaded_model.device)
+        precision = "4-bit NF4" if self.quantize_4bit else "native precision"
+        return f"{device}, {precision}"
+
+    def prepare(self) -> None:
+        self._ensure_loaded()
 
     def analyze(self, image_path: Path, style: StoryStyle) -> SceneUnderstanding:
         self._ensure_loaded()
@@ -75,7 +88,9 @@ class LocalQwenVisionProvider:
             "A landmark requires visible architectural or textual evidence. "
             f"Evaluate this scene for a {style.value} travel movie. The contact "
             "sheet contains chronological frames from one scene (start, middle, "
-            "end), so describe meaningful changes across them. Return only JSON. "
+            "end), so describe meaningful changes across them. Return only compact "
+            "valid JSON without markdown. people_groups and landmarks must be arrays. "
+            "vision_score must be one number. story_relevance must be text. "
             "Use 0-100 for vision_score and every score factor. Set visual_quality "
             "to 50 because measured OpenCV quality replaces it later. "
             f"{COMPACT_OUTPUT_CONTRACT}"
@@ -87,7 +102,7 @@ class LocalQwenVisionProvider:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image"},
+                            {"type": "image", "image": image},
                             {"type": "text", "text": prompt},
                         ],
                     }
@@ -107,8 +122,9 @@ class LocalQwenVisionProvider:
                 with self._torch.inference_mode():
                     generated_ids = self._loaded_model.generate(
                         **inputs,
-                        max_new_tokens=900,
+                        max_new_tokens=320,
                         do_sample=False,
+                        use_cache=True,
                     )
                 trimmed_ids = [
                     output_ids[len(input_ids) :]
@@ -123,11 +139,11 @@ class LocalQwenVisionProvider:
                     skip_special_tokens=True,
                     clean_up_tokenization_spaces=False,
                 )[0]
-            return SceneUnderstanding.model_validate_json(_extract_json(_strip_json_fence(content)))
-        except ValidationError as error:
+            return _parse_local_qwen_understanding(content)
+        except (ValidationError, json.JSONDecodeError) as error:
             raise VisionAnalysisError(
-                "Локальная Qwen-модель вернула некорректный структурированный ответ. "
-                "Повторите анализ или выберите другую модель."
+                "Локальная Qwen-модель вернула ответ, который не удалось привести "
+                "к схеме анализа сцены. Повторите сцену или выберите другую модель."
             ) from error
         except (OSError, RuntimeError, ValueError, KeyError, IndexError) as error:
             raise VisionAnalysisError(
@@ -142,6 +158,8 @@ class LocalQwenVisionProvider:
             self._torch = importlib.import_module("torch")
             transformers = importlib.import_module("transformers")
             importlib.import_module("accelerate")
+            if self.quantize_4bit:
+                importlib.import_module("bitsandbytes")
         except ImportError as error:
             raise DependencyUnavailableError(
                 "Для локальной Qwen Vision установите optional-группу vision: "
@@ -157,6 +175,8 @@ class LocalQwenVisionProvider:
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
+            if resolved_device == "cuda":
+                self._torch.backends.cuda.matmul.allow_tf32 = True
             processor_type = transformers.AutoProcessor
             model_type = transformers.Qwen2_5_VLForConditionalGeneration
             self._processor = processor_type.from_pretrained(
@@ -164,15 +184,37 @@ class LocalQwenVisionProvider:
                 cache_dir=self.cache_dir,
                 local_files_only=not self.allow_download,
                 min_pixels=256 * 28 * 28,
-                max_pixels=1280 * 28 * 28,
+                max_pixels=640 * 28 * 28,
             )
+            model_options: dict[str, Any] = {
+                "cache_dir": self.cache_dir,
+                "local_files_only": not self.allow_download,
+                "low_cpu_mem_usage": True,
+                "attn_implementation": "sdpa",
+            }
+            if resolved_device == "cuda" and self.quantize_4bit:
+                model_options.update(
+                    {
+                        "dtype": self._torch.float16,
+                        "device_map": {"": 0},
+                        "quantization_config": transformers.BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_quant_type="nf4",
+                            bnb_4bit_compute_dtype=self._torch.float16,
+                            bnb_4bit_use_double_quant=True,
+                        ),
+                    }
+                )
+            else:
+                model_options.update(
+                    {
+                        "dtype": "auto",
+                        "device_map": "auto" if resolved_device == "cuda" else "cpu",
+                    }
+                )
             self._loaded_model = model_type.from_pretrained(
                 self.model,
-                cache_dir=self.cache_dir,
-                local_files_only=not self.allow_download,
-                torch_dtype="auto",
-                device_map="auto" if resolved_device == "cuda" else "cpu",
-                low_cpu_mem_usage=True,
+                **model_options,
             )
             self._loaded_model.eval()
         except (AttributeError, OSError, RuntimeError, ValueError) as error:
@@ -496,7 +538,90 @@ def build_vision_provider(
         device=device,
         cache_dir=cache_dir,
         allow_download=allow_download,
+        quantize_4bit=(
+            device in {"auto", "cuda"}
+            and gpu_memory_mb is not None
+            and 0 < gpu_memory_mb < 10 * 1024
+        ),
     )
+
+
+def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
+    payload = json.loads(_extract_json(_strip_json_fence(content)))
+    if not isinstance(payload, dict):
+        raise json.JSONDecodeError("Expected a JSON object", content, 0)
+
+    factors = payload.get("score_factors")
+    if not isinstance(factors, dict):
+        factors = {}
+    normalized_factors = {
+        key: _score(factors.get(key), default)
+        for key, default in {
+            "uniqueness": 50,
+            "people": 30,
+            "emotion": 50,
+            "visual_quality": 50,
+            "landmark": 0,
+            "unusual_event": 30,
+        }.items()
+    }
+
+    groups = payload.get("people_groups", [])
+    if isinstance(groups, str):
+        groups = [groups]
+    if not isinstance(groups, list):
+        groups = []
+    allowed_groups = {group.value for group in PersonGroup}
+    groups = [str(group) for group in groups if str(group) in allowed_groups][:6]
+    if not groups:
+        groups = [PersonGroup.NONE.value]
+
+    vision_score = payload.get("vision_score", 50)
+    if isinstance(vision_score, dict):
+        vision_score = vision_score.get("all", vision_score.get("overall"))
+    if not isinstance(vision_score, (int, float)):
+        vision_score = sum(normalized_factors.values()) / len(normalized_factors)
+
+    relevance = payload.get("story_relevance", "")
+    if isinstance(relevance, (int, float)):
+        relevance = f"Model relevance score: {_score(relevance, 50):.0f}/100."
+
+    landmarks = payload.get("landmarks", [])
+    if isinstance(landmarks, dict):
+        landmarks = [landmarks]
+    if not isinstance(landmarks, list):
+        landmarks = []
+
+    tags = payload.get("tags", [])
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, list):
+        tags = []
+
+    payload.update(
+        {
+            "caption": str(payload.get("caption") or "Travel scene")[:500],
+            "detailed_description": str(
+                payload.get("detailed_description")
+                or payload.get("caption")
+                or "Travel scene."
+            )[:1500],
+            "people_groups": groups,
+            "landmarks": landmarks,
+            "vision_score": _score(vision_score, 50),
+            "score_factors": normalized_factors,
+            "story_relevance": str(relevance)[:500],
+            "tags": [str(tag)[:100] for tag in tags[:20]],
+        }
+    )
+    return SceneUnderstanding.model_validate(payload)
+
+
+def _score(value: Any, default: float) -> float:
+    try:
+        return min(100.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_understanding(response: dict[str, Any]) -> SceneUnderstanding:

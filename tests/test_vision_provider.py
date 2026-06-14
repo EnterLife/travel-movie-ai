@@ -11,6 +11,7 @@ from travelmovieai.infrastructure import vision
 from travelmovieai.infrastructure.vision import (
     LMStudioVisionProvider,
     LocalQwenVisionProvider,
+    _parse_local_qwen_understanding,
     build_vision_provider,
     resolve_local_vision_model,
 )
@@ -73,8 +74,45 @@ def test_local_provider_factory_is_lazy(tmp_path: Path) -> None:
 
     assert isinstance(provider, LocalQwenVisionProvider)
     assert provider.model == "Qwen/Qwen2.5-VL-3B-Instruct"
+    assert provider.quantize_4bit is True
     assert provider._loaded_model is None
     assert not provider.cache_dir.exists()
+
+
+def test_local_qwen_response_normalizes_common_schema_drift() -> None:
+    result = _parse_local_qwen_understanding(
+        """
+        ```json
+        {
+          "caption": "Beach scene",
+          "detailed_description": "Three objects stand on a beach.",
+          "location_type": "beach",
+          "activity": "walking",
+          "emotion": "neutral",
+          "people_count": 0,
+          "people_groups": "none",
+          "landmarks": [],
+          "vision_score": {"all": 60},
+          "score_factors": {
+            "uniqueness": 75,
+            "people": 25,
+            "emotion": 30,
+            "visual_quality": 80,
+            "landmark": 50,
+            "unusual_event": 40,
+            "all": 60
+          },
+          "story_relevance": 70,
+          "tags": "beach"
+        }
+        ```
+        """
+    )
+
+    assert result.people_groups[0].value == "none"
+    assert result.vision_score == 60
+    assert result.story_relevance == "Model relevance score: 70/100."
+    assert result.tags == ["beach"]
 
 
 def test_lm_studio_provider_validates_structured_response(

@@ -12,7 +12,7 @@ if not exist "%PYTHON_EXE%" (
 )
 
 if not defined NEED_SETUP (
-  "%PYTHON_EXE%" -c "import accelerate, travelmovieai, fastapi, uvicorn, cv2, scenedetect, torch, transformers" >nul 2>&1
+  "%PYTHON_EXE%" -c "import accelerate, bitsandbytes, travelmovieai, fastapi, uvicorn, cv2, scenedetect, torch, transformers" >nul 2>&1
   if errorlevel 1 set "NEED_SETUP=1"
 )
 

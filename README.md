@@ -171,6 +171,10 @@ and Qwen2.5-VL-7B on larger GPUs. The 32B model is available as an explicit
 choice and is not selected automatically because it requires substantially more
 RAM and VRAM.
 
+On NVIDIA GPUs with less than 10 GB VRAM, Qwen automatically uses 4-bit NF4
+quantization. This keeps all model layers on CUDA instead of offloading roughly
+half of the model to system RAM. Larger GPUs use the model's native precision.
+
 ```dotenv
 TRAVELMOVIEAI_VISION_PROVIDER=local
 TRAVELMOVIEAI_VISION_MODEL=auto
@@ -631,6 +635,17 @@ processed by multiple jobs simultaneously.
 - disable speech analysis when unnecessary;
 - keep automatic workers enabled;
 - verify that PyTorch CUDA and FFmpeg NVENC are using the expected GPU.
+
+Windows Task Manager often opens the GPU page on the `3D` graph, which does not
+represent AI inference. Change one graph to `CUDA` or `Compute_0`, or verify with:
+
+```powershell
+nvidia-smi --loop=2
+```
+
+The Vision AI log reports the actual runtime placement, for example
+`cuda:0, 4-bit NF4`. During model loading and between generated tokens GPU usage
+can fluctuate rather than remain at 100%.
 
 ## Product Requirements
 

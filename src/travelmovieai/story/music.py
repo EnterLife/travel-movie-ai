@@ -193,7 +193,7 @@ def build_music_plan(
         if neural_generator is None:
             if settings.music_engine == "ace-step":
                 raise MusicGenerationError(
-                    "ACE-Step недоступен. Запустите scripts\\setup_music_ai.bat."
+                    "ACE-Step недоступен. Запустите scripts\\setup_windows.bat."
                 )
             fallback_used = True
             generation_reason = " ACE-Step недоступен, использован процедурный fallback."

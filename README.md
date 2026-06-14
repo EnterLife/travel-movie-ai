@@ -74,8 +74,9 @@ From the repository root:
 4. upgrades pip, setuptools, and wheel;
 5. installs CUDA-enabled PyTorch when an NVIDIA GPU is detected;
 6. installs all media, speech, Vision, embeddings, and development dependencies;
-7. validates the checked-in `configs/settings.toml`;
-8. verifies Python imports, FFmpeg, and FFprobe.
+7. installs Git when needed and prepares ACE-Step in an isolated environment;
+8. validates the checked-in `configs/settings.toml`;
+9. verifies Python imports, FFmpeg, and FFprobe.
 
 If the environment already contains CPU-only PyTorch, setup removes that wheel
 before installing the CUDA build. This is necessary because pip otherwise treats
@@ -85,6 +86,13 @@ Use a smaller runtime-only environment when development tools are unnecessary:
 
 ```powershell
 .\scripts\setup_windows.bat --runtime-only
+```
+
+This still prepares the ACE-Step runtime. To install the application without
+neural music generation:
+
+```powershell
+.\scripts\setup_windows.bat --runtime-only --skip-music-ai
 ```
 
 `run_web.bat` starts `main.py` and opens `http://127.0.0.1:8000`. If `.venv`
@@ -249,12 +257,16 @@ machine. The default AI engine is
 open-source music generation model. It generates an instrumental composition
 from the story style, BPM, duration, and music cue sheet.
 
-The first generation automatically:
+The unified Windows setup:
 
 1. installs ACE-Step into the isolated `.cache/ace-step` environment;
-2. downloads model weights into `models/ace-step`;
-3. detects the GPU tier and enables CPU offload on low-VRAM systems;
-4. generates and normalizes a WAV file for the exact movie duration.
+2. keeps its dependencies separate from the main `.venv`.
+
+The first generation then:
+
+1. downloads model weights into `models/ace-step`;
+2. detects the GPU tier and enables CPU offload on low-VRAM systems;
+3. generates and normalizes a WAV file for the exact movie duration.
 
 This does not replace packages in the main `.venv`. On a 6 GB NVIDIA GPU,
 ACE-Step uses its 2B Turbo model with low-VRAM offload. The initial installation
@@ -270,10 +282,10 @@ The music engine options are:
 - `Procedural synthesis`: use the fast built-in lounge arranger without model
   downloads.
 
-ACE-Step can also be prepared before starting the web application:
+ACE-Step is prepared together with the application:
 
 ```powershell
-.\scripts\setup_music_ai.bat
+.\scripts\setup_windows.bat
 ```
 
 With `Determine from video`, relaxing scenes and travel contexts such as

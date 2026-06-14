@@ -86,6 +86,43 @@ def test_ace_step_configuration_enables_low_vram_offload(tmp_path: Path) -> None
     assert "offload_dit_to_cpu = true" in config
 
 
+def test_ace_step_runtime_uses_unified_windows_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=runtime,
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="auto",
+        gpu_memory_mb=6144,
+    )
+    commands: list[list[str]] = []
+
+    def run_setup(
+        command: list[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        progress: object,
+    ) -> list[str]:
+        commands.append(command)
+        executable = runtime / ".venv" / "Scripts" / "python.exe"
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        return []
+
+    monkeypatch.setattr(generator, "_run_streaming", run_setup)
+
+    generator._ensure_runtime(None)
+
+    assert Path(commands[0][3]).name == "setup_windows.bat"
+    assert commands[0][4:] == ["--music-ai-only", str(runtime)]
+
+
 def test_build_music_plan_uses_local_model(tmp_path: Path) -> None:
     settings = QuickMontageSettings(
         target_duration_seconds=5,

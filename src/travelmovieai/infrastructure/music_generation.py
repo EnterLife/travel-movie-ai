@@ -143,9 +143,9 @@ class AceStepMusicGenerator:
             return
         if not self.allow_download:
             raise MusicGenerationError("Автозагрузка отключена, а runtime ACE-Step отсутствует.")
-        setup_script = Path(__file__).resolve().parents[3] / "scripts" / "setup_music_ai.bat"
+        setup_script = Path(__file__).resolve().parents[3] / "scripts" / "setup_windows.bat"
         if not setup_script.is_file():
-            raise MusicGenerationError("Не найден scripts\\setup_music_ai.bat.")
+            raise MusicGenerationError("Не найден scripts\\setup_windows.bat.")
         if progress:
             progress(0, 4, "ACE-Step: установка изолированного runtime")
         command_processor = os.environ.get("COMSPEC", "cmd.exe")
@@ -155,6 +155,7 @@ class AceStepMusicGenerator:
                 "/d",
                 "/c",
                 str(setup_script),
+                "--music-ai-only",
                 str(self.runtime_dir),
             ],
             cwd=setup_script.parent.parent,

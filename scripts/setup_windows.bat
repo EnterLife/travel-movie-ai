@@ -7,12 +7,26 @@ if /i "%~1"=="--help" goto :help
 if /i "%~1"=="-h" goto :help
 
 set "INSTALL_SPEC=.[all,dev]"
+set "INSTALL_MUSIC_AI=1"
+set "MUSIC_AI_ONLY="
+set "ACE_STEP_RUNTIME=.cache\ace-step"
+set "ACE_STEP_REVISION=dce621408bee8c31b4fcf4811682eb9359e1bc94"
+
 if /i "%~1"=="--runtime-only" set "INSTALL_SPEC=.[all]"
+if /i "%~2"=="--runtime-only" set "INSTALL_SPEC=.[all]"
+if /i "%~1"=="--skip-music-ai" set "INSTALL_MUSIC_AI="
+if /i "%~2"=="--skip-music-ai" set "INSTALL_MUSIC_AI="
+if /i "%~1"=="--music-ai-only" (
+  set "MUSIC_AI_ONLY=1"
+  if not "%~2"=="" set "ACE_STEP_RUNTIME=%~2"
+)
 
 echo.
 echo TravelMovieAI Windows setup
 echo ===========================
 echo.
+
+if defined MUSIC_AI_ONLY goto :music_ai_only
 
 call :find_python
 if not defined SYSTEM_PYTHON (
@@ -60,6 +74,14 @@ echo Installing TravelMovieAI dependencies: %INSTALL_SPEC%
 "%PYTHON_EXE%" -m pip install -e "%INSTALL_SPEC%"
 if errorlevel 1 goto :error
 
+if defined INSTALL_MUSIC_AI (
+  call :ensure_music_ai
+  if errorlevel 1 goto :error
+) else (
+  echo.
+  echo Skipping the ACE-Step music runtime.
+)
+
 if not exist "configs\settings.toml" (
   echo Required configuration file configs\settings.toml was not found.
   goto :error
@@ -84,6 +106,84 @@ echo Start the application with:
 echo   scripts\run_web.bat
 echo.
 endlocal
+exit /b 0
+
+:music_ai_only
+if not exist ".venv\Scripts\python.exe" (
+  echo TravelMovieAI virtual environment is missing.
+  echo Run scripts\setup_windows.bat first.
+  goto :error
+)
+set "PYTHON_EXE=.venv\Scripts\python.exe"
+call :ensure_music_ai
+if errorlevel 1 goto :error
+echo.
+echo ACE-Step music runtime setup completed successfully.
+endlocal
+exit /b 0
+
+:ensure_music_ai
+call :ensure_git
+if errorlevel 1 exit /b 1
+
+if not exist ".venv\Scripts\uv.exe" (
+  echo.
+  echo Installing uv package manager...
+  "%PYTHON_EXE%" -m pip install "uv>=0.7,<1"
+  if errorlevel 1 exit /b 1
+)
+
+set "ACE_STEP_CURRENT_REVISION="
+if exist "%ACE_STEP_RUNTIME%\.git" (
+  for /f "usebackq delims=" %%I in (`git -C "%ACE_STEP_RUNTIME%" rev-parse HEAD 2^>nul`) do (
+    set "ACE_STEP_CURRENT_REVISION=%%I"
+  )
+)
+
+if /i not "%ACE_STEP_CURRENT_REVISION%"=="%ACE_STEP_REVISION%" (
+  echo.
+  echo Downloading ACE-Step 1.5 runtime...
+  if not exist "%ACE_STEP_RUNTIME%\.git" (
+    git init "%ACE_STEP_RUNTIME%"
+    if errorlevel 1 exit /b 1
+    git -C "%ACE_STEP_RUNTIME%" remote add origin https://github.com/ACE-Step/ACE-Step-1.5.git
+    if errorlevel 1 exit /b 1
+  )
+  git -C "%ACE_STEP_RUNTIME%" fetch --depth 1 origin %ACE_STEP_REVISION%
+  if errorlevel 1 exit /b 1
+  git -C "%ACE_STEP_RUNTIME%" checkout --detach FETCH_HEAD
+  if errorlevel 1 exit /b 1
+)
+
+echo.
+echo Installing isolated ACE-Step dependencies...
+".venv\Scripts\uv.exe" sync --project "%ACE_STEP_RUNTIME%"
+if errorlevel 1 exit /b 1
+echo ACE-Step runtime is ready: %ACE_STEP_RUNTIME%
+exit /b 0
+
+:ensure_git
+where git >nul 2>&1
+if not errorlevel 1 exit /b 0
+
+where winget >nul 2>&1
+if errorlevel 1 (
+  echo Git is required to install ACE-Step, and winget is unavailable.
+  exit /b 1
+)
+echo.
+echo Git was not found. Installing it with winget...
+winget install --id Git.Git --exact --accept-package-agreements --accept-source-agreements
+if errorlevel 1 exit /b 1
+
+if exist "%ProgramFiles%\Git\cmd\git.exe" set "PATH=%ProgramFiles%\Git\cmd;%PATH%"
+if exist "%LocalAppData%\Programs\Git\cmd\git.exe" set "PATH=%LocalAppData%\Programs\Git\cmd;%PATH%"
+where git >nul 2>&1
+if errorlevel 1 (
+  echo Git was installed but is not visible in this terminal.
+  echo Close this window, open a new terminal, and run setup again.
+  exit /b 1
+)
 exit /b 0
 
 :ensure_pytorch_cuda
@@ -174,9 +274,14 @@ goto :error
 echo Usage:
 echo   scripts\setup_windows.bat
 echo   scripts\setup_windows.bat --runtime-only
+echo   scripts\setup_windows.bat --skip-music-ai
+echo   scripts\setup_windows.bat --music-ai-only [runtime-directory]
 echo.
-echo Default mode installs all runtime, AI, media, and development dependencies.
+echo Default mode installs the application, local AI dependencies, and the
+echo isolated ACE-Step music runtime.
 echo --runtime-only skips pytest, Ruff, mypy, and other development tools.
+echo --skip-music-ai skips the ACE-Step runtime.
+echo --music-ai-only repairs or installs only the isolated ACE-Step runtime.
 endlocal
 exit /b 0
 

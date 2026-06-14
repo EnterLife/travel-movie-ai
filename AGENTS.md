@@ -33,7 +33,7 @@ initializing model-heavy dependencies.
 
 - `src/travelmovieai/cli.py` - Typer commands and CLI option definitions.
 - `main.py` - repository entry point for the local web server.
-- `scripts/setup_windows.bat` - complete Windows system and virtual-environment setup.
+- `scripts/setup_windows.bat` - unified Windows, Python, AI, and music setup.
 - `scripts/run_web.bat` - one-click Windows environment bootstrap and web launch.
 - `src/travelmovieai/web/` - HTTP API, background jobs, and static web interface.
 - `src/travelmovieai/core/` - settings and shared exceptions.

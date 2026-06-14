@@ -31,6 +31,9 @@ speech = [
   "faster-whisper>=1.1,<2",
 ]
 vision = [
+  "accelerate>=1.2,<2",
+  "huggingface-hub>=0.27,<1",
+  "safetensors>=0.4,<1",
   "torch>=2.5,<3",
   "transformers>=4.48,<5",
 ]
@@ -46,9 +49,12 @@ dev = [
   "ruff>=0.9,<1",
 ]
 all = [
+  "accelerate>=1.2,<2",
   "faiss-cpu>=1.9,<2",
   "faster-whisper>=1.1,<2",
+  "huggingface-hub>=0.27,<1",
   "opencv-python>=4.10,<5",
+  "safetensors>=0.4,<1",
   "scenedetect>=0.6.5,<1",
   "sentence-transformers>=3.4,<4",
   "torch>=2.5,<3",

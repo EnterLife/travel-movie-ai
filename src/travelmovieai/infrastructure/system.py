@@ -138,8 +138,8 @@ def check_cuda(ffmpeg_binary: str = "ffmpeg") -> CudaStatus:
     note = None
     if gpu and not torch_cuda:
         note = (
-            "NVIDIA GPU доступен. LM Studio использует GPU независимо; "
-            "локальный PyTorch установлен без CUDA."
+            "NVIDIA GPU доступен, но локальный PyTorch установлен без CUDA. "
+            "Vision AI будет работать на CPU."
         )
     return CudaStatus(
         available=gpu is not None,

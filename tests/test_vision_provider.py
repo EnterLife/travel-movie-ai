@@ -8,7 +8,12 @@ import pytest
 from travelmovieai.core.exceptions import VisionAnalysisError
 from travelmovieai.domain.enums import StoryStyle
 from travelmovieai.infrastructure import vision
-from travelmovieai.infrastructure.vision import LMStudioVisionProvider
+from travelmovieai.infrastructure.vision import (
+    LMStudioVisionProvider,
+    LocalQwenVisionProvider,
+    build_vision_provider,
+    resolve_local_vision_model,
+)
 
 
 class FakeResponse:
@@ -23,6 +28,53 @@ class FakeResponse:
 
     def read(self) -> bytes:
         return json.dumps(self._payload).encode("utf-8")
+
+
+def test_local_model_auto_selection_matches_available_memory() -> None:
+    assert (
+        resolve_local_vision_model(
+            "auto",
+            gpu_memory_mb=6144,
+            system_memory_mb=32768,
+        )
+        == "Qwen/Qwen2.5-VL-3B-Instruct"
+    )
+    assert (
+        resolve_local_vision_model(
+            "auto",
+            gpu_memory_mb=12288,
+            system_memory_mb=32768,
+        )
+        == "Qwen/Qwen2.5-VL-7B-Instruct"
+    )
+    assert (
+        resolve_local_vision_model(
+            "custom/model",
+            gpu_memory_mb=6144,
+            system_memory_mb=32768,
+        )
+        == "custom/model"
+    )
+
+
+def test_local_provider_factory_is_lazy(tmp_path: Path) -> None:
+    provider = build_vision_provider(
+        provider="local",
+        model="auto",
+        device="auto",
+        cache_dir=tmp_path / "models",
+        allow_download=True,
+        gpu_memory_mb=6144,
+        system_memory_mb=32768,
+        lm_studio_url="http://localhost:1234/v1",
+        lm_studio_api_key=None,
+        timeout_seconds=120,
+    )
+
+    assert isinstance(provider, LocalQwenVisionProvider)
+    assert provider.model == "Qwen/Qwen2.5-VL-3B-Instruct"
+    assert provider._loaded_model is None
+    assert not provider.cache_dir.exists()
 
 
 def test_lm_studio_provider_validates_structured_response(

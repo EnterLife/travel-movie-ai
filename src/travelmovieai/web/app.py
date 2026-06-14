@@ -29,6 +29,10 @@ from travelmovieai.infrastructure.system import (
     check_executable,
     detect_resource_profile,
 )
+from travelmovieai.infrastructure.vision import (
+    LOCAL_QWEN_MODELS,
+    resolve_local_vision_model,
+)
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager
 from travelmovieai.web.schemas import (
@@ -39,6 +43,7 @@ from travelmovieai.web.schemas import (
     DirectoryDialogRequest,
     DirectoryDialogResponse,
     HealthResponse,
+    LocalAIStatus,
     ModelOption,
     MovieJobResponse,
     MovieRequest,
@@ -60,9 +65,7 @@ def create_app(
     executable_checker: Callable[[str], ExecutableStatus] = check_executable,
     model_lister: Callable[[str, str | None, float], LMStudioModels] = (list_lm_studio_models),
     cuda_checker: Callable[[str], CudaStatus] = check_cuda,
-    directory_selector: Callable[[Path | None, str, bool], Path | None] = (
-        select_directory
-    ),
+    directory_selector: Callable[[Path | None, str, bool], Path | None] = (select_directory),
 ) -> FastAPI:
     resolved_settings = settings or Settings()
     service = TravelMovieService(resolved_settings)
@@ -106,15 +109,18 @@ def create_app(
         )
 
     @app.get("/api/capabilities", response_model=CapabilitiesResponse)
-    def capabilities() -> CapabilitiesResponse:
-        discovered = model_lister(
-            resolved_settings.lm_studio_url,
-            resolved_settings.lm_studio_api_key,
-            5,
-        )
-        model_options = _model_options(
-            discovered.models,
-            resolved_settings.vision_model,
+    def capabilities(include_lm_studio: bool = Query(default=False)) -> CapabilitiesResponse:
+        discovered = (
+            model_lister(
+                resolved_settings.lm_studio_url,
+                resolved_settings.lm_studio_api_key,
+                5,
+            )
+            if include_lm_studio
+            else LMStudioModels(
+                available=False,
+                error="LM Studio compatibility mode was not requested.",
+            )
         )
         cuda_status = cuda_checker(resolved_settings.ffmpeg_binary)
         resources = detect_resource_profile(
@@ -123,12 +129,38 @@ def create_app(
             worker_override=resolved_settings.workers,
             batch_override=resolved_settings.batch_size,
         )
+        local_model = resolve_local_vision_model(
+            resolved_settings.vision_model,
+            gpu_memory_mb=resources.gpu_memory_mb,
+            system_memory_mb=resources.memory_mb,
+        )
         return CapabilitiesResponse(
+            local_ai=LocalAIStatus(
+                available=all(
+                    find_spec(package) is not None
+                    for package in ("accelerate", "torch", "transformers")
+                ),
+                configured_model=resolved_settings.vision_model,
+                resolved_model=local_model,
+                cache_dir=str(resolved_settings.model_cache.expanduser().resolve()),
+                downloads_enabled=resolved_settings.allow_model_download,
+                models=[
+                    ModelOption(
+                        id=model,
+                        likely_vision=True,
+                        recommended=model == local_model,
+                    )
+                    for model in LOCAL_QWEN_MODELS
+                ],
+            ),
             ai=AIProviderStatus(
                 available=discovered.available,
                 base_url=resolved_settings.lm_studio_url,
                 configured_model=resolved_settings.vision_model,
-                models=model_options,
+                models=_model_options(
+                    discovered.models,
+                    resolved_settings.vision_model,
+                ),
                 error=discovered.error,
             ),
             cuda=CudaStatusResponse.model_validate(asdict(cuda_status)),
@@ -149,11 +181,7 @@ def create_app(
         is_input = payload.purpose == "input"
         selected = directory_selector(
             initial_path,
-            (
-                "Выберите папку с видео и фотографиями"
-                if is_input
-                else "Выберите папку workspace"
-            ),
+            ("Выберите папку с видео и фотографиями" if is_input else "Выберите папку workspace"),
             is_input,
         )
         return DirectoryDialogResponse(selected_path=selected)

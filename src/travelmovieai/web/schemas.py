@@ -79,6 +79,15 @@ class AIProviderStatus(BaseModel):
     error: str | None = None
 
 
+class LocalAIStatus(BaseModel):
+    available: bool
+    configured_model: str
+    resolved_model: str
+    cache_dir: str
+    downloads_enabled: bool
+    models: list[ModelOption] = Field(default_factory=list)
+
+
 class CudaStatusResponse(BaseModel):
     available: bool
     gpu_name: str | None = None
@@ -107,6 +116,7 @@ class ResourceProfileResponse(BaseModel):
 
 
 class CapabilitiesResponse(BaseModel):
+    local_ai: LocalAIStatus
     ai: AIProviderStatus
     cuda: CudaStatusResponse
     resources: ResourceProfileResponse

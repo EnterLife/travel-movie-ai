@@ -39,15 +39,8 @@ from travelmovieai.editing.timeline import (
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
-from travelmovieai.infrastructure.lm_studio import (
-    list_lm_studio_models,
-    resolve_vision_model,
-)
 from travelmovieai.infrastructure.system import ResourceProfile, detect_resource_profile
-from travelmovieai.infrastructure.vision import (
-    Florence2VisionProvider,
-    LMStudioVisionProvider,
-)
+from travelmovieai.infrastructure.vision import build_vision_provider
 from travelmovieai.infrastructure.whisper import FasterWhisperProvider
 from travelmovieai.pipeline.registry import build_default_pipeline
 from travelmovieai.pipeline.runner import PipelineRunner
@@ -248,9 +241,18 @@ class TravelMovieService:
         quality_path = context.artifacts_dir / "quality_analysis.json"
         write_json_atomic(quality_path, quality_report)
         tracker.emit(45, "OpenCV-анализ качества сохранён")
+        vision_provider = self._vision_provider(
+            settings.vision_provider,
+            settings.vision_model,
+        )
+        tracker.emit(
+            46,
+            f"Vision AI: подготовка {vision_provider.model}. "
+            "При первом запуске модель может загружаться в локальный кэш",
+        )
         vision_report = analyze_scenes(
             quality_report.scenes,
-            self._vision_provider(settings.vision_provider, settings.vision_model),
+            vision_provider,
             settings.story_style,
             tracker.range(45, 70),
         )
@@ -359,32 +361,23 @@ class TravelMovieService:
 
     def _vision_provider(
         self,
-        provider: str = "qwen",
+        provider: str = "local",
         model: str | None = None,
     ) -> VisionProvider:
         if self._vision_provider_factory is not None:
             return self._vision_provider_factory(self.settings)
-        if provider == "florence":
-            return Florence2VisionProvider(
-                model=(model if model and model != "auto" else "microsoft/Florence-2-large"),
-                device=self.settings.device,
-            )
-        resolved_model = model
-        if not resolved_model:
-            discovered = list_lm_studio_models(
-                self.settings.lm_studio_url,
-                self.settings.lm_studio_api_key,
-                5,
-            )
-            resolved_model = resolve_vision_model(
-                discovered,
-                self.settings.vision_model,
-            )
-        return LMStudioVisionProvider(
-            base_url=self.settings.lm_studio_url,
-            model=resolved_model,
+        resources = self.get_resource_profile()
+        return build_vision_provider(
+            provider=provider,
+            model=model or self.settings.vision_model,
+            device=self.settings.device,
+            cache_dir=self.settings.model_cache.expanduser().resolve(),
+            allow_download=self.settings.allow_model_download,
+            gpu_memory_mb=resources.gpu_memory_mb,
+            system_memory_mb=resources.memory_mb,
+            lm_studio_url=self.settings.lm_studio_url,
+            lm_studio_api_key=self.settings.lm_studio_api_key,
             timeout_seconds=self.settings.vision_timeout_seconds,
-            api_key=self.settings.lm_studio_api_key,
         )
 
     def resolve_workspace(self, input_path: Path, workspace: Path | None) -> Path:

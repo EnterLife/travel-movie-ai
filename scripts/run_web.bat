@@ -11,9 +11,9 @@ if not exist "%PYTHON_EXE%" (
   if errorlevel 1 goto :error
 )
 
-"%PYTHON_EXE%" -c "import travelmovieai, fastapi, uvicorn, cv2, scenedetect" >nul 2>&1
+"%PYTHON_EXE%" -c "import accelerate, travelmovieai, fastapi, uvicorn, cv2, scenedetect, torch, transformers" >nul 2>&1
 if errorlevel 1 (
-  echo The virtual environment is incomplete. Running setup...
+  echo The virtual environment is incomplete or lacks local AI support. Running setup...
   call scripts\setup_windows.bat --runtime-only
   if errorlevel 1 goto :error
 )

@@ -197,11 +197,14 @@
               <h4>Нейросеть и анализ</h4>
               <label for="vision-provider">Vision backend <span>локально</span></label>
               <select id="vision-provider">
-                <option value="qwen">Qwen / VLM через LM Studio</option>
+                <option value="local">Local Auto · Qwen2.5-VL</option>
                 <option value="florence">Florence-2 напрямую</option>
+                <option value="lm-studio">LM Studio · совместимость</option>
               </select>
 
-              <label for="vision-model">Vision-модель <span>LM Studio</span></label>
+              <label for="vision-model">
+                Vision-модель <span id="vision-model-source">автовыбор</span>
+              </label>
               <select id="vision-model">
                 <option value="">Загрузка моделей...</option>
               </select>

@@ -17,7 +17,8 @@ Implemented:
 - scene detection with PySceneDetect and a deterministic fallback;
 - RGB PNG contact sheets sampled from the start, middle, and end of scenes;
 - OpenCV analysis for sharpness, exposure, contrast, motion, shake, and noise;
-- structured Vision AI analysis through LM Studio or local Florence-2;
+- direct local Qwen2.5-VL and Florence-2 analysis with automatic model download;
+- optional LM Studio compatibility mode;
 - optional speech recognition with Faster Whisper;
 - perceptual duplicate detection;
 - event grouping, multimodal captions, storyboard generation, and scene ranking;
@@ -45,8 +46,9 @@ Not yet complete:
 - FFmpeg and FFprobe available on `PATH`, or configured explicitly;
 - free SSD space for frames, cache files, and intermediate video segments.
 
-LM Studio and a multimodal model are required only for Qwen/VLM semantic
-analysis. A GPU is optional: media scanning and quick montage work on CPU.
+A GPU is optional: media scanning, quick montage, and local Vision AI all have
+CPU fallbacks. An NVIDIA GPU with CUDA is strongly recommended for semantic
+analysis.
 
 Check the required tools:
 
@@ -71,9 +73,10 @@ From the repository root:
 2. finds or installs Gyan FFmpeg through `winget`;
 3. creates `.venv`;
 4. upgrades pip, setuptools, and wheel;
-5. installs all media, speech, Vision, embeddings, and development dependencies;
-6. creates `.env` from `.env.example` without overwriting an existing file;
-7. verifies Python imports, FFmpeg, and FFprobe.
+5. installs CUDA-enabled PyTorch when an NVIDIA GPU is detected;
+6. installs all media, speech, Vision, embeddings, and development dependencies;
+7. creates `.env` from `.env.example` without overwriting an existing file;
+8. verifies Python imports, FFmpeg, and FFprobe.
 
 Use a smaller runtime-only environment when development tools are unnecessary:
 
@@ -121,7 +124,8 @@ python -m pip install -e ".[embeddings]"
 python -m pip install -e ".[all,dev]"
 ```
 
-Models are not downloaded during import or test collection.
+Models are not downloaded during import, startup, or test collection. The
+selected model is downloaded only when semantic analysis first needs it.
 
 ## Generated Development Files
 
@@ -151,28 +155,29 @@ container duration is longer than their video stream.
 
 ## AI Setup
 
-### Qwen or another VLM through LM Studio
+### Local Auto: Qwen2.5-VL
 
-1. Install LM Studio.
-2. Download a multimodal model, such as Qwen2.5-VL.
-3. Start the LM Studio Local Server.
-4. Verify the endpoint:
+No separate model server is required. Select `Local Auto` in the web interface
+and start semantic analysis. TravelMovieAI downloads the model from Hugging Face
+into `models/`, loads it directly through Transformers, and reuses the cached
+weights on later runs.
 
-```powershell
-Invoke-RestMethod http://localhost:1234/v1/models
-```
-
-Recommended configuration:
+Automatic selection uses Qwen2.5-VL-3B on systems with less than 10 GB of VRAM
+and Qwen2.5-VL-7B on larger GPUs. The 32B model is available as an explicit
+choice and is not selected automatically because it requires substantially more
+RAM and VRAM.
 
 ```dotenv
-TRAVELMOVIEAI_LM_STUDIO_URL=http://localhost:1234/v1
-TRAVELMOVIEAI_VISION_PROVIDER=qwen
+TRAVELMOVIEAI_VISION_PROVIDER=local
 TRAVELMOVIEAI_VISION_MODEL=auto
-TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS=120
+TRAVELMOVIEAI_MODEL_CACHE=./models
+TRAVELMOVIEAI_ALLOW_MODEL_DOWNLOAD=true
+TRAVELMOVIEAI_DEVICE=auto
 ```
 
-LM Studio controls GPU offload. If requests time out, increase the timeout or
-load a smaller model.
+The first run requires internet access and several gigabytes of free disk space.
+Set `TRAVELMOVIEAI_ALLOW_MODEL_DOWNLOAD=false` for cache-only offline operation.
+Once downloaded, normal inference stays local and does not upload media.
 
 ### Florence-2
 
@@ -182,15 +187,26 @@ Florence-2 runs directly through Transformers and PyTorch:
 python -m pip install -e ".[vision]"
 ```
 
-Model weights must already exist in the local Hugging Face cache or a local
-directory. The application uses local-only loading and does not silently
-download a model during processing.
+Model weights use the same application cache and are downloaded on first use.
 
 ```dotenv
 TRAVELMOVIEAI_VISION_PROVIDER=florence
 TRAVELMOVIEAI_VISION_MODEL=microsoft/Florence-2-large
 TRAVELMOVIEAI_DEVICE=auto
 ```
+
+### Optional LM Studio compatibility
+
+LM Studio is no longer required. To use an already configured LM Studio server,
+select `LM Studio` in the interface or configure:
+
+```dotenv
+TRAVELMOVIEAI_VISION_PROVIDER=lm-studio
+TRAVELMOVIEAI_LM_STUDIO_URL=http://localhost:1234/v1
+TRAVELMOVIEAI_VISION_MODEL=auto
+```
+
+The web application does not contact LM Studio unless this backend is selected.
 
 ### Faster Whisper
 
@@ -285,8 +301,10 @@ Do not commit `.env`.
 | `TRAVELMOVIEAI_FFPROBE_BINARY` | FFprobe command or full path | `ffprobe` |
 | `TRAVELMOVIEAI_LM_STUDIO_URL` | OpenAI-compatible LM Studio API | `http://localhost:1234/v1` |
 | `TRAVELMOVIEAI_LM_STUDIO_API_KEY` | Optional local API key | unset |
-| `TRAVELMOVIEAI_VISION_PROVIDER` | `qwen` or `florence` | `qwen` |
+| `TRAVELMOVIEAI_VISION_PROVIDER` | `local`, `florence`, or `lm-studio` | `local` |
 | `TRAVELMOVIEAI_VISION_MODEL` | Model identifier or `auto` | `auto` |
+| `TRAVELMOVIEAI_MODEL_CACHE` | Downloaded local model cache | `./models` |
+| `TRAVELMOVIEAI_ALLOW_MODEL_DOWNLOAD` | Download missing models on first use | `true` |
 | `TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS` | Vision request timeout | `120` |
 | `TRAVELMOVIEAI_WHISPER_MODEL` | `medium` or `large-v3` | `medium` |
 | `TRAVELMOVIEAI_DEVICE` | `auto`, `cuda`, `directml`, or `cpu` | `auto` |
@@ -381,7 +399,7 @@ consumers, tests, and this README together.
 Vision AI is the primary source of semantic understanding. OpenCV provides
 measurable technical features only.
 
-The preferred model is Qwen2.5-VL 7B or 32B. Florence-2 base or large is the
+The preferred model is Qwen2.5-VL 3B, 7B, or 32B. Florence-2 base or large is the
 local alternative. A validated scene response contains fields such as:
 
 ```json
@@ -568,13 +586,14 @@ Preview mode is limited to 854x480 and 24 FPS. The standard output defaults to
 
 ## Troubleshooting
 
-### LM Studio is unavailable
+### A local Vision model cannot be loaded
 
-- start the LM Studio Local Server;
-- verify `http://localhost:1234/v1/models`;
-- confirm that the loaded model accepts images;
-- check GPU offload in LM Studio;
-- increase `TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS`.
+- run `.\scripts\setup_windows.bat` to install the Vision dependencies;
+- check internet access and free space in `models/`;
+- use Qwen2.5-VL-3B on GPUs with 6-8 GB VRAM;
+- verify CUDA with
+  `.\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available())"`;
+- delete only an incomplete model snapshot from `models/` and retry the download.
 
 ### FFmpeg or FFprobe is unavailable
 
@@ -607,7 +626,7 @@ processed by multiple jobs simultaneously.
 - load a smaller Vision model;
 - disable speech analysis when unnecessary;
 - keep automatic workers enabled;
-- verify that LM Studio and FFmpeg are using the expected GPU.
+- verify that PyTorch CUDA and FFmpeg NVENC are using the expected GPU.
 
 ## Product Requirements
 
@@ -666,7 +685,7 @@ MVP acceptance criteria:
 
 ### P1: Story and manual editing
 
-- local LLM story adapter through LM Studio;
+- direct local LLM story adapter with optional LM Studio compatibility;
 - structured narrative and section duration budgets;
 - multiple movie variants from one analysis;
 - event and scene reordering;

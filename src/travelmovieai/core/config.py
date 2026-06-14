@@ -27,8 +27,10 @@ class Settings(BaseSettings):
     lm_studio_url: str = "http://localhost:1234/v1"
     lm_studio_api_key: str | None = None
     vision_model: str = "auto"
+    model_cache: Path = Path("models")
+    allow_model_download: bool = True
     vision_timeout_seconds: float = Field(default=120, ge=5, le=1800)
-    vision_provider: Literal["qwen", "florence"] = "qwen"
+    vision_provider: Literal["local", "lm-studio", "qwen", "florence"] = "local"
     music_library: Path = Path("assets/music")
     generated_music_filename: str = Field(
         default="generated_soundtrack.wav",

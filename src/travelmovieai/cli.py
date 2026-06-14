@@ -82,7 +82,7 @@ def create(
         bool,
         typer.Option(
             "--semantic/--quick",
-            help="Use local LM Studio vision analysis to select scenes.",
+            help="Use local Vision AI analysis to select scenes.",
         ),
     ] = False,
 ) -> None:

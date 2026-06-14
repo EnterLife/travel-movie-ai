@@ -30,6 +30,7 @@ const photoDuration = document.querySelector("#photo-duration");
 const storyStyle = document.querySelector("#story-style");
 const visionProvider = document.querySelector("#vision-provider");
 const visionModel = document.querySelector("#vision-model");
+const visionModelSource = document.querySelector("#vision-model-source");
 const renderDevice = document.querySelector("#render-device");
 const transitionType = document.querySelector("#transition-type");
 const previewMode = document.querySelector("#preview-mode");
@@ -70,6 +71,7 @@ let timerId = null;
 let serverReady = false;
 let movieReady = false;
 let currentMovieJob = null;
+let loadedCapabilities = null;
 
 const statusLabels = {
   queued: "В очереди",
@@ -173,11 +175,13 @@ async function checkHealth() {
   }
 }
 
-async function loadCapabilities() {
+async function loadCapabilities(includeLmStudio = visionProvider.value === "lm-studio") {
   try {
-    const capabilities = await requestJson("/api/capabilities");
+    const suffix = includeLmStudio ? "?include_lm_studio=true" : "";
+    const capabilities = await requestJson(`/api/capabilities${suffix}`);
+    loadedCapabilities = capabilities;
     renderCapabilities(capabilities);
-    populateModels(capabilities.ai);
+    populateModels(capabilities);
     if (!capabilities.cuda.ffmpeg_nvenc && renderDevice.value === "cuda") {
       renderDevice.value = "auto";
     }
@@ -190,10 +194,16 @@ async function loadCapabilities() {
 function renderCapabilities(capabilities) {
   capabilityList.replaceChildren(
     capabilityChip(
-      capabilities.ai.available
-        ? `LM Studio · ${capabilities.ai.models.length} моделей`
-        : "LM Studio недоступен",
-      capabilities.ai.available,
+      capabilities.local_ai.available
+        ? `Local AI · ${shortModelName(capabilities.local_ai.resolved_model)}`
+        : "Local AI dependencies missing",
+      capabilities.local_ai.available,
+    ),
+    capabilityChip(
+      capabilities.local_ai.downloads_enabled
+        ? "Models auto-download"
+        : "Models: cache only",
+      capabilities.local_ai.downloads_enabled,
     ),
     capabilityChip(
       capabilities.cuda.available
@@ -223,11 +233,33 @@ function capabilityChip(label, available) {
   return chip;
 }
 
-function populateModels(ai) {
+function populateModels(capabilities) {
   if (visionProvider.value === "florence") {
     populateFlorenceModels();
     return;
   }
+  if (visionProvider.value === "lm-studio") {
+    populateLmStudioModels(capabilities.ai);
+    return;
+  }
+  visionModelSource.textContent = "локально";
+  visionModel.replaceChildren(
+    new Option(
+      `Auto · ${shortModelName(capabilities.local_ai.resolved_model)}`,
+      "auto",
+      true,
+      capabilities.local_ai.configured_model === "auto",
+    ),
+  );
+  for (const model of capabilities.local_ai.models) {
+    const option = new Option(shortModelName(model.id), model.id);
+    option.selected = capabilities.local_ai.configured_model === model.id;
+    visionModel.append(option);
+  }
+}
+
+function populateLmStudioModels(ai) {
+  visionModelSource.textContent = "LM Studio";
   visionModel.replaceChildren();
   if (!ai.models.length) {
     visionModel.append(new Option(ai.configured_model || "Нет моделей", ai.configured_model));
@@ -242,10 +274,15 @@ function populateModels(ai) {
 }
 
 function populateFlorenceModels() {
+  visionModelSource.textContent = "локально";
   visionModel.replaceChildren(
     new Option("microsoft/Florence-2-large", "microsoft/Florence-2-large", true, true),
     new Option("microsoft/Florence-2-base", "microsoft/Florence-2-base"),
   );
+}
+
+function shortModelName(model) {
+  return model.split("/").pop();
 }
 
 form.addEventListener("submit", async (event) => {
@@ -837,11 +874,15 @@ browseWorkspace.addEventListener("click", () =>
   pickDirectory("workspace", workspace, browseWorkspace),
 );
 visionProvider.addEventListener("change", () => {
-  if (visionProvider.value === "florence") {
-    populateFlorenceModels();
-  } else {
-    loadCapabilities();
+  if (visionProvider.value === "lm-studio") {
+    loadCapabilities(true);
+    return;
   }
+  if (!loadedCapabilities) {
+    loadCapabilities();
+    return;
+  }
+  populateModels(loadedCapabilities);
 });
 musicMode.addEventListener("change", () => {
   musicPath.disabled = musicMode.value !== "manual";

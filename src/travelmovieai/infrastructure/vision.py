@@ -1,5 +1,7 @@
 """Local vision provider adapters."""
 
+from __future__ import annotations
+
 import base64
 import importlib
 import json
@@ -23,6 +25,11 @@ from travelmovieai.domain.enums import (
 from travelmovieai.domain.models import SceneUnderstanding, VisionScoreFactors
 
 PROMPT_VERSION = "scene-understanding-v3-stage-4.5"
+LOCAL_QWEN_MODELS = (
+    "Qwen/Qwen2.5-VL-3B-Instruct",
+    "Qwen/Qwen2.5-VL-7B-Instruct",
+    "Qwen/Qwen2.5-VL-32B-Instruct",
+)
 COMPACT_OUTPUT_CONTRACT = """
 Return one JSON object with these fields:
 caption, detailed_description,
@@ -37,6 +44,146 @@ vision_score 0-100,
 score_factors {uniqueness, people, emotion, visual_quality, landmark,
 unusual_event}, story_relevance, tags.
 """.strip()
+
+
+class LocalQwenVisionProvider:
+    """Run Qwen2.5-VL directly with Transformers and cached local weights."""
+
+    name = "local-qwen"
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        device: str = "auto",
+        cache_dir: Path = Path("models"),
+        allow_download: bool = True,
+    ) -> None:
+        self.model = model
+        self.device = device
+        self.cache_dir = cache_dir
+        self.allow_download = allow_download
+        self._processor: Any = None
+        self._loaded_model: Any = None
+        self._torch: Any = None
+
+    def analyze(self, image_path: Path, style: StoryStyle) -> SceneUnderstanding:
+        self._ensure_loaded()
+        prompt = (
+            "You are the Vision AI module of a travel film editor. Analyze only "
+            "visible evidence. Do not identify unknown people or invent landmarks. "
+            "A landmark requires visible architectural or textual evidence. "
+            f"Evaluate this scene for a {style.value} travel movie. The contact "
+            "sheet contains chronological frames from one scene (start, middle, "
+            "end), so describe meaningful changes across them. Return only JSON. "
+            "Use 0-100 for vision_score and every score factor. Set visual_quality "
+            "to 50 because measured OpenCV quality replaces it later. "
+            f"{COMPACT_OUTPUT_CONTRACT}"
+        )
+        try:
+            with Image.open(image_path) as source:
+                image = source.convert("RGB")
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image"},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ]
+                text = self._processor.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                inputs = self._processor(
+                    text=[text],
+                    images=[image],
+                    padding=True,
+                    return_tensors="pt",
+                )
+                inputs = inputs.to(self._loaded_model.device)
+                with self._torch.inference_mode():
+                    generated_ids = self._loaded_model.generate(
+                        **inputs,
+                        max_new_tokens=900,
+                        do_sample=False,
+                    )
+                trimmed_ids = [
+                    output_ids[len(input_ids) :]
+                    for input_ids, output_ids in zip(
+                        inputs.input_ids,
+                        generated_ids,
+                        strict=True,
+                    )
+                ]
+                content = self._processor.batch_decode(
+                    trimmed_ids,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                )[0]
+            return SceneUnderstanding.model_validate_json(_extract_json(_strip_json_fence(content)))
+        except ValidationError as error:
+            raise VisionAnalysisError(
+                "Локальная Qwen-модель вернула некорректный структурированный ответ. "
+                "Повторите анализ или выберите другую модель."
+            ) from error
+        except (OSError, RuntimeError, ValueError, KeyError, IndexError) as error:
+            raise VisionAnalysisError(
+                f"Локальная Qwen-модель не смогла проанализировать {image_path.name}. "
+                "Проверьте свободную RAM/VRAM и при необходимости выберите модель 3B."
+            ) from error
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded_model is not None:
+            return
+        try:
+            self._torch = importlib.import_module("torch")
+            transformers = importlib.import_module("transformers")
+            importlib.import_module("accelerate")
+        except ImportError as error:
+            raise DependencyUnavailableError(
+                "Для локальной Qwen Vision установите optional-группу vision: "
+                'python -m pip install -e ".[vision]".'
+            ) from error
+
+        if self.device == "cuda" and not self._torch.cuda.is_available():
+            raise DependencyUnavailableError(
+                "Выбран CUDA, но установленная сборка PyTorch не видит видеокарту."
+            )
+        resolved_device = (
+            "cuda" if self.device in {"auto", "cuda"} and self._torch.cuda.is_available() else "cpu"
+        )
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            processor_type = transformers.AutoProcessor
+            model_type = transformers.Qwen2_5_VLForConditionalGeneration
+            self._processor = processor_type.from_pretrained(
+                self.model,
+                cache_dir=self.cache_dir,
+                local_files_only=not self.allow_download,
+                min_pixels=256 * 28 * 28,
+                max_pixels=1280 * 28 * 28,
+            )
+            self._loaded_model = model_type.from_pretrained(
+                self.model,
+                cache_dir=self.cache_dir,
+                local_files_only=not self.allow_download,
+                torch_dtype="auto",
+                device_map="auto" if resolved_device == "cuda" else "cpu",
+                low_cpu_mem_usage=True,
+            )
+            self._loaded_model.eval()
+        except (AttributeError, OSError, RuntimeError, ValueError) as error:
+            download_hint = (
+                "Проверьте интернет и свободное место в кэше моделей."
+                if self.allow_download
+                else "Автозагрузка отключена, а модель отсутствует в локальном кэше."
+            )
+            raise VisionAnalysisError(
+                f"Не удалось загрузить Qwen Vision '{self.model}'. {download_hint}"
+            ) from error
 
 
 class LMStudioVisionProvider:
@@ -185,9 +332,18 @@ class Florence2VisionProvider:
 
     name = "florence-2"
 
-    def __init__(self, model: str, device: str = "auto") -> None:
+    def __init__(
+        self,
+        model: str,
+        device: str = "auto",
+        *,
+        cache_dir: Path = Path("models"),
+        allow_download: bool = True,
+    ) -> None:
         self.model = model
         self.device = device
+        self.cache_dir = cache_dir
+        self.allow_download = allow_download
         self._processor: Any = None
         self._loaded_model: Any = None
         self._torch: Any = None
@@ -200,10 +356,7 @@ class Florence2VisionProvider:
                 image_size = image.size
                 task = "<MORE_DETAILED_CAPTION>"
                 inputs = self._processor(text=task, images=image, return_tensors="pt")
-                inputs = {
-                    key: value.to(self._resolved_device())
-                    for key, value in inputs.items()
-                }
+                inputs = {key: value.to(self._resolved_device()) for key, value in inputs.items()}
                 with self._torch.inference_mode():
                     generated_ids = self._loaded_model.generate(
                         **inputs,
@@ -240,24 +393,28 @@ class Florence2VisionProvider:
             ) from error
         device = self._resolved_device()
         dtype = self._torch.float16 if device == "cuda" else self._torch.float32
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
             processor_type = transformers.AutoProcessor
             model_type = transformers.AutoModelForCausalLM
             self._processor = processor_type.from_pretrained(
                 self.model,
                 trust_remote_code=True,
-                local_files_only=True,
+                cache_dir=self.cache_dir,
+                local_files_only=not self.allow_download,
             )
             self._loaded_model = model_type.from_pretrained(
                 self.model,
                 trust_remote_code=True,
                 torch_dtype=dtype,
-                local_files_only=True,
+                cache_dir=self.cache_dir,
+                local_files_only=not self.allow_download,
             ).to(device)
             self._loaded_model.eval()
         except (OSError, RuntimeError, ValueError) as error:
             raise VisionAnalysisError(
-                f"Не удалось загрузить локальную Florence-2 модель '{self.model}'."
+                f"Не удалось загрузить локальную Florence-2 модель '{self.model}'. "
+                "Проверьте интернет, свободное место и настройки автозагрузки."
             ) from error
 
     def _resolved_device(self) -> str:
@@ -268,6 +425,78 @@ class Florence2VisionProvider:
         if self._torch is not None and self._torch.cuda.is_available():
             return "cuda"
         return "cpu"
+
+
+def resolve_local_vision_model(
+    configured_model: str | None,
+    *,
+    gpu_memory_mb: int | None,
+    system_memory_mb: int | None,
+) -> str:
+    """Choose a practical Qwen size while preserving explicit model choices."""
+
+    if configured_model and configured_model != "auto":
+        return configured_model
+    if (gpu_memory_mb or 0) >= 10 * 1024 or (
+        not gpu_memory_mb and (system_memory_mb or 0) >= 48 * 1024
+    ):
+        return LOCAL_QWEN_MODELS[1]
+    return LOCAL_QWEN_MODELS[0]
+
+
+def build_vision_provider(
+    *,
+    provider: str,
+    model: str | None,
+    device: str,
+    cache_dir: Path,
+    allow_download: bool,
+    gpu_memory_mb: int | None,
+    system_memory_mb: int | None,
+    lm_studio_url: str,
+    lm_studio_api_key: str | None,
+    timeout_seconds: float,
+) -> LocalQwenVisionProvider | LMStudioVisionProvider | Florence2VisionProvider:
+    """Build the selected backend without importing model-heavy packages."""
+
+    configured_model = model or "auto"
+    if provider == "florence":
+        return Florence2VisionProvider(
+            model=(
+                configured_model if configured_model != "auto" else "microsoft/Florence-2-large"
+            ),
+            device=device,
+            cache_dir=cache_dir,
+            allow_download=allow_download,
+        )
+    if provider == "lm-studio":
+        from travelmovieai.infrastructure.lm_studio import (
+            list_lm_studio_models,
+            resolve_vision_model,
+        )
+
+        discovered = list_lm_studio_models(
+            lm_studio_url,
+            lm_studio_api_key,
+            5,
+        )
+        resolved_model = resolve_vision_model(discovered, configured_model)
+        return LMStudioVisionProvider(
+            base_url=lm_studio_url,
+            model=resolved_model,
+            timeout_seconds=timeout_seconds,
+            api_key=lm_studio_api_key,
+        )
+    return LocalQwenVisionProvider(
+        resolve_local_vision_model(
+            configured_model,
+            gpu_memory_mb=gpu_memory_mb,
+            system_memory_mb=system_memory_mb,
+        ),
+        device=device,
+        cache_dir=cache_dir,
+        allow_download=allow_download,
+    )
 
 
 def _parse_understanding(response: dict[str, Any]) -> SceneUnderstanding:
@@ -367,11 +596,7 @@ def _understanding_from_caption(
         people_groups=people_groups,
         landmarks=[],
         vision_score=(
-            uniqueness * 0.3
-            + people_score * 0.15
-            + emotion_score * 0.25
-            + 50 * 0.2
-            + 35 * 0.1
+            uniqueness * 0.3 + people_score * 0.15 + emotion_score * 0.25 + 50 * 0.2 + 35 * 0.1
         ),
         score_factors=factors,
         story_relevance=f"Potential {style.value} travel-story scene.",

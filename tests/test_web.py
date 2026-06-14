@@ -195,16 +195,37 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
             ),
         )
     ) as client:
-        response = client.get("/api/capabilities")
+        response = client.get("/api/capabilities?include_lm_studio=true")
 
     payload = response.json()
     assert response.status_code == 200
+    assert payload["local_ai"]["resolved_model"] == "Qwen/Qwen2.5-VL-3B-Instruct"
     assert payload["ai"]["available"] is True
     assert payload["ai"]["models"][1]["likely_vision"] is True
     assert payload["ai"]["models"][1]["recommended"] is True
     assert payload["cuda"]["ffmpeg_nvenc"] is True
     assert payload["resources"]["render_workers"] >= 1
     assert payload["resources"]["model_batch_size"] == 4
+
+
+def test_web_capabilities_skip_lm_studio_by_default() -> None:
+    def unexpected_lm_studio_call(
+        url: str,
+        key: str | None,
+        timeout: float,
+    ) -> LMStudioModels:
+        raise AssertionError("LM Studio should not be contacted")
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            model_lister=unexpected_lm_studio_call,
+        )
+    ) as client:
+        response = client.get("/api/capabilities")
+
+    assert response.status_code == 200
+    assert response.json()["ai"]["available"] is False
 
 
 def test_web_scan_job_reaches_completed_result(tmp_path: Path) -> None:

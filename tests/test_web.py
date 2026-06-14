@@ -124,11 +124,36 @@ def test_web_interface_serves_page_and_health() -> None:
 
     assert page.status_code == 200
     assert "TravelMovieAI" in page.text
+    assert "D:\\Vacation\\Japan2026" not in page.text
+    assert "Выбрать папку" in page.text
     assert health.json()["status"] == "ok"
     assert health.json()["ready"] is True
     assert health.json()["ffprobe"]["available"] is True
     assert styles.status_code == 200
     assert "--accent" in styles.text
+
+
+def test_web_directory_dialog_returns_selected_path(tmp_path: Path) -> None:
+    calls: list[tuple[Path | None, str, bool]] = []
+
+    def select(initial: Path | None, title: str, must_exist: bool) -> Path:
+        calls.append((initial, title, must_exist))
+        return tmp_path
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            directory_selector=select,
+        )
+    ) as client:
+        response = client.post(
+            "/api/dialogs/directory",
+            json={"purpose": "input", "initial_path": str(tmp_path)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["selected_path"] == str(tmp_path)
+    assert calls == [(tmp_path, "Выберите папку с видео и фотографиями", True)]
 
 
 def test_web_health_is_not_ready_without_ffprobe() -> None:

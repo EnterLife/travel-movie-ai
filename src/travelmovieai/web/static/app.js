@@ -1,6 +1,8 @@
 const form = document.querySelector("#scan-form");
 const inputPath = document.querySelector("#input-path");
 const workspace = document.querySelector("#workspace");
+const browseInputPath = document.querySelector("#browse-input-path");
+const browseWorkspace = document.querySelector("#browse-workspace");
 const submitButton = document.querySelector("#submit-button");
 const errorBox = document.querySelector("#error-box");
 const emptyState = document.querySelector("#empty-state");
@@ -112,6 +114,31 @@ async function requestJson(url, options = {}) {
     throw new Error(payload?.detail || `Ошибка HTTP ${response.status}`);
   }
   return payload;
+}
+
+async function pickDirectory(purpose, field, button) {
+  hideError();
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = "Открытие...";
+  try {
+    const payload = await requestJson("/api/dialogs/directory", {
+      method: "POST",
+      body: JSON.stringify({
+        purpose,
+        initial_path: field.value.trim() || null,
+      }),
+    });
+    if (payload.selected_path) {
+      field.value = payload.selected_path;
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  } catch (error) {
+    showError(`Не удалось открыть выбор папки: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
 }
 
 async function checkHealth() {
@@ -803,6 +830,12 @@ function lastPathPart(value) {
 }
 
 refreshJobs.addEventListener("click", loadHistory);
+browseInputPath.addEventListener("click", () =>
+  pickDirectory("input", inputPath, browseInputPath),
+);
+browseWorkspace.addEventListener("click", () =>
+  pickDirectory("workspace", workspace, browseWorkspace),
+);
 visionProvider.addEventListener("change", () => {
   if (visionProvider.value === "florence") {
     populateFlorenceModels();

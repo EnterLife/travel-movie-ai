@@ -215,7 +215,10 @@ class TravelMovieService:
             raise MontageError("Не удалось прочитать результаты Scene Detection.") from error
 
         assets_by_id = {asset.id: asset for asset in report.assets}
-        extractor = RepresentativeFrameExtractor(self.settings.ffmpeg_binary)
+        extractor = RepresentativeFrameExtractor(
+            self.settings.ffmpeg_binary,
+            self.settings.ffprobe_binary,
+        )
         tracker.emit(
             12,
             f"Найдено сцен: {len(scene_report.scenes)}. "

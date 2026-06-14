@@ -16,6 +16,7 @@ _ISO6709_PATTERN = re.compile(r"^(?P<latitude>[+-]\d+(?:\.\d+)?)(?P<longitude>[+
 @dataclass(frozen=True, slots=True)
 class ProbeResult:
     duration_seconds: float | None = None
+    video_duration_seconds: float | None = None
     width: int | None = None
     height: int | None = None
     fps: float | None = None
@@ -86,6 +87,9 @@ def parse_probe_payload(payload: dict[str, Any]) -> ProbeResult:
             format_data.get("duration"),
             *(stream.get("duration") for stream in streams),
         ),
+        video_duration_seconds=(
+            _optional_float(video_stream.get("duration")) if video_stream else None
+        ),
         width=_optional_int(video_stream.get("width")) if video_stream else None,
         height=_optional_int(video_stream.get("height")) if video_stream else None,
         fps=_parse_rate(video_stream.get("avg_frame_rate")) if video_stream else None,
@@ -96,6 +100,9 @@ def parse_probe_payload(payload: dict[str, Any]) -> ProbeResult:
             "format_name": format_data.get("format_name"),
             "format_long_name": format_data.get("format_long_name"),
             "bit_rate": _optional_int(format_data.get("bit_rate")),
+            "video_duration_seconds": (
+                _optional_float(video_stream.get("duration")) if video_stream else None
+            ),
             "streams": [
                 {
                     "codec_type": stream.get("codec_type"),

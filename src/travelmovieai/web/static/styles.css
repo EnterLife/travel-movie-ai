@@ -288,6 +288,40 @@ label span {
   border-radius: 13px;
 }
 
+.directory-field input {
+  padding-right: 142px;
+}
+
+.folder-picker {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--muted-light);
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+  font-size: 10px;
+  transform: translateY(-50%);
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.folder-picker:hover {
+  border-color: rgba(255, 107, 61, 0.45);
+  color: var(--text);
+  background: rgba(255, 107, 61, 0.08);
+}
+
+.folder-picker:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .field-shell input:focus,
 .filter-input:focus {
   border-color: rgba(255, 107, 61, 0.6);

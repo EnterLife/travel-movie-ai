@@ -17,6 +17,7 @@ from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusyError
 from travelmovieai.domain.models import MediaScanReport
 from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.infrastructure.directory_dialog import select_directory
 from travelmovieai.infrastructure.lm_studio import (
     LMStudioModels,
     list_lm_studio_models,
@@ -35,6 +36,8 @@ from travelmovieai.web.schemas import (
     CapabilitiesResponse,
     CudaStatusResponse,
     DependencyStatus,
+    DirectoryDialogRequest,
+    DirectoryDialogResponse,
     HealthResponse,
     ModelOption,
     MovieJobResponse,
@@ -57,6 +60,9 @@ def create_app(
     executable_checker: Callable[[str], ExecutableStatus] = check_executable,
     model_lister: Callable[[str, str | None, float], LMStudioModels] = (list_lm_studio_models),
     cuda_checker: Callable[[str], CudaStatus] = check_cuda,
+    directory_selector: Callable[[Path | None, str, bool], Path | None] = (
+        select_directory
+    ),
 ) -> FastAPI:
     resolved_settings = settings or Settings()
     service = TravelMovieService(resolved_settings)
@@ -132,6 +138,25 @@ def create_app(
             music_modes=["auto", "generated", "library", "manual", "none"],
             render_devices=["auto", "cuda", "cpu"],
         )
+
+    @app.post("/api/dialogs/directory", response_model=DirectoryDialogResponse)
+    def directory_dialog(payload: DirectoryDialogRequest) -> DirectoryDialogResponse:
+        initial_path = (
+            Path(payload.initial_path)
+            if payload.initial_path and payload.initial_path.strip()
+            else None
+        )
+        is_input = payload.purpose == "input"
+        selected = directory_selector(
+            initial_path,
+            (
+                "Выберите папку с видео и фотографиями"
+                if is_input
+                else "Выберите папку workspace"
+            ),
+            is_input,
+        )
+        return DirectoryDialogResponse(selected_path=selected)
 
     @app.post(
         "/api/scans",

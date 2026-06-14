@@ -3,6 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -20,6 +21,15 @@ class JobStatus(StrEnum):
 class ScanRequest(BaseModel):
     input_path: str = Field(min_length=1)
     workspace: str | None = None
+
+
+class DirectoryDialogRequest(BaseModel):
+    purpose: Literal["input", "workspace"]
+    initial_path: str | None = None
+
+
+class DirectoryDialogResponse(BaseModel):
+    selected_path: Path | None = None
 
 
 class ScanJobResponse(BaseModel):

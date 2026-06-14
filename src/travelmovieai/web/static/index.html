@@ -54,16 +54,18 @@
               Папка с материалами
               <span>обязательно</span>
             </label>
-            <div class="field-shell">
+            <div class="field-shell directory-field">
               <span class="field-icon" aria-hidden="true">↳</span>
               <input
                 id="input-path"
                 name="input_path"
                 type="text"
-                placeholder="D:\Vacation\Japan2026"
                 autocomplete="off"
                 required
               >
+              <button id="browse-input-path" class="folder-picker" type="button">
+                Выбрать папку
+              </button>
             </div>
             <p class="field-help">
               Вставьте полный путь. Вложенные папки будут просканированы автоматически.
@@ -73,15 +75,17 @@
               Workspace
               <span>необязательно</span>
             </label>
-            <div class="field-shell">
+            <div class="field-shell directory-field">
               <span class="field-icon" aria-hidden="true">◇</span>
               <input
                 id="workspace"
                 name="workspace"
                 type="text"
-                placeholder="D:\TravelMovieAI\Japan2026"
                 autocomplete="off"
               >
+              <button id="browse-workspace" class="folder-picker" type="button">
+                Выбрать папку
+              </button>
             </div>
             <p class="field-help">
               Здесь появятся SQLite-база, JSON-отчёт и будущие артефакты проекта.

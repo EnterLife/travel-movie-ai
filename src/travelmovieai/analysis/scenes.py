@@ -7,12 +7,18 @@ import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
-from travelmovieai.core.exceptions import DependencyUnavailableError, MontageError
+from travelmovieai.core.exceptions import (
+    DependencyUnavailableError,
+    MediaProbeError,
+    MontageError,
+)
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MediaAsset, QuickMontageSettings, Scene
+from travelmovieai.infrastructure.ffmpeg import FFprobeClient
 
 
 class SceneDetector:
@@ -111,8 +117,15 @@ class SceneDetector:
 
 
 class RepresentativeFrameExtractor:
-    def __init__(self, ffmpeg_binary: str = "ffmpeg") -> None:
+    def __init__(
+        self,
+        ffmpeg_binary: str = "ffmpeg",
+        ffprobe_binary: str = "ffprobe",
+    ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
+        self._probe = FFprobeClient(ffprobe_binary)
+        self._video_durations: dict[Path, float | None] = {}
+        self._duration_lock = Lock()
 
     def extract(self, scene: Scene, asset: MediaAsset, frames_dir: Path) -> Path:
         if asset.media_type is MediaType.PHOTO:
@@ -125,13 +138,19 @@ class RepresentativeFrameExtractor:
         temporary_path = frame_path.with_name(
             f".{frame_path.stem}.{uuid4().hex}.tmp.png"
         )
-        duration = scene.end_seconds - scene.start_seconds
-        timestamps = (
-            scene.start_seconds + duration * 0.12,
-            scene.start_seconds + duration * 0.5,
-            scene.start_seconds + duration * 0.88,
+        timestamps = _sample_timestamps(
+            scene,
+            asset,
+            self._video_duration(asset),
         )
-        command = [self.ffmpeg_binary, "-hide_banner", "-loglevel", "error", "-y"]
+        command = [
+            self.ffmpeg_binary,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+        ]
         for timestamp in timestamps:
             command.extend(["-ss", f"{timestamp:.3f}", "-i", str(asset.path)])
         command.extend(
@@ -173,7 +192,12 @@ class RepresentativeFrameExtractor:
                     f"FFmpeg executable was not found: {self.ffmpeg_binary}"
                 ) from error
             if completed.returncode != 0 or not temporary_path.is_file():
-                detail = completed.stderr.strip() or "unknown FFmpeg error"
+                detail = completed.stderr.strip()
+                if not detail:
+                    detail = (
+                        f"FFmpeg завершился с кодом {completed.returncode}, "
+                        "но не создал изображение."
+                    )
                 raise MontageError(
                     f"Не удалось извлечь кадр из {asset.relative_path}: {detail}"
                 )
@@ -181,6 +205,25 @@ class RepresentativeFrameExtractor:
             return frame_path
         finally:
             temporary_path.unlink(missing_ok=True)
+
+    def _video_duration(self, asset: MediaAsset) -> float | None:
+        if asset.path in self._video_durations:
+            return self._video_durations[asset.path]
+        with self._duration_lock:
+            if asset.path in self._video_durations:
+                return self._video_durations[asset.path]
+            stored = _optional_positive_float(
+                asset.probe_metadata.get("video_duration_seconds")
+            )
+            if stored is not None:
+                self._video_durations[asset.path] = stored
+                return stored
+            try:
+                duration = self._probe.probe(asset.path).video_duration_seconds
+            except (DependencyUnavailableError, MediaProbeError):
+                duration = None
+            self._video_durations[asset.path] = duration
+            return duration
 
 
 def scene_cache_key(asset: MediaAsset, settings: QuickMontageSettings) -> str:
@@ -194,3 +237,33 @@ def scene_cache_key(asset: MediaAsset, settings: QuickMontageSettings) -> str:
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _sample_timestamps(
+    scene: Scene,
+    asset: MediaAsset,
+    video_duration: float | None,
+) -> tuple[float, float, float]:
+    end = scene.end_seconds
+    if video_duration is not None:
+        frame_margin = max(0.05, 1 / (asset.fps or 25))
+        end = min(end, max(scene.start_seconds, video_duration - frame_margin))
+    duration = max(0, end - scene.start_seconds)
+    if duration <= 0:
+        timestamp = max(0, min(scene.start_seconds, (video_duration or end) - 0.05))
+        return timestamp, timestamp, timestamp
+    return (
+        scene.start_seconds + duration * 0.12,
+        scene.start_seconds + duration * 0.5,
+        scene.start_seconds + duration * 0.88,
+    )
+
+
+def _optional_positive_float(value: object) -> float | None:
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

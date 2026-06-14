@@ -21,6 +21,7 @@ def test_parse_probe_payload_extracts_video_metadata_and_location() -> None:
                 {
                     "codec_type": "video",
                     "codec_name": "h264",
+                    "duration": "12.25",
                     "width": 1920,
                     "height": 1080,
                     "avg_frame_rate": "30000/1001",
@@ -31,6 +32,8 @@ def test_parse_probe_payload_extracts_video_metadata_and_location() -> None:
     )
 
     assert result.duration_seconds == 12.5
+    assert result.video_duration_seconds == 12.25
+    assert result.metadata["video_duration_seconds"] == 12.25
     assert result.width == 1920
     assert result.height == 1080
     assert result.fps == pytest.approx(29.97, rel=0.001)

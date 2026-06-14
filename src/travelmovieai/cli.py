@@ -7,7 +7,7 @@ from typing import Annotated
 import typer
 
 from travelmovieai.application.service import TravelMovieService
-from travelmovieai.core.config import Settings
+from travelmovieai.core.config import load_settings
 from travelmovieai.core.exceptions import TravelMovieError
 from travelmovieai.domain.enums import PipelineStage, StoryStyle
 from travelmovieai.domain.models import StageResult
@@ -44,7 +44,7 @@ WorkspaceOption = Annotated[
 
 
 def _service() -> TravelMovieService:
-    return TravelMovieService(Settings())
+    return TravelMovieService(load_settings())
 
 
 def _run(operation: Callable[[], StageResult]) -> None:
@@ -71,13 +71,6 @@ def create(
             help="Story style used by semantic scene analysis and music selection.",
         ),
     ] = StoryStyle.CINEMATIC,
-    cloud: Annotated[
-        bool,
-        typer.Option(
-            "--cloud",
-            help="Reserved for future optional cloud providers.",
-        ),
-    ] = False,
     semantic: Annotated[
         bool,
         typer.Option(
@@ -93,7 +86,6 @@ def create(
             output_path=output,
             workspace=workspace,
             style=style,
-            cloud=cloud,
             semantic=semantic,
         )
     )

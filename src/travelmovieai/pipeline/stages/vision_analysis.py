@@ -30,9 +30,6 @@ class VisionAnalysisStage(Stage):
             allow_download=context.settings.allow_model_download,
             gpu_memory_mb=resources.gpu_memory_mb,
             system_memory_mb=resources.memory_mb,
-            lm_studio_url=context.settings.lm_studio_url,
-            lm_studio_api_key=context.settings.lm_studio_api_key,
-            timeout_seconds=context.settings.vision_timeout_seconds,
             model_batch_size=resources.model_batch_size,
         )
         report = analyze_scenes(repository.list_scenes(), provider, context.style)

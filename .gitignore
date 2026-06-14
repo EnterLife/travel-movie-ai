@@ -18,8 +18,7 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Local configuration and model caches
-.env
+# Model caches
 models/
 .cache/
 
@@ -31,4 +30,3 @@ output/
 *.sqlite3
 *.mp4
 *.wav
-

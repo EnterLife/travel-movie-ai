@@ -6,12 +6,12 @@ from threading import Timer
 
 import uvicorn
 
-from travelmovieai.core.config import Settings
+from travelmovieai.core.config import load_settings
 from travelmovieai.web.app import create_app
 
 
 def main() -> None:
-    settings = Settings()
+    settings = load_settings()
     parser = argparse.ArgumentParser(description="Run the TravelMovieAI web interface.")
     parser.add_argument("--host", default=settings.web_host)
     parser.add_argument("--port", type=int, default=settings.web_port)

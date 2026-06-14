@@ -73,14 +73,6 @@ class ModelOption(BaseModel):
     recommended: bool = False
 
 
-class AIProviderStatus(BaseModel):
-    available: bool
-    base_url: str
-    configured_model: str
-    models: list[ModelOption] = Field(default_factory=list)
-    error: str | None = None
-
-
 class LocalAIStatus(BaseModel):
     available: bool
     configured_model: str
@@ -125,7 +117,6 @@ class CapabilitiesResponse(BaseModel):
     default_workspace_root: str
     local_ai: LocalAIStatus
     music_ai: MusicAIStatus
-    ai: AIProviderStatus
     cuda: CudaStatusResponse
     resources: ResourceProfileResponse
     opencv_available: bool

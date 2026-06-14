@@ -170,7 +170,7 @@ async function checkHealth() {
     if (!health.ready) {
       showError(
         health.ffprobe.error ||
-          "FFprobe недоступен. Проверьте PATH или TRAVELMOVIEAI_FFPROBE_BINARY.",
+          "FFprobe недоступен. Проверьте PATH или ffprobe_binary в configs/settings.toml.",
       );
     }
   } catch (error) {
@@ -185,10 +185,9 @@ async function checkHealth() {
   }
 }
 
-async function loadCapabilities(includeLmStudio = visionProvider.value === "lm-studio") {
+async function loadCapabilities() {
   try {
-    const suffix = includeLmStudio ? "?include_lm_studio=true" : "";
-    const capabilities = await requestJson(`/api/capabilities${suffix}`);
+    const capabilities = await requestJson("/api/capabilities");
     loadedCapabilities = capabilities;
     defaultWorkspaceRoot = capabilities.default_workspace_root || "";
     updateAutomaticWorkspace();
@@ -261,10 +260,6 @@ function populateModels(capabilities) {
     populateFlorenceModels();
     return;
   }
-  if (visionProvider.value === "lm-studio") {
-    populateLmStudioModels(capabilities.ai);
-    return;
-  }
   visionModelSource.textContent = "локально";
   visionModel.replaceChildren(
     new Option(
@@ -294,21 +289,6 @@ function populateMusicModels(musicAi) {
     const option = new Option(`${shortModelName(model.id)} · high quality`, model.id);
     option.selected = musicAi.configured_model === model.id;
     musicModel.append(option);
-  }
-}
-
-function populateLmStudioModels(ai) {
-  visionModelSource.textContent = "LM Studio";
-  visionModel.replaceChildren();
-  if (!ai.models.length) {
-    visionModel.append(new Option(ai.configured_model || "Нет моделей", ai.configured_model));
-    return;
-  }
-  for (const model of ai.models) {
-    const suffix = model.likely_vision ? " · vision" : " · совместимость не проверена";
-    const option = new Option(`${model.id}${suffix}`, model.id);
-    option.selected = model.recommended;
-    visionModel.append(option);
   }
 }
 
@@ -976,10 +956,6 @@ movieCancelButton.addEventListener("click", async () => {
   }
 });
 visionProvider.addEventListener("change", () => {
-  if (visionProvider.value === "lm-studio") {
-    loadCapabilities(true);
-    return;
-  }
   if (!loadedCapabilities) {
     loadCapabilities();
     return;

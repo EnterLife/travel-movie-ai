@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import base64
 import gc
 import importlib
 import json
-import mimetypes
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from PIL import Image
 from pydantic import ValidationError
@@ -306,147 +302,6 @@ class LocalQwenVisionProvider:
         }
 
 
-class LMStudioVisionProvider:
-    """Analyze representative frames through LM Studio's OpenAI-compatible API."""
-
-    name = "lm-studio"
-
-    def __init__(
-        self,
-        base_url: str,
-        model: str,
-        timeout_seconds: float,
-        api_key: str | None = None,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.timeout_seconds = timeout_seconds
-        self.api_key = api_key
-        self._structured_output_supported = True
-
-    def analyze(self, image_path: Path, style: StoryStyle) -> SceneUnderstanding:
-        media_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
-        try:
-            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-        except OSError as error:
-            raise VisionAnalysisError(
-                f"Не удалось прочитать representative frame: {image_path.name}"
-            ) from error
-        schema = SceneUnderstanding.model_json_schema()
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the Vision AI module of a travel film editor. Analyze "
-                    "only visible evidence across the chronological frames. Return "
-                    "JSON matching the schema exactly. Use only enum values from the "
-                    "schema. Do not identify unknown people or invent landmarks. A "
-                    "landmark requires visible architectural or textual evidence; "
-                    "otherwise return an empty landmarks list."
-                ),
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Evaluate this scene for a {style.value} travel movie. "
-                            "For video, the image may contain three chronological "
-                            "frames from the same scene (start, middle, end). "
-                            "Describe what changes across them. vision_score and each "
-                            "score factor use 0-100. Evaluate uniqueness, people, "
-                            "emotion, landmark value, and unusual_event. Set "
-                            "visual_quality to 50 because the application replaces it "
-                            "with measured OpenCV quality. "
-                            f"{COMPACT_OUTPUT_CONTRACT}"
-                        ),
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{media_type};base64,{encoded}",
-                        },
-                    },
-                ],
-            },
-        ]
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "temperature": 0.1,
-            "max_tokens": 900,
-            "messages": messages,
-        }
-        if self._structured_output_supported:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "scene_understanding",
-                    "strict": True,
-                    "schema": schema,
-                },
-            }
-        response = self._post(payload)
-        try:
-            return _parse_understanding(response)
-        except (KeyError, IndexError, TypeError, ValidationError, json.JSONDecodeError):
-            if not self._structured_output_supported:
-                raise VisionAnalysisError(
-                    "Локальная vision-модель вернула ответ, не соответствующий схеме."
-                ) from None
-            self._structured_output_supported = False
-            payload.pop("response_format", None)
-            retry = self._post(payload)
-            try:
-                return _parse_understanding(retry)
-            except (
-                KeyError,
-                IndexError,
-                TypeError,
-                ValidationError,
-                json.JSONDecodeError,
-            ) as error:
-                raise VisionAnalysisError(
-                    "Локальная vision-модель не смогла вернуть структурированный "
-                    "анализ сцены. Выберите другую vision-модель в интерфейсе."
-                ) from error
-
-    def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.base_url}/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        request = Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                parsed: dict[str, Any] = json.loads(response.read().decode("utf-8"))
-                return parsed
-        except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:1000]
-            raise VisionAnalysisError(
-                f"LM Studio отклонил vision-запрос (HTTP {error.code}): {detail}"
-            ) from error
-        except TimeoutError as error:
-            raise VisionAnalysisError(
-                "Vision-модель в LM Studio не завершила анализ за "
-                f"{self.timeout_seconds:.0f} с. Увеличьте "
-                "TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS, уменьшите модель или "
-                "проверьте GPU offload в LM Studio."
-            ) from error
-        except URLError as error:
-            raise VisionAnalysisError(
-                "LM Studio недоступен. Запустите локальный сервер, загрузите "
-                f"vision-модель '{self.model}' и проверьте {self.base_url}."
-            ) from error
-        except (OSError, json.JSONDecodeError) as error:
-            raise VisionAnalysisError("Не удалось прочитать ответ LM Studio.") from error
-
-
 class Florence2VisionProvider:
     """Run Florence-2 locally and normalize its caption into the scene schema."""
 
@@ -591,11 +446,8 @@ def build_vision_provider(
     allow_download: bool,
     gpu_memory_mb: int | None,
     system_memory_mb: int | None,
-    lm_studio_url: str,
-    lm_studio_api_key: str | None,
-    timeout_seconds: float,
     model_batch_size: int = 1,
-) -> LocalQwenVisionProvider | LMStudioVisionProvider | Florence2VisionProvider:
+) -> LocalQwenVisionProvider | Florence2VisionProvider:
     """Build the selected backend without importing model-heavy packages."""
 
     configured_model = model or "auto"
@@ -607,24 +459,6 @@ def build_vision_provider(
             device=device,
             cache_dir=cache_dir,
             allow_download=allow_download,
-        )
-    if provider == "lm-studio":
-        from travelmovieai.infrastructure.lm_studio import (
-            list_lm_studio_models,
-            resolve_vision_model,
-        )
-
-        discovered = list_lm_studio_models(
-            lm_studio_url,
-            lm_studio_api_key,
-            5,
-        )
-        resolved_model = resolve_vision_model(discovered, configured_model)
-        return LMStudioVisionProvider(
-            base_url=lm_studio_url,
-            model=resolved_model,
-            timeout_seconds=timeout_seconds,
-            api_key=lm_studio_api_key,
         )
     resolved_model = resolve_local_vision_model(
         configured_model,
@@ -735,14 +569,6 @@ def _score(value: Any, default: float) -> float:
         return min(100.0, max(0.0, float(value)))
     except (TypeError, ValueError):
         return default
-
-
-def _parse_understanding(response: dict[str, Any]) -> SceneUnderstanding:
-    content = response["choices"][0]["message"]["content"]
-    if isinstance(content, list):
-        content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
-    normalized = _extract_json(_strip_json_fence(str(content)))
-    return SceneUnderstanding.model_validate_json(normalized)
 
 
 def _extract_json(content: str) -> str:

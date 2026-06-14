@@ -18,7 +18,6 @@ Implemented:
 - RGB PNG contact sheets sampled from the start, middle, and end of scenes;
 - OpenCV analysis for sharpness, exposure, contrast, motion, shake, and noise;
 - direct local Qwen2.5-VL and Florence-2 analysis with automatic model download;
-- optional LM Studio compatibility mode;
 - optional speech recognition with Faster Whisper;
 - perceptual duplicate detection;
 - event grouping, multimodal captions, storyboard generation, and scene ranking;
@@ -75,7 +74,7 @@ From the repository root:
 4. upgrades pip, setuptools, and wheel;
 5. installs CUDA-enabled PyTorch when an NVIDIA GPU is detected;
 6. installs all media, speech, Vision, embeddings, and development dependencies;
-7. creates `.env` from `.env.example` without overwriting an existing file;
+7. validates the checked-in `configs/settings.toml`;
 8. verifies Python imports, FFmpeg, and FFprobe.
 
 If the environment already contains CPU-only PyTorch, setup removes that wheel
@@ -145,12 +144,12 @@ any time. HTML coverage reports under `htmlcov/` are also disposable.
 
 ## FFmpeg Configuration
 
-If FFmpeg is not on `PATH`, copy `.env.example` to `.env` and specify full
-executable paths:
+If FFmpeg is not on `PATH`, specify full executable paths in
+`configs/settings.toml`:
 
-```dotenv
-TRAVELMOVIEAI_FFMPEG_BINARY=C:\Tools\ffmpeg\bin\ffmpeg.exe
-TRAVELMOVIEAI_FFPROBE_BINARY=C:\Tools\ffmpeg\bin\ffprobe.exe
+```toml
+ffmpeg_binary = 'C:\Tools\ffmpeg\bin\ffmpeg.exe'
+ffprobe_binary = 'C:\Tools\ffmpeg\bin\ffprobe.exe'
 ```
 
 Frame extraction uses RGB PNG instead of MJPEG. Sampling is clamped to the
@@ -183,16 +182,16 @@ When a selected Qwen model does not fit in native precision, TravelMovieAI uses
 Accelerate placement across CUDA and system RAM. Smaller models remain entirely
 on CUDA whenever possible.
 
-```dotenv
-TRAVELMOVIEAI_VISION_PROVIDER=local
-TRAVELMOVIEAI_VISION_MODEL=auto
-TRAVELMOVIEAI_MODEL_CACHE=./models
-TRAVELMOVIEAI_ALLOW_MODEL_DOWNLOAD=true
-TRAVELMOVIEAI_DEVICE=auto
+```toml
+vision_provider = "local"
+vision_model = "auto"
+model_cache = "models"
+allow_model_download = true
+device = "auto"
 ```
 
 The first run requires internet access and several gigabytes of free disk space.
-Set `TRAVELMOVIEAI_ALLOW_MODEL_DOWNLOAD=false` for cache-only offline operation.
+Set `allow_model_download = false` for cache-only offline operation.
 Once downloaded, normal inference stays local and does not upload media.
 
 ### Florence-2
@@ -205,24 +204,11 @@ python -m pip install -e ".[vision]"
 
 Model weights use the same application cache and are downloaded on first use.
 
-```dotenv
-TRAVELMOVIEAI_VISION_PROVIDER=florence
-TRAVELMOVIEAI_VISION_MODEL=microsoft/Florence-2-large
-TRAVELMOVIEAI_DEVICE=auto
+```toml
+vision_provider = "florence"
+vision_model = "microsoft/Florence-2-large"
+device = "auto"
 ```
-
-### Optional LM Studio compatibility
-
-LM Studio is no longer required. To use an already configured LM Studio server,
-select `LM Studio` in the interface or configure:
-
-```dotenv
-TRAVELMOVIEAI_VISION_PROVIDER=lm-studio
-TRAVELMOVIEAI_LM_STUDIO_URL=http://localhost:1234/v1
-TRAVELMOVIEAI_VISION_MODEL=auto
-```
-
-The web application does not contact LM Studio unless this backend is selected.
 
 ### Faster Whisper
 
@@ -357,38 +343,30 @@ Some later pipeline stages still contain placeholder behavior.
 
 ## Configuration
 
-Create a local configuration file:
+Runtime settings live in the checked-in `configs/settings.toml`. It contains no
+secrets or remote service credentials. CLI and web entry points validate this
+file at startup; unknown keys and invalid values fail with an actionable error.
 
-```powershell
-Copy-Item .env.example .env
-```
-
-Do not commit `.env`.
-
-| Variable | Purpose | Default |
+| Key | Purpose | Default |
 | --- | --- | --- |
-| `TRAVELMOVIEAI_WORKSPACE` | Default project workspace root | `./workspace` |
-| `TRAVELMOVIEAI_DATABASE_FILENAME` | SQLite database filename | `project.db` |
-| `TRAVELMOVIEAI_FFMPEG_BINARY` | FFmpeg command or full path | `ffmpeg` |
-| `TRAVELMOVIEAI_FFPROBE_BINARY` | FFprobe command or full path | `ffprobe` |
-| `TRAVELMOVIEAI_LM_STUDIO_URL` | OpenAI-compatible LM Studio API | `http://localhost:1234/v1` |
-| `TRAVELMOVIEAI_LM_STUDIO_API_KEY` | Optional local API key | unset |
-| `TRAVELMOVIEAI_VISION_PROVIDER` | `local`, `florence`, or `lm-studio` | `local` |
-| `TRAVELMOVIEAI_VISION_MODEL` | Model identifier or `auto` | `auto` |
-| `TRAVELMOVIEAI_MODEL_CACHE` | Downloaded local model cache | `./models` |
-| `TRAVELMOVIEAI_ALLOW_MODEL_DOWNLOAD` | Download missing models on first use | `true` |
-| `TRAVELMOVIEAI_VISION_TIMEOUT_SECONDS` | Vision request timeout | `120` |
-| `TRAVELMOVIEAI_WHISPER_MODEL` | `medium` or `large-v3` | `medium` |
-| `TRAVELMOVIEAI_DEVICE` | `auto`, `cuda`, `directml`, or `cpu` | `auto` |
-| `TRAVELMOVIEAI_MUSIC_LIBRARY` | Local soundtrack directory | `./assets/music` |
-| `TRAVELMOVIEAI_MUSIC_MODEL` | Local music model identifier or `auto` | `auto` |
-| `TRAVELMOVIEAI_GENERATED_MUSIC_FILENAME` | Generated soundtrack filename | `generated_soundtrack.wav` |
-| `TRAVELMOVIEAI_WORKERS` | Parallel worker override; `0` means auto | `0` |
-| `TRAVELMOVIEAI_BATCH_SIZE` | Model batch override; `0` means auto | `0` |
-| `TRAVELMOVIEAI_CLOUD_ENABLED` | Reserved explicit cloud switch | `false` |
-| `TRAVELMOVIEAI_WEB_HOST` | Web server bind address | `127.0.0.1` |
-| `TRAVELMOVIEAI_WEB_PORT` | Web server port | `8000` |
-| `TRAVELMOVIEAI_WEB_HISTORY_LIMIT` | Saved scan-job history limit | `100` |
+| `workspace` | Default project workspace root | `workspace` |
+| `database_filename` | SQLite database filename | `project.db` |
+| `ffmpeg_binary` | FFmpeg command or full path | `ffmpeg` |
+| `ffprobe_binary` | FFprobe command or full path | `ffprobe` |
+| `vision_provider` | `local`, `qwen`, or `florence` | `local` |
+| `vision_model` | Vision model identifier or `auto` | `auto` |
+| `model_cache` | Downloaded local model cache | `models` |
+| `allow_model_download` | Download missing models on first use | `true` |
+| `whisper_model` | `medium` or `large-v3` | `medium` |
+| `device` | `auto`, `cuda`, `directml`, or `cpu` | `auto` |
+| `music_library` | Local soundtrack directory | `assets/music` |
+| `music_model` | Local music model identifier or `auto` | `auto` |
+| `generated_music_filename` | Generated soundtrack filename | `generated_soundtrack.wav` |
+| `workers` | Parallel worker override; `0` means auto | `0` |
+| `batch_size` | Model batch override; `0` means auto | `0` |
+| `web_host` | Web server bind address | `127.0.0.1` |
+| `web_port` | Web server port | `8000` |
+| `web_history_limit` | Saved scan-job history limit | `100` |
 
 ## Automatic Hardware Utilization
 
@@ -418,7 +396,7 @@ GPU usage by stage:
 - Vision AI: Qwen CUDA with 4-bit NF4 and hardware-sized batches;
 - rendering: NVENC encoding; software transitions and audio filters can still use CPU.
 
-Keep `TRAVELMOVIEAI_WORKERS=0` for automatic operation. Set a manual limit only
+Keep `workers = 0` for automatic operation. Set a manual limit only
 to reserve resources for other applications or reduce heat and power use.
 
 ## Supported Media
@@ -697,7 +675,8 @@ Get-Command ffmpeg
 Get-Command ffprobe
 ```
 
-Add the FFmpeg `bin` directory to `PATH` or configure full paths in `.env`.
+Add the FFmpeg `bin` directory to `PATH` or configure full paths in
+`configs/settings.toml`.
 
 ### No media files are found
 
@@ -746,16 +725,16 @@ TravelMovieAI follows these principles:
 - **Reproducible:** record decisions, models, and relevant settings.
 - **Optional acceleration:** CUDA, DirectML, and NVENC improve speed but do not
   become import-time requirements.
-- **Explicit cloud:** cloud providers are never enabled silently.
+- **Local inference:** media analysis, story decisions, and generation use
+  models running on the user's computer.
 
 The target scale is hundreds of videos and more than 100 GB of source media.
 Processing must use bounded concurrency, batches, proxy media where necessary,
 model reuse, disk-space checks, and CPU fallback.
 
 Private data includes raw media, frames, faces, voices, transcripts, GPS
-coordinates, and project databases. Telemetry is not required. Future cloud
-mode must send only the minimum context and must not upload raw media without
-separate explicit permission.
+coordinates, and project databases. The application does not require telemetry
+or upload these artifacts to a remote inference service.
 
 MVP acceptance criteria:
 
@@ -791,7 +770,7 @@ MVP acceptance criteria:
 
 ### P1: Story and manual editing
 
-- direct local LLM story adapter with optional LM Studio compatibility;
+- direct local story-model adapter;
 - structured narrative and section duration budgets;
 - multiple movie variants from one analysis;
 - event and scene reordering;
@@ -877,10 +856,9 @@ workspace/                      Generated project data; never commit
 - the web server listens on loopback by default;
 - raw media and derived frames remain local;
 - external processes receive argument lists rather than shell-built commands;
-- API keys and authorization headers must not be logged;
-- cloud mode is disabled by default;
-- workspace data, `.env`, models, databases, frames, and rendered movies must
-  not be committed.
+- no remote inference provider or cloud credential is configured;
+- workspace data, models, databases, frames, and rendered movies must not be
+  committed.
 
 ## License
 

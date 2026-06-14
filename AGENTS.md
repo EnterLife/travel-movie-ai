@@ -17,13 +17,11 @@ pipeline must remain usable without a GUI.
 - Runtime: Python 3.12+.
 - CLI: Typer.
 - Local web UI: FastAPI, Uvicorn, and package-local HTML/CSS/JavaScript.
-- Configuration and schemas: Pydantic and Pydantic Settings.
+- Configuration: TOML and typed Pydantic models.
 - Storage: SQLite and SQLAlchemy.
 - Video processing: FFmpeg, FFprobe, PySceneDetect, and OpenCV.
 - Speech recognition: Faster Whisper.
 - Vision: Qwen2.5-VL, with Florence-2 as an alternative.
-- Local LLM: LM Studio through an OpenAI-compatible API.
-- Optional cloud LLM: Yandex GPT OSS 120B.
 - Embeddings: sentence-transformers and FAISS.
 - Tests and quality: pytest, Ruff, and mypy.
 
@@ -61,8 +59,7 @@ artifacts, setup instructions, and the prioritized roadmap.
 
 ## Product Direction
 
-- Keep normal operation fully local and offline.
-- Cloud integrations must remain optional and explicitly enabled.
+- Keep processing fully local and offline after model downloads complete.
 - Treat vision AI as the primary source of scene understanding.
 - Use OpenCV for quality metrics, not semantic scene interpretation.
 - Build the story before making final editing decisions.
@@ -123,7 +120,7 @@ incrementally without changing CLI command behavior or stage order.
 - Keep orchestration in `application` and `pipeline`, not in provider adapters.
 - Keep stable business data in `domain`; do not import infrastructure modules
   from domain code.
-- Keep FFmpeg, FFprobe, LM Studio, Whisper, vision model, and database details
+- Keep FFmpeg, FFprobe, Whisper, vision model, and database details
   behind `infrastructure` adapters.
 - Keep analysis modules focused on interpreting media and producing structured
   metadata.
@@ -151,7 +148,6 @@ incrementally without changing CLI command behavior or stage order.
   useful context at an application boundary.
 - Keep comments short and limited to non-obvious decisions.
 - Remove unused imports, helpers, parameters, and dead code.
-- Do not edit `.env` unless explicitly requested.
 - Never hardcode API keys, tokens, user media paths, or machine-specific model
   paths.
 - Do not commit databases, model weights, generated frames, media, rendered
@@ -196,10 +192,7 @@ Do not modify generated/runtime folders unless the task explicitly requires it:
 - Validate all model output before persisting or passing it downstream.
 - Record provider, model, prompt/schema version, and relevant settings in cache
   metadata.
-- Set finite timeouts for local and cloud HTTP calls.
-- Do not silently fall back to cloud processing.
-- Cloud mode must send only the minimum required context and must not upload raw
-  media unless a future feature explicitly documents and requests that behavior.
+- Keep inference local; do not add remote model providers.
 
 ## Data And Privacy
 
@@ -239,10 +232,8 @@ python -m pip install -e ".[all,dev]"
 ```
 
 FFmpeg and FFprobe must be installed separately and available on `PATH`, or
-configured through the corresponding `TRAVELMOVIEAI_*` settings.
-
-Copy `.env.example` to `.env` only for local development configuration. Never
-commit `.env`.
+configured through `ffmpeg_binary` and `ffprobe_binary` in
+`configs/settings.toml`.
 
 ## Useful Commands
 
@@ -290,7 +281,7 @@ ffprobe -version
 - Mock process boundaries in ordinary unit tests.
 - Use tiny generated media for FFmpeg integration tests and mark model-heavy or
   slow tests explicitly.
-- Do not require internet access, GPU hardware, LM Studio, or model downloads for
+- Do not require internet access, GPU hardware, or model downloads for
   the default test suite.
 - Test interrupted and repeated execution when adding caching or persistence.
 - Test paths containing spaces and Unicode when changing media discovery or
@@ -307,7 +298,7 @@ run, state that explicitly.
 - Keep all project documentation in `README.md`.
 - Update `README.md` when installation, user-facing behavior, architecture,
   pipeline contracts, product requirements, or roadmap status changes.
-- Update `.env.example` when adding or renaming settings.
+- Update `configs/settings.toml` when adding or renaming settings.
 - Do not create separate setup, architecture, specification, or roadmap
   documents unless explicitly requested.
 - Keep command examples valid for Windows PowerShell, the primary development

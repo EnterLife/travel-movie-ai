@@ -14,7 +14,6 @@ class ProjectContext:
     settings: Settings
     output_path: Path | None = None
     style: StoryStyle = StoryStyle.CINEMATIC
-    cloud: bool = False
 
     @property
     def frames_dir(self) -> Path:

@@ -13,15 +13,11 @@ from fastapi.staticfiles import StaticFiles
 
 from travelmovieai.application.service import TravelMovieService
 from travelmovieai.application.validation import ProjectPaths
-from travelmovieai.core.config import Settings
+from travelmovieai.core.config import Settings, load_settings
 from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusyError
 from travelmovieai.domain.models import MediaScanReport
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.directory_dialog import select_directory
-from travelmovieai.infrastructure.lm_studio import (
-    LMStudioModels,
-    list_lm_studio_models,
-)
 from travelmovieai.infrastructure.music_generation import (
     LOCAL_MUSIC_MODELS,
     resolve_local_music_model,
@@ -40,7 +36,6 @@ from travelmovieai.infrastructure.vision import (
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager
 from travelmovieai.web.schemas import (
-    AIProviderStatus,
     CapabilitiesResponse,
     CudaStatusResponse,
     DependencyStatus,
@@ -68,11 +63,10 @@ def create_app(
     job_manager: ScanJobManager | None = None,
     movie_job_manager: MovieJobManager | None = None,
     executable_checker: Callable[[str], ExecutableStatus] = check_executable,
-    model_lister: Callable[[str, str | None, float], LMStudioModels] = (list_lm_studio_models),
     cuda_checker: Callable[[str], CudaStatus] = check_cuda,
     directory_selector: Callable[[Path | None, str, bool], Path | None] = (select_directory),
 ) -> FastAPI:
-    resolved_settings = settings or Settings()
+    resolved_settings = settings or load_settings()
     service = TravelMovieService(resolved_settings)
     manager = job_manager or ScanJobManager(
         service,
@@ -114,19 +108,7 @@ def create_app(
         )
 
     @app.get("/api/capabilities", response_model=CapabilitiesResponse)
-    def capabilities(include_lm_studio: bool = Query(default=False)) -> CapabilitiesResponse:
-        discovered = (
-            model_lister(
-                resolved_settings.lm_studio_url,
-                resolved_settings.lm_studio_api_key,
-                5,
-            )
-            if include_lm_studio
-            else LMStudioModels(
-                available=False,
-                error="LM Studio compatibility mode was not requested.",
-            )
-        )
+    def capabilities() -> CapabilitiesResponse:
         cuda_status = cuda_checker(resolved_settings.ffmpeg_binary)
         resources = detect_resource_profile(
             resolved_settings.ffmpeg_binary,
@@ -178,16 +160,6 @@ def create_app(
                     )
                     for model in LOCAL_MUSIC_MODELS
                 ],
-            ),
-            ai=AIProviderStatus(
-                available=discovered.available,
-                base_url=resolved_settings.lm_studio_url,
-                configured_model=resolved_settings.vision_model,
-                models=_model_options(
-                    discovered.models,
-                    resolved_settings.vision_model,
-                ),
-                error=discovered.error,
             ),
             cuda=CudaStatusResponse.model_validate(asdict(cuda_status)),
             resources=ResourceProfileResponse.model_validate(asdict(resources)),
@@ -381,26 +353,6 @@ def _manager(request: Request) -> ScanJobManager:
 def _movie_manager(request: Request) -> MovieJobManager:
     manager: MovieJobManager = request.app.state.movie_job_manager
     return manager
-
-
-def _model_options(models: tuple[str, ...], configured_model: str) -> list[ModelOption]:
-    vision_markers = ("vision", "-vl", "/vl", "omni", "gemma-3", "gemma-4")
-    likely = [
-        model for model in models if any(marker in model.casefold() for marker in vision_markers)
-    ]
-    recommended = (
-        configured_model
-        if configured_model in models
-        else (likely[0] if likely else (models[0] if models else configured_model))
-    )
-    return [
-        ModelOption(
-            id=model,
-            likely_vision=model in likely,
-            recommended=model == recommended,
-        )
-        for model in models
-    ]
 
 
 def _validated_paths(

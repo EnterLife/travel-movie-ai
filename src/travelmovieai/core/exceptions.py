@@ -5,6 +5,10 @@ class TravelMovieError(Exception):
     """Base exception for expected application failures."""
 
 
+class ConfigurationError(TravelMovieError):
+    """Raised when the local TOML configuration is invalid."""
+
+
 class DependencyUnavailableError(TravelMovieError):
     """Raised when an external binary or optional package is unavailable."""
 

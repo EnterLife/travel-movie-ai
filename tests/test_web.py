@@ -24,7 +24,6 @@ from travelmovieai.domain.models import (
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
-from travelmovieai.infrastructure.lm_studio import LMStudioModels
 from travelmovieai.infrastructure.system import (
     CudaStatus,
     ExecutableStatus,
@@ -247,10 +246,6 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     with TestClient(
         create_app(
             job_manager=ScanJobManager(FakeScanService()),
-            model_lister=lambda url, key, timeout: LMStudioModels(
-                available=True,
-                models=("text-model", "vision-omni"),
-            ),
             cuda_checker=lambda ffmpeg: CudaStatus(
                 available=True,
                 gpu_name="RTX Test",
@@ -259,7 +254,7 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
             ),
         )
     ) as client:
-        response = client.get("/api/capabilities?include_lm_studio=true")
+        response = client.get("/api/capabilities")
 
     payload = response.json()
     assert response.status_code == 200
@@ -267,32 +262,9 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     assert payload["music_ai"]["resolved_model"] == "ACE-Step/acestep-v15-turbo"
     assert payload["music_ai"]["available"] is True
     assert payload["default_workspace_root"].endswith("workspace")
-    assert payload["ai"]["available"] is True
-    assert payload["ai"]["models"][1]["likely_vision"] is True
-    assert payload["ai"]["models"][1]["recommended"] is True
     assert payload["cuda"]["ffmpeg_nvenc"] is True
     assert payload["resources"]["render_workers"] >= 1
     assert payload["resources"]["model_batch_size"] == 2
-
-
-def test_web_capabilities_skip_lm_studio_by_default() -> None:
-    def unexpected_lm_studio_call(
-        url: str,
-        key: str | None,
-        timeout: float,
-    ) -> LMStudioModels:
-        raise AssertionError("LM Studio should not be contacted")
-
-    with TestClient(
-        create_app(
-            job_manager=ScanJobManager(FakeScanService()),
-            model_lister=unexpected_lm_studio_call,
-        )
-    ) as client:
-        response = client.get("/api/capabilities")
-
-    assert response.status_code == 200
-    assert response.json()["ai"]["available"] is False
 
 
 def test_web_scan_job_reaches_completed_result(tmp_path: Path) -> None:

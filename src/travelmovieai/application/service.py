@@ -86,7 +86,6 @@ class TravelMovieService:
         output_path: Path,
         workspace: Path | None,
         style: StoryStyle,
-        cloud: bool,
         semantic: bool = False,
     ) -> StageResult:
         result = self.create_quick_montage(
@@ -450,9 +449,6 @@ class TravelMovieService:
             allow_download=self.settings.allow_model_download,
             gpu_memory_mb=resources.gpu_memory_mb,
             system_memory_mb=resources.memory_mb,
-            lm_studio_url=self.settings.lm_studio_url,
-            lm_studio_api_key=self.settings.lm_studio_api_key,
-            timeout_seconds=self.settings.vision_timeout_seconds,
             model_batch_size=resources.model_batch_size,
         )
 
@@ -501,7 +497,6 @@ class TravelMovieService:
         workspace: Path | None,
         output_path: Path | None = None,
         style: StoryStyle = StoryStyle.CINEMATIC,
-        cloud: bool = False,
     ) -> ProjectContext:
         project_paths = self.resolve_project_paths(input_path, workspace)
         return ProjectContext(
@@ -510,7 +505,6 @@ class TravelMovieService:
             output_path=output_path,
             settings=self.settings,
             style=style,
-            cloud=cloud or self.settings.cloud_enabled,
         )
 
 

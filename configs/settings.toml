@@ -1,0 +1,28 @@
+# TravelMovieAI local configuration.
+# Paths may be relative to the repository root or absolute Windows paths.
+
+workspace = "workspace"
+database_filename = "project.db"
+
+ffmpeg_binary = "ffmpeg"
+ffprobe_binary = "ffprobe"
+
+vision_provider = "local"
+vision_model = "auto"
+model_cache = "models"
+allow_model_download = true
+device = "auto"
+
+music_library = "assets/music"
+music_model = "auto"
+generated_music_filename = "generated_soundtrack.wav"
+
+whisper_model = "medium"
+
+# 0 enables automatic hardware-based selection.
+batch_size = 0
+workers = 0
+
+web_host = "127.0.0.1"
+web_port = 8000
+web_history_limit = 100

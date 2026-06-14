@@ -60,12 +60,11 @@ echo Installing TravelMovieAI dependencies: %INSTALL_SPEC%
 "%PYTHON_EXE%" -m pip install -e "%INSTALL_SPEC%"
 if errorlevel 1 goto :error
 
-if not exist ".env" (
-  copy /y ".env.example" ".env" >nul
-  echo Created .env from .env.example.
-) else (
-  echo Existing .env was preserved.
+if not exist "configs\settings.toml" (
+  echo Required configuration file configs\settings.toml was not found.
+  goto :error
 )
+echo Configuration: configs\settings.toml
 
 echo.
 echo Verifying Python dependencies...

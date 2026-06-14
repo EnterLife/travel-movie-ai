@@ -1,20 +1,20 @@
-"""Application settings loaded from environment variables."""
+"""Typed application settings loaded from a local TOML file."""
 
+import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from travelmovieai.core.exceptions import ConfigurationError
+
+DEFAULT_CONFIG_PATH = Path("configs/settings.toml")
 
 
-class Settings(BaseSettings):
+class Settings(BaseModel):
     """Runtime settings shared by CLI commands and pipeline stages."""
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_prefix="TRAVELMOVIEAI_",
-        extra="ignore",
-    )
+    model_config = ConfigDict(extra="forbid")
 
     workspace: Path = Path("workspace")
     database_filename: str = Field(
@@ -24,13 +24,10 @@ class Settings(BaseSettings):
     )
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
-    lm_studio_url: str = "http://localhost:1234/v1"
-    lm_studio_api_key: str | None = None
     vision_model: str = "auto"
     model_cache: Path = Path("models")
     allow_model_download: bool = True
-    vision_timeout_seconds: float = Field(default=120, ge=5, le=1800)
-    vision_provider: Literal["local", "lm-studio", "qwen", "florence"] = "local"
+    vision_provider: Literal["local", "qwen", "florence"] = "local"
     music_library: Path = Path("assets/music")
     music_model: str = "auto"
     generated_music_filename: str = Field(
@@ -40,9 +37,24 @@ class Settings(BaseSettings):
     )
     whisper_model: Literal["medium", "large-v3"] = "medium"
     device: Literal["auto", "cuda", "directml", "cpu"] = "auto"
-    cloud_enabled: bool = False
     batch_size: int = Field(default=0, ge=0)
     workers: int = Field(default=0, ge=0)
     web_host: str = "127.0.0.1"
     web_port: int = Field(default=8000, ge=1, le=65535)
     web_history_limit: int = Field(default=100, ge=1, le=1000)
+
+
+def load_settings(path: Path = DEFAULT_CONFIG_PATH) -> Settings:
+    """Load the checked-in local configuration or use typed defaults."""
+
+    resolved = path.expanduser()
+    if not resolved.is_file():
+        return Settings()
+    try:
+        with resolved.open("rb") as config_file:
+            payload: dict[str, Any] = tomllib.load(config_file)
+        return Settings.model_validate(payload)
+    except (OSError, tomllib.TOMLDecodeError, ValidationError) as error:
+        raise ConfigurationError(
+            f"Не удалось прочитать конфигурацию {resolved.resolve()}: {error}"
+        ) from error

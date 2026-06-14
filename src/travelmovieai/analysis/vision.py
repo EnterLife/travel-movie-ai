@@ -32,7 +32,8 @@ def analyze_scenes(
     style: StoryStyle,
     progress: VisionProgress | None = None,
 ) -> VisionAnalysisReport:
-    analyzed: list[Scene] = []
+    analyzed_by_index: dict[int, Scene] = {}
+    pending: list[tuple[int, Scene, str]] = []
     total = len(scenes)
     cached_count = 0
     for index, scene in enumerate(scenes, start=1):
@@ -44,52 +45,94 @@ def analyze_scenes(
             and scene.importance_score is not None
             and scene.metadata.get("vision_cache_key") == cache_key
         ):
-            analyzed.append(scene)
+            analyzed_by_index[index] = scene
             cached_count += 1
             if progress:
                 progress(index, total, f"AI-кэш сцены {index}/{total}")
             continue
+        pending.append((index, scene, cache_key))
+
+    analyze_batch = getattr(provider, "analyze_batch", None)
+    batch_size = max(1, int(getattr(provider, "batch_size", 1)))
+    for offset in range(0, len(pending), batch_size):
+        chunk = pending[offset : offset + batch_size]
         if progress:
-            progress(index - 1, total, f"AI-анализ сцены {index}/{total}")
-        understanding = provider.analyze(scene.keyframe_path, style)
-        understanding = _apply_measured_quality(understanding, scene.quality_score)
-        metadata = {
-            **scene.metadata,
-            "vision_cache_key": cache_key,
-            "detailed_description": understanding.detailed_description,
-            "location_type": understanding.location_type.value,
-            "activity": understanding.activity.value,
-            "emotion": understanding.emotion.value,
-            "people_count": understanding.people_count,
-            "people_groups": [group.value for group in understanding.people_groups],
-            "landmarks": [
-                landmark.model_dump(mode="json") for landmark in understanding.landmarks
-            ],
-            "tags": understanding.tags,
-            "vision_score": understanding.vision_score,
-            "vision_score_factors": understanding.score_factors.model_dump(),
-            "story_relevance": understanding.story_relevance,
-            "vision_provider": provider.name,
-            "vision_model": provider.model,
-            "prompt_version": PROMPT_VERSION,
-        }
-        analyzed.append(
-            scene.model_copy(
-                update={
-                    "caption": understanding.caption,
-                    "importance_score": understanding.vision_score,
-                    "metadata": metadata,
-                }
+            progress(
+                offset,
+                total,
+                f"AI-анализ сцен {offset + 1}-{offset + len(chunk)}/{len(pending)}, "
+                f"batch={len(chunk)}",
             )
-        )
+        image_paths = [
+            scene.keyframe_path for _, scene, _ in chunk if scene.keyframe_path is not None
+        ]
+        if callable(analyze_batch):
+            understandings = analyze_batch(image_paths, style)
+        else:
+            understandings = [provider.analyze(path, style) for path in image_paths]
+        for (index, scene, cache_key), understanding in zip(
+            chunk,
+            understandings,
+            strict=True,
+        ):
+            analyzed_by_index[index] = _scene_with_understanding(
+                scene,
+                understanding,
+                cache_key,
+                provider,
+            )
+        if progress:
+            progress(
+                min(total, offset + len(chunk)),
+                total,
+                f"AI готово сцен {offset + len(chunk)}/{len(pending)}, batch={len(chunk)}",
+            )
+
+    analyzed = [analyzed_by_index[index] for index in sorted(analyzed_by_index)]
     return VisionAnalysisReport(
         created_at=datetime.now(UTC),
         provider=provider.name,
         model=provider.model,
         prompt_version=PROMPT_VERSION,
         scenes=analyzed,
-        analyzed_count=len(analyzed) - cached_count,
+        analyzed_count=len(pending),
         cached_count=cached_count,
+    )
+
+
+def _scene_with_understanding(
+    scene: Scene,
+    understanding: SceneUnderstanding,
+    cache_key: str,
+    provider: VisionProvider,
+) -> Scene:
+    understanding = _apply_measured_quality(understanding, scene.quality_score)
+    metadata = {
+        **scene.metadata,
+        "vision_cache_key": cache_key,
+        "detailed_description": understanding.detailed_description,
+        "location_type": understanding.location_type.value,
+        "activity": understanding.activity.value,
+        "emotion": understanding.emotion.value,
+        "people_count": understanding.people_count,
+        "people_groups": [group.value for group in understanding.people_groups],
+        "landmarks": [
+            landmark.model_dump(mode="json") for landmark in understanding.landmarks
+        ],
+        "tags": understanding.tags,
+        "vision_score": understanding.vision_score,
+        "vision_score_factors": understanding.score_factors.model_dump(),
+        "story_relevance": understanding.story_relevance,
+        "vision_provider": provider.name,
+        "vision_model": provider.model,
+        "prompt_version": PROMPT_VERSION,
+    }
+    return scene.model_copy(
+        update={
+            "caption": understanding.caption,
+            "importance_score": understanding.vision_score,
+            "metadata": metadata,
+        }
     )
 
 

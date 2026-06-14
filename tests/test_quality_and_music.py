@@ -3,7 +3,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from travelmovieai.analysis.quality import VisualQualityAnalyzer, analyze_scene_quality
+from travelmovieai.analysis.quality import (
+    TorchCudaQualityAnalyzer,
+    VisualQualityAnalyzer,
+    analyze_scene_quality,
+)
 from travelmovieai.domain.enums import StoryStyle
 from travelmovieai.domain.models import QuickMontageSettings, Scene
 from travelmovieai.story.music import build_music_plan, choose_music_profile
@@ -30,6 +34,20 @@ def test_quality_analysis_persists_explainable_metrics(tmp_path: Path) -> None:
     assert 0 <= metrics["motion_score"] <= 100
     assert 0 <= metrics["camera_shake_score"] <= 100
     assert isinstance(metrics["rejection_reasons"], list)
+
+
+def test_cuda_quality_analyzer_uses_gpu_when_available(tmp_path: Path) -> None:
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    image_path = tmp_path / "contact.png"
+    Image.new("RGB", (480, 90), (120, 180, 220)).save(image_path)
+
+    metrics = TorchCudaQualityAnalyzer().analyze(image_path)
+
+    assert metrics.backend == "torch-cuda"
+    assert 0 <= metrics.quality_score <= 100
 
 
 def test_auto_music_profile_uses_visual_metrics_and_generates_wav(

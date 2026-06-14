@@ -71,7 +71,7 @@
 
             <label for="workspace">
               Workspace
-              <span>необязательно</span>
+              <span>автоматически</span>
             </label>
             <div class="field-shell directory-field">
               <span class="field-icon" aria-hidden="true">◇</span>
@@ -86,7 +86,7 @@
               </button>
             </div>
             <p class="field-help">
-              Здесь появятся SQLite-база, JSON-отчёт и будущие артефакты проекта.
+              По умолчанию создаётся внутри папки проекта. Путь можно изменить.
             </p>
 
             <button class="primary-button" id="submit-button" type="submit">
@@ -246,8 +246,8 @@
               <h4>Монтаж и CUDA</h4>
               <label for="render-device">Устройство рендера <span>FFmpeg</span></label>
               <select id="render-device">
-                <option value="auto">Auto: CUDA с CPU fallback</option>
-                <option value="cuda">CUDA / NVIDIA NVENC</option>
+                <option value="auto">Auto: NVENC для финального кодирования</option>
+                <option value="cuda">NVIDIA NVENC · только этап рендера</option>
                 <option value="cpu">CPU / libx264</option>
               </select>
 
@@ -338,6 +338,14 @@
               <p id="movie-progress-message">Задание ожидает запуска.</p>
             </div>
             <strong id="movie-progress-percent">0%</strong>
+          </div>
+          <div class="movie-control-actions">
+            <button class="secondary-button" id="movie-pause-button" type="button">
+              Пауза
+            </button>
+            <button class="danger-button" id="movie-cancel-button" type="button">
+              Полная остановка
+            </button>
           </div>
           <div class="movie-progress-meter">
             <span id="movie-progress-bar"></span>

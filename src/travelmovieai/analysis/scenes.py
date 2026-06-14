@@ -121,11 +121,21 @@ class RepresentativeFrameExtractor:
         self,
         ffmpeg_binary: str = "ffmpeg",
         ffprobe_binary: str = "ffprobe",
+        use_cuda_decode: bool = False,
     ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
+        self.use_cuda_decode = use_cuda_decode
         self._probe = FFprobeClient(ffprobe_binary)
         self._video_durations: dict[Path, float | None] = {}
         self._duration_lock = Lock()
+        self._backend_lock = Lock()
+        self._nvdec_count = 0
+        self._cpu_count = 0
+
+    @property
+    def backend_summary(self) -> str:
+        with self._backend_lock:
+            return f"NVDEC={self._nvdec_count}, CPU fallback={self._cpu_count}"
 
     def extract(self, scene: Scene, asset: MediaAsset, frames_dir: Path) -> Path:
         if asset.media_type is MediaType.PHOTO:
@@ -143,6 +153,57 @@ class RepresentativeFrameExtractor:
             asset,
             self._video_duration(asset),
         )
+        command = self._command(asset, timestamps, temporary_path, use_cuda=False)
+        commands = (
+            [self._command(asset, timestamps, temporary_path, use_cuda=True), command]
+            if self.use_cuda_decode
+            else [command]
+        )
+        completed = None
+        try:
+            for candidate in commands:
+                temporary_path.unlink(missing_ok=True)
+                try:
+                    completed = subprocess.run(
+                        candidate,
+                        capture_output=True,
+                        check=False,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                except FileNotFoundError as error:
+                    raise DependencyUnavailableError(
+                        f"FFmpeg executable was not found: {self.ffmpeg_binary}"
+                    ) from error
+                if completed.returncode == 0 and temporary_path.is_file():
+                    with self._backend_lock:
+                        if self.use_cuda_decode and candidate is commands[0]:
+                            self._nvdec_count += 1
+                        else:
+                            self._cpu_count += 1
+                    os.replace(temporary_path, frame_path)
+                    return frame_path
+            detail = completed.stderr.strip() if completed is not None else ""
+            if not detail:
+                return_code = completed.returncode if completed is not None else "unknown"
+                detail = (
+                    f"FFmpeg завершился с кодом {return_code}, "
+                    "но не создал изображение."
+                )
+            raise MontageError(
+                f"Не удалось извлечь кадр из {asset.relative_path}: {detail}"
+            )
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    def _command(
+        self,
+        asset: MediaAsset,
+        timestamps: tuple[float, float, float],
+        temporary_path: Path,
+        *,
+        use_cuda: bool,
+    ) -> list[str]:
         command = [
             self.ffmpeg_binary,
             "-nostdin",
@@ -152,15 +213,19 @@ class RepresentativeFrameExtractor:
             "-y",
         ]
         for timestamp in timestamps:
-            command.extend(["-ss", f"{timestamp:.3f}", "-i", str(asset.path)])
+            command.extend(["-ss", f"{timestamp:.3f}"])
+            if use_cuda:
+                command.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+            command.extend(["-i", str(asset.path)])
+        download = "hwdownload,format=nv12," if use_cuda else ""
         command.extend(
             [
                 "-filter_complex",
-                "[0:v]scale=480:270:force_original_aspect_ratio=decrease,"
+                f"[0:v]{download}scale=480:270:force_original_aspect_ratio=decrease,"
                 "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[a];"
-                "[1:v]scale=480:270:force_original_aspect_ratio=decrease,"
+                f"[1:v]{download}scale=480:270:force_original_aspect_ratio=decrease,"
                 "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[b];"
-                "[2:v]scale=480:270:force_original_aspect_ratio=decrease,"
+                f"[2:v]{download}scale=480:270:force_original_aspect_ratio=decrease,"
                 "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[c];"
                 "[a][b][c]hstack=inputs=3,format=rgb24[v]",
                 "-map",
@@ -178,33 +243,7 @@ class RepresentativeFrameExtractor:
                 str(temporary_path),
             ]
         )
-        try:
-            try:
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    check=False,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-            except FileNotFoundError as error:
-                raise DependencyUnavailableError(
-                    f"FFmpeg executable was not found: {self.ffmpeg_binary}"
-                ) from error
-            if completed.returncode != 0 or not temporary_path.is_file():
-                detail = completed.stderr.strip()
-                if not detail:
-                    detail = (
-                        f"FFmpeg завершился с кодом {completed.returncode}, "
-                        "но не создал изображение."
-                    )
-                raise MontageError(
-                    f"Не удалось извлечь кадр из {asset.relative_path}: {detail}"
-                )
-            os.replace(temporary_path, frame_path)
-            return frame_path
-        finally:
-            temporary_path.unlink(missing_ok=True)
+        return command
 
     def _video_duration(self, asset: MediaAsset) -> float | None:
         if asset.path in self._video_durations:

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from PIL import Image, ImageChops, ImageFilter, ImageStat
 
@@ -15,6 +15,10 @@ from travelmovieai.domain.models import (
     Scene,
     VisualQualityMetrics,
 )
+
+
+class QualityAnalyzer(Protocol):
+    def analyze(self, image_path: Path) -> VisualQualityMetrics: ...
 
 
 class VisualQualityAnalyzer:
@@ -73,19 +77,111 @@ class VisualQualityAnalyzer:
         )
 
 
+class TorchCudaQualityAnalyzer:
+    """Compute dense frame metrics on CUDA when OpenCV lacks CUDA support."""
+
+    def __init__(self) -> None:
+        self._torch: Any = importlib.import_module("torch")
+        self._functional: Any = importlib.import_module("torch.nn.functional")
+
+    def analyze(self, image_path: Path) -> VisualQualityMetrics:
+        with Image.open(image_path) as source:
+            rgb = source.convert("RGB")
+            np: Any = importlib.import_module("numpy")
+            array = np.asarray(rgb, dtype="float32") / 255.0
+        tensor = (
+            self._torch.from_numpy(array)
+            .permute(2, 0, 1)
+            .unsqueeze(0)
+            .to("cuda", non_blocking=True)
+        )
+        panels = (
+            list(tensor.chunk(3, dim=3))
+            if tensor.shape[3] >= tensor.shape[2] * 2.2
+            else [tensor]
+        )
+        static = [self._panel_metrics(panel) for panel in panels]
+        brightness = _average(item[0] for item in static)
+        contrast = _average(item[1] for item in static)
+        sharpness = _average(item[2] for item in static)
+        saturation = _average(item[3] for item in static)
+        colorfulness = _average(item[4] for item in static)
+        noise_score = _average(item[5] for item in static)
+        motion_score = self._motion_score(panels)
+        return _metrics(
+            brightness,
+            contrast,
+            sharpness,
+            saturation,
+            colorfulness,
+            noise_score,
+            motion_score,
+            0,
+            "torch-cuda",
+        )
+
+    def _panel_metrics(
+        self,
+        panel: Any,
+    ) -> tuple[float, float, float, float, float, float]:
+        red, green, blue = panel[:, 0:1], panel[:, 1:2], panel[:, 2:3]
+        gray = red * 0.299 + green * 0.587 + blue * 0.114
+        brightness = _clamp(float(gray.mean().item()) * 100)
+        contrast = _clamp(float(gray.std().item()) / (96 / 255) * 100)
+        kernel = self._torch.tensor(
+            [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
+            device=gray.device,
+            dtype=gray.dtype,
+        ).reshape(1, 1, 3, 3)
+        laplacian = self._functional.conv2d(gray, kernel, padding=1)
+        sharpness = _log_score(float(laplacian.var().item()) * 255**2, 1800)
+        maximum = panel.max(dim=1, keepdim=True).values
+        minimum = panel.min(dim=1, keepdim=True).values
+        saturation = _clamp(
+            float(((maximum - minimum) / maximum.clamp_min(1e-4)).mean().item()) * 100
+        )
+        red_green = red - green
+        yellow_blue = 0.5 * (red + green) - blue
+        colorfulness_raw = math.sqrt(
+            float(red_green.std().item() * 255) ** 2
+            + float(yellow_blue.std().item() * 255) ** 2
+        ) + 0.3 * math.sqrt(
+            float(red_green.mean().item() * 255) ** 2
+            + float(yellow_blue.mean().item() * 255) ** 2
+        )
+        colorfulness = _clamp(colorfulness_raw / 90 * 100)
+        blurred = self._functional.avg_pool2d(gray, kernel_size=5, stride=1, padding=2)
+        noise_score = _clamp(float((gray - blurred).std().item() * 255) / 22 * 100)
+        return brightness, contrast, sharpness, saturation, colorfulness, noise_score
+
+    def _motion_score(self, panels: list[Any]) -> float:
+        if len(panels) < 2:
+            return 0
+        values = [
+            _clamp(float((second - first).abs().mean().item()) * 180)
+            for first, second in zip(panels, panels[1:], strict=False)
+        ]
+        return _average(values)
+
+
 def analyze_scene_quality(
     scenes: list[Scene],
-    analyzer: VisualQualityAnalyzer | None = None,
+    analyzer: QualityAnalyzer | None = None,
     workers: int = 1,
     progress: Callable[[int, int, str], None] | None = None,
 ) -> QualityAnalysisReport:
-    resolved_analyzer = analyzer or VisualQualityAnalyzer()
+    resolved_analyzer = analyzer or _default_quality_analyzer()
+    backend_label = (
+        "CUDA quality"
+        if isinstance(resolved_analyzer, TorchCudaQualityAnalyzer)
+        else "OpenCV"
+    )
     if workers <= 1 or len(scenes) <= 1:
         analyzed = []
         for index, scene in enumerate(scenes, start=1):
             analyzed.append(_analyze_scene_quality(scene, resolved_analyzer))
             if progress:
-                progress(index, len(scenes), f"OpenCV: сцена {index}/{len(scenes)}")
+                progress(index, len(scenes), f"{backend_label}: сцена {index}/{len(scenes)}")
     else:
         analyzed_by_index: dict[int, Scene] = {}
         with ThreadPoolExecutor(
@@ -102,7 +198,7 @@ def analyze_scene_quality(
                     progress(
                         completed,
                         len(scenes),
-                        f"OpenCV: сцена {completed}/{len(scenes)}, workers={workers}",
+                        f"{backend_label}: сцена {completed}/{len(scenes)}, workers={workers}",
                     )
         analyzed = [analyzed_by_index[index] for index in range(len(scenes))]
     return QualityAnalysisReport(
@@ -111,9 +207,19 @@ def analyze_scene_quality(
     )
 
 
+def _default_quality_analyzer() -> QualityAnalyzer:
+    try:
+        torch: Any = importlib.import_module("torch")
+        if torch.cuda.is_available():
+            return TorchCudaQualityAnalyzer()
+    except (ImportError, RuntimeError):
+        pass
+    return VisualQualityAnalyzer()
+
+
 def _analyze_scene_quality(
     scene: Scene,
-    analyzer: VisualQualityAnalyzer,
+    analyzer: QualityAnalyzer,
 ) -> Scene:
     if scene.keyframe_path is None:
         return scene

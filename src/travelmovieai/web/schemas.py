@@ -14,6 +14,8 @@ from travelmovieai.domain.models import QuickMontageSettings, Scene
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -116,6 +118,7 @@ class ResourceProfileResponse(BaseModel):
 
 
 class CapabilitiesResponse(BaseModel):
+    default_workspace_root: str
     local_ai: LocalAIStatus
     ai: AIProviderStatus
     cuda: CudaStatusResponse

@@ -70,11 +70,13 @@ def test_local_provider_factory_is_lazy(tmp_path: Path) -> None:
         lm_studio_url="http://localhost:1234/v1",
         lm_studio_api_key=None,
         timeout_seconds=120,
+        model_batch_size=2,
     )
 
     assert isinstance(provider, LocalQwenVisionProvider)
     assert provider.model == "Qwen/Qwen2.5-VL-3B-Instruct"
     assert provider.quantize_4bit is True
+    assert provider.batch_size == 2
     assert provider._loaded_model is None
     assert not provider.cache_dir.exists()
 

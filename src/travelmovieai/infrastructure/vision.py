@@ -59,12 +59,14 @@ class LocalQwenVisionProvider:
         cache_dir: Path = Path("models"),
         allow_download: bool = True,
         quantize_4bit: bool = False,
+        batch_size: int = 1,
     ) -> None:
         self.model = model
         self.device = device
         self.cache_dir = cache_dir
         self.allow_download = allow_download
         self.quantize_4bit = quantize_4bit
+        self.batch_size = max(1, batch_size)
         self._processor: Any = None
         self._loaded_model: Any = None
         self._torch: Any = None
@@ -81,6 +83,13 @@ class LocalQwenVisionProvider:
         self._ensure_loaded()
 
     def analyze(self, image_path: Path, style: StoryStyle) -> SceneUnderstanding:
+        return self.analyze_batch([image_path], style)[0]
+
+    def analyze_batch(
+        self,
+        image_paths: list[Path],
+        style: StoryStyle,
+    ) -> list[SceneUnderstanding]:
         self._ensure_loaded()
         prompt = (
             "You are the Vision AI module of a travel film editor. Analyze only "
@@ -96,50 +105,28 @@ class LocalQwenVisionProvider:
             f"{COMPACT_OUTPUT_CONTRACT}"
         )
         try:
-            with Image.open(image_path) as source:
-                image = source.convert("RGB")
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": image},
-                            {"type": "text", "text": prompt},
-                        ],
-                    }
-                ]
-                text = self._processor.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-                inputs = self._processor(
-                    text=[text],
-                    images=[image],
-                    padding=True,
-                    return_tensors="pt",
-                )
-                inputs = inputs.to(self._loaded_model.device)
-                with self._torch.inference_mode():
-                    generated_ids = self._loaded_model.generate(
-                        **inputs,
-                        max_new_tokens=320,
-                        do_sample=False,
-                        use_cache=True,
+            images = []
+            for image_path in image_paths:
+                with Image.open(image_path) as source:
+                    image = source.convert("RGB")
+                images.append(image)
+            contents = self._generate_contents(images, prompt, max_new_tokens=320)
+            results = []
+            for image, content in zip(images, contents, strict=True):
+                try:
+                    results.append(_parse_local_qwen_understanding(content))
+                except (ValidationError, json.JSONDecodeError):
+                    retry_prompt = (
+                        f"{prompt} Keep caption and descriptions concise. "
+                        "The complete JSON must fit within the response limit."
                     )
-                trimmed_ids = [
-                    output_ids[len(input_ids) :]
-                    for input_ids, output_ids in zip(
-                        inputs.input_ids,
-                        generated_ids,
-                        strict=True,
-                    )
-                ]
-                content = self._processor.batch_decode(
-                    trimmed_ids,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )[0]
-            return _parse_local_qwen_understanding(content)
+                    retry = self._generate_contents(
+                        [image],
+                        retry_prompt,
+                        max_new_tokens=480,
+                    )[0]
+                    results.append(_parse_local_qwen_understanding(retry))
+            return results
         except (ValidationError, json.JSONDecodeError) as error:
             raise VisionAnalysisError(
                 "Локальная Qwen-модель вернула ответ, который не удалось привести "
@@ -150,6 +137,61 @@ class LocalQwenVisionProvider:
                 f"Локальная Qwen-модель не смогла проанализировать {image_path.name}. "
                 "Проверьте свободную RAM/VRAM и при необходимости выберите модель 3B."
             ) from error
+
+    def _generate_contents(
+        self,
+        images: list[Image.Image],
+        prompt: str,
+        *,
+        max_new_tokens: int,
+    ) -> list[str]:
+        messages = [
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+            for image in images
+        ]
+        texts = [
+            self._processor.apply_chat_template(
+                message,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            for message in messages
+        ]
+        inputs = self._processor(
+            text=texts,
+            images=images,
+            padding=True,
+            return_tensors="pt",
+        ).to(self._loaded_model.device)
+        with self._torch.inference_mode():
+            generated_ids = self._loaded_model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+            )
+        trimmed_ids = [
+            output_ids[len(input_ids) :]
+            for input_ids, output_ids in zip(
+                inputs.input_ids,
+                generated_ids,
+                strict=True,
+            )
+        ]
+        decoded: list[str] = self._processor.batch_decode(
+            trimmed_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        return decoded
 
     def _ensure_loaded(self) -> None:
         if self._loaded_model is not None:
@@ -498,6 +540,7 @@ def build_vision_provider(
     lm_studio_url: str,
     lm_studio_api_key: str | None,
     timeout_seconds: float,
+    model_batch_size: int = 1,
 ) -> LocalQwenVisionProvider | LMStudioVisionProvider | Florence2VisionProvider:
     """Build the selected backend without importing model-heavy packages."""
 
@@ -543,11 +586,21 @@ def build_vision_provider(
             and gpu_memory_mb is not None
             and 0 < gpu_memory_mb < 10 * 1024
         ),
+        batch_size=(
+            min(2, model_batch_size)
+            if (gpu_memory_mb or 0) < 10 * 1024
+            else model_batch_size
+        ),
     )
 
 
 def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
-    payload = json.loads(_extract_json(_strip_json_fence(content)))
+    normalized_content = _extract_json(_strip_json_fence(content))
+    try:
+        payload = json.loads(normalized_content)
+    except json.JSONDecodeError:
+        json_repair: Any = importlib.import_module("json_repair")
+        payload = json_repair.repair_json(normalized_content, return_objects=True)
     if not isinstance(payload, dict):
         raise json.JSONDecodeError("Expected a JSON object", content, 0)
 

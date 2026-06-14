@@ -52,13 +52,16 @@ def test_contact_sheet_supports_limited_range_yuv(tmp_path: Path) -> None:
     )
     scene = Scene(asset_id=asset.id, start_seconds=0, end_seconds=2)
 
-    output = RepresentativeFrameExtractor().extract(
+    extractor = RepresentativeFrameExtractor(use_cuda_decode=True)
+    output = extractor.extract(
         scene,
         asset,
         tmp_path / "frames",
     )
 
     assert output.suffix == ".png"
+    assert "NVDEC=" in extractor.backend_summary
+    assert "CPU fallback=" in extractor.backend_summary
     with Image.open(output) as image:
         assert image.size == (1440, 270)
         assert image.mode == "RGB"

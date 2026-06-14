@@ -211,11 +211,13 @@ class TravelMovieService:
         extractor = RepresentativeFrameExtractor(
             self.settings.ffmpeg_binary,
             self.settings.ffprobe_binary,
+            use_cuda_decode=resources.nvenc,
         )
         tracker.emit(
             12,
             f"Найдено сцен: {len(scene_report.scenes)}. "
-            f"Извлечение кадров в {resources.frame_workers} потоков",
+            f"Извлечение кадров в {resources.frame_workers} потоков, "
+            f"decode={'NVDEC' if resources.nvenc else 'CPU'}",
         )
         prepared_scenes = _extract_scene_frames(
             scene_report.scenes,
@@ -225,6 +227,7 @@ class TravelMovieService:
             resources.frame_workers,
             tracker.range(12, 32),
         )
+        tracker.emit(32, f"Подготовка кадров завершена: {extractor.backend_summary}")
 
         quality_report = (
             analyze_scene_quality(
@@ -240,7 +243,15 @@ class TravelMovieService:
         )
         quality_path = context.artifacts_dir / "quality_analysis.json"
         write_json_atomic(quality_path, quality_report)
-        tracker.emit(45, "OpenCV-анализ качества сохранён")
+        quality_backend = next(
+            (
+                scene.metadata.get("quality_metrics", {}).get("backend")
+                for scene in quality_report.scenes
+                if scene.metadata.get("quality_metrics")
+            ),
+            "disabled",
+        )
+        tracker.emit(45, f"Анализ качества сохранён, backend={quality_backend}")
         vision_provider = self._vision_provider(
             settings.vision_provider,
             settings.vision_model,
@@ -386,6 +397,7 @@ class TravelMovieService:
             lm_studio_url=self.settings.lm_studio_url,
             lm_studio_api_key=self.settings.lm_studio_api_key,
             timeout_seconds=self.settings.vision_timeout_seconds,
+            model_batch_size=resources.model_batch_size,
         )
 
     def resolve_workspace(self, input_path: Path, workspace: Path | None) -> Path:

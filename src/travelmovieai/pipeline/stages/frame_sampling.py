@@ -8,6 +8,7 @@ from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.models import FrameSamplingReport, StageResult
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.infrastructure.system import check_cuda
 from travelmovieai.pipeline.base import Stage
 
 
@@ -18,7 +19,11 @@ class FrameSamplingStage(Stage):
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
         assets = {asset.id: asset for asset in repository.list_assets()}
-        extractor = RepresentativeFrameExtractor(context.settings.ffmpeg_binary)
+        extractor = RepresentativeFrameExtractor(
+            context.settings.ffmpeg_binary,
+            context.settings.ffprobe_binary,
+            use_cuda_decode=check_cuda(context.settings.ffmpeg_binary).available,
+        )
         scenes = []
         extracted_count = 0
         cached_count = 0

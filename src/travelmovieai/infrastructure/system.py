@@ -173,8 +173,8 @@ def detect_resource_profile(
         elif memory_mb < 16 * 1024:
             memory_factor = 0.7
 
-    automatic_frames = max(1, min(12, round(logical_cores * 0.6 * memory_factor)))
-    automatic_analysis = max(1, min(16, round(logical_cores * 0.8 * memory_factor)))
+    automatic_frames = max(1, min(16, round(logical_cores * 0.85 * memory_factor)))
+    automatic_analysis = max(1, min(16, round(logical_cores * memory_factor)))
     automatic_render = max(
         1,
         min(
@@ -194,7 +194,7 @@ def detect_resource_profile(
         if gpu_memory >= 16 * 1024
         else 8
         if gpu_memory >= 10 * 1024
-        else 4
+        else 2
         if gpu_memory >= 6 * 1024
         else max(1, min(4, logical_cores // 4))
     )
@@ -210,7 +210,7 @@ def detect_resource_profile(
     summary = (
         f"{logical_cores} CPU threads, {memory_label}, {accelerator}; "
         f"frames {frame_workers}x, analysis {analysis_workers}x, "
-        f"render {render_workers}x/{ffmpeg_threads} threads"
+        f"vision batch {model_batch_size}, render {render_workers}x/{ffmpeg_threads} threads"
     )
     return ResourceProfile(
         logical_cores=logical_cores,

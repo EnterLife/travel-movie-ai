@@ -135,6 +135,7 @@ def create_app(
             system_memory_mb=resources.memory_mb,
         )
         return CapabilitiesResponse(
+            default_workspace_root=str(resolved_settings.workspace.expanduser().resolve()),
             local_ai=LocalAIStatus(
                 available=all(
                     find_spec(package) is not None
@@ -262,6 +263,27 @@ def create_app(
     @app.get("/api/movies/{job_id}", response_model=MovieJobResponse)
     def get_movie(job_id: UUID, request: Request) -> MovieJobResponse:
         job = _movie_manager(request).get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+        return job
+
+    @app.post("/api/movies/{job_id}/pause", response_model=MovieJobResponse)
+    def pause_movie(job_id: UUID, request: Request) -> MovieJobResponse:
+        job = _movie_manager(request).pause(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+        return job
+
+    @app.post("/api/movies/{job_id}/resume", response_model=MovieJobResponse)
+    def resume_movie(job_id: UUID, request: Request) -> MovieJobResponse:
+        job = _movie_manager(request).resume(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+        return job
+
+    @app.post("/api/movies/{job_id}/cancel", response_model=MovieJobResponse)
+    def cancel_movie(job_id: UUID, request: Request) -> MovieJobResponse:
+        job = _movie_manager(request).cancel(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
         return job

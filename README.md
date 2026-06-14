@@ -228,8 +228,8 @@ transcripts, language, and confidence data, but increases processing time.
 ## Web Interface Workflow
 
 1. Click the directory picker next to the source field, or enter a path manually.
-2. Select a separate workspace, or leave the workspace field empty to use the
-   configured default.
+2. Review the automatically selected workspace under
+   `<repository>\workspace\<source-folder>`, or choose another directory.
 3. Start media analysis.
 4. Choose a Vision backend, model, story style, and render device.
 5. Keep semantic and OpenCV analysis enabled for AI-directed editing.
@@ -339,6 +339,19 @@ The resulting profile separately selects concurrency for frame extraction,
 OpenCV analysis, and segment rendering. CPU rendering divides FFmpeg threads
 between concurrent jobs. NVENC is selected automatically when available and
 falls back to `libx264` if initialization fails.
+
+On the tested 16-thread CPU with 32 GB RAM and an RTX 3060, the automatic
+profile uses up to 14 concurrent frame jobs, 16 quality-analysis workers, a
+two-scene Vision batch, and four parallel render workers. These stages run
+sequentially, so CPU, CUDA, NVDEC, and NVENC graphs are not expected to peak at
+the same time.
+
+GPU usage by stage:
+
+- frame sampling: FFmpeg NVDEC with automatic CPU fallback per source;
+- quality metrics: PyTorch CUDA for dense pixel metrics, with OpenCV/Pillow fallback;
+- Vision AI: Qwen CUDA with 4-bit NF4 and hardware-sized batches;
+- rendering: NVENC encoding; software transitions and audio filters can still use CPU.
 
 Keep `TRAVELMOVIEAI_WORKERS=0` for automatic operation. Set a manual limit only
 to reserve resources for other applications or reduce heat and power use.
@@ -553,6 +566,10 @@ workspace/<project>/
     `-- final.mp4
 ```
 
+The web interface fills this path automatically after a source folder is
+selected. Editing the field or using the directory picker disables automatic
+replacement for the current page session.
+
 `project.db` stores media assets, scenes, events, scores, transcripts, and
 manual overrides. SQLite uses foreign keys and WAL mode.
 
@@ -588,6 +605,11 @@ The renderer:
 - uses `h264_nvenc` or `libx264`;
 - writes the final movie atomically;
 - validates video, audio, and duration with FFprobe.
+
+During a movie job, `Pause` stops before the next scene or subtask and
+`Continue` resumes it. `Full stop` cancels the remaining work while preserving
+valid cache artifacts. An already running FFmpeg process or AI batch is allowed
+to finish before the worker fully releases the workspace.
 
 Preview mode is limited to 854x480 and 24 FPS. The standard output defaults to
 1280x720 at 30 FPS.

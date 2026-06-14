@@ -69,7 +69,7 @@ if not exist ".env" (
 
 echo.
 echo Verifying Python dependencies...
-"%PYTHON_EXE%" -c "import accelerate, bitsandbytes, cv2, fastapi, faster_whisper, faiss, huggingface_hub, safetensors, scenedetect, sentence_transformers, torch, transformers, travelmovieai, uvicorn"
+"%PYTHON_EXE%" -c "import accelerate, bitsandbytes, cv2, fastapi, faster_whisper, faiss, huggingface_hub, json_repair, safetensors, scenedetect, sentence_transformers, torch, transformers, travelmovieai, uvicorn"
 if errorlevel 1 goto :error
 
 echo.

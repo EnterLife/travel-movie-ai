@@ -33,7 +33,12 @@ from travelmovieai.infrastructure.system import (
 from travelmovieai.web.app import create_app
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager, _estimate_phase_eta
-from travelmovieai.web.schemas import JobStatus, ScanJobHistory, ScanJobResponse
+from travelmovieai.web.schemas import (
+    JobStatus,
+    MovieJobResponse,
+    ScanJobHistory,
+    ScanJobResponse,
+)
 
 
 class FakeScanService:
@@ -108,6 +113,36 @@ class FakeMovieService(FakeScanService):
             clip_count=3,
             duration_seconds=settings.target_duration_seconds,
             selection_mode="semantic" if settings.semantic_analysis else "chronological",
+        )
+
+
+class ControlledMovieService(FakeMovieService):
+    def __init__(self) -> None:
+        self.started = Event()
+        self.advance = Event()
+
+    def create_quick_montage(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        settings: QuickMontageSettings,
+        output_path: Path | None = None,
+        progress: object | None = None,
+    ) -> QuickMontageResult:
+        assert workspace is not None
+        if callable(progress):
+            progress(100, 1000, "Кадры: 1/10")
+        self.started.set()
+        self.advance.wait(timeout=5)
+        if callable(progress):
+            progress(200, 1000, "Кадры: 2/10")
+        return super().create_quick_montage(
+            input_path=input_path,
+            workspace=workspace,
+            settings=settings,
+            output_path=output_path,
+            progress=progress,
         )
 
 
@@ -226,12 +261,13 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     payload = response.json()
     assert response.status_code == 200
     assert payload["local_ai"]["resolved_model"] == "Qwen/Qwen2.5-VL-3B-Instruct"
+    assert payload["default_workspace_root"].endswith("workspace")
     assert payload["ai"]["available"] is True
     assert payload["ai"]["models"][1]["likely_vision"] is True
     assert payload["ai"]["models"][1]["recommended"] is True
     assert payload["cuda"]["ffmpeg_nvenc"] is True
     assert payload["resources"]["render_workers"] >= 1
-    assert payload["resources"]["model_batch_size"] == 4
+    assert payload["resources"]["model_batch_size"] == 2
 
 
 def test_web_capabilities_skip_lm_studio_by_default() -> None:
@@ -342,6 +378,49 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert job["logs"][-1]["message"] == "Фильм готов."
     assert download.status_code == 200
     assert download.content == b"fake mp4"
+
+
+def test_movie_job_can_pause_resume_and_cancel(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    service = ControlledMovieService()
+    manager = MovieJobManager(service)
+    submitted = manager.submit(
+        media,
+        tmp_path / "workspace",
+        QuickMontageSettings(),
+    )
+    assert service.started.wait(timeout=2)
+
+    paused = manager.pause(submitted.id)
+    assert paused is not None
+    assert paused.status is JobStatus.PAUSED
+    service.advance.set()
+    time.sleep(0.05)
+    assert manager.get(submitted.id).status is JobStatus.PAUSED  # type: ignore[union-attr]
+
+    resumed = manager.resume(submitted.id)
+    assert resumed is not None
+    assert resumed.status is JobStatus.RUNNING
+    completed = _wait_for_manager_movie_job(manager, submitted.id)
+    assert completed.status is JobStatus.COMPLETED
+    manager.shutdown()
+
+    cancel_service = ControlledMovieService()
+    cancel_manager = MovieJobManager(cancel_service)
+    cancel_job = cancel_manager.submit(
+        media,
+        tmp_path / "cancel-workspace",
+        QuickMontageSettings(),
+    )
+    assert cancel_service.started.wait(timeout=2)
+    cancelled = cancel_manager.cancel(cancel_job.id)
+    assert cancelled is not None
+    assert cancelled.status is JobStatus.CANCELLED
+    cancel_service.advance.set()
+    time.sleep(0.1)
+    assert cancel_manager.get(cancel_job.id).status is JobStatus.CANCELLED  # type: ignore[union-attr]
+    cancel_manager.shutdown()
 
 
 def test_web_scene_override_is_persisted(tmp_path: Path) -> None:
@@ -506,5 +585,21 @@ def _wait_for_movie_job(client: TestClient, job_id: str) -> dict[str, object]:
         payload: dict[str, object] = response.json()
         if payload["status"] in {"completed", "failed"}:
             return payload
+        time.sleep(0.01)
+    raise AssertionError("Movie job did not finish")
+
+
+def _wait_for_manager_movie_job(
+    manager: MovieJobManager,
+    job_id: UUID,
+) -> MovieJobResponse:
+    for _ in range(100):
+        job = manager.get(job_id)
+        if job and job.status in {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+        }:
+            return job
         time.sleep(0.01)
     raise AssertionError("Movie job did not finish")

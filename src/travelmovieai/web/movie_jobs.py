@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import RLock
+from threading import Condition, RLock
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -38,6 +38,10 @@ _SUBTASK_RANGES = {
     "rendering": (85.0, 99.0, "Рендеринг"),
     "validation": (99.0, 100.0, "Проверка фильма"),
 }
+
+
+class _MovieCancelled(Exception):
+    pass
 
 
 class MovieService(Protocol):
@@ -76,6 +80,11 @@ class _MovieJob:
     subtasks: list[JobSubtaskProgress] = field(default_factory=list)
     logs: list[JobLogEntry] = field(default_factory=list)
     result: QuickMontageResult | None = None
+    pause_requested: bool = False
+    cancel_requested: bool = False
+    worker_finished: bool = False
+    paused_at: datetime | None = None
+    paused_seconds: float = 0
 
 
 class MovieJobManager:
@@ -87,6 +96,7 @@ class MovieJobManager:
         )
         self._jobs: dict[UUID, _MovieJob] = {}
         self._lock = RLock()
+        self._condition = Condition(self._lock)
 
     def submit(
         self,
@@ -118,6 +128,63 @@ class MovieJobManager:
             job = self._jobs.get(job_id)
             return _to_response(job) if job else None
 
+    def pause(self, job_id: UUID) -> MovieJobResponse | None:
+        with self._condition:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                job.pause_requested = True
+                job.status = JobStatus.PAUSED
+                job.paused_at = datetime.now(UTC)
+                job.message = (
+                    "Пауза запрошена. Активная операция завершится, затем обработка остановится."
+                )
+                _append_log(job, job.message)
+            return _to_response(job)
+
+    def resume(self, job_id: UUID) -> MovieJobResponse | None:
+        with self._condition:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.status == JobStatus.PAUSED and not job.cancel_requested:
+                resumed_at = datetime.now(UTC)
+                if job.paused_at is not None:
+                    paused_for = resumed_at - job.paused_at
+                    job.paused_seconds += paused_for.total_seconds()
+                    if job.phase_started_at is not None:
+                        job.phase_started_at += paused_for
+                job.paused_at = None
+                job.pause_requested = False
+                job.status = JobStatus.RUNNING
+                job.message = "Монтаж продолжен."
+                _append_log(job, job.message)
+                self._condition.notify_all()
+            return _to_response(job)
+
+    def cancel(self, job_id: UUID) -> MovieJobResponse | None:
+        with self._condition:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.status not in {
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            }:
+                job.cancel_requested = True
+                job.pause_requested = False
+                job.status = JobStatus.CANCELLED
+                job.finished_at = datetime.now(UTC)
+                job.message = (
+                    "Остановка запрошена. Активная операция завершается, новые не запускаются."
+                )
+                _fail_active_subtask(job, job.message)
+                _append_log(job, job.message, level="warning")
+                self._condition.notify_all()
+            return _to_response(job)
+
     def resolve_project_paths(self, input_path: Path, workspace: Path | None) -> ProjectPaths:
         return self._service.resolve_project_paths(input_path, workspace)
 
@@ -134,8 +201,13 @@ class MovieJobManager:
         self._executor.shutdown(wait=False, cancel_futures=False)
 
     def _run(self, job_id: UUID) -> None:
-        with self._lock:
+        with self._condition:
             job = self._jobs[job_id]
+            while job.pause_requested and not job.cancel_requested:
+                self._condition.wait()
+            if job.cancel_requested:
+                job.worker_finished = True
+                return
             job.status = JobStatus.RUNNING
             job.started_at = datetime.now(UTC)
             job.phase_started_at = job.started_at
@@ -151,7 +223,11 @@ class MovieJobManager:
             _append_log(job, job.message)
 
         def progress(current: int, total: int, message: str) -> None:
-            with self._lock:
+            with self._condition:
+                while job.pause_requested and not job.cancel_requested:
+                    self._condition.wait()
+                if job.cancel_requested:
+                    raise _MovieCancelled
                 now = datetime.now(UTC)
                 progress_percent = _progress_percent(current, total)
                 phase = _phase_from_message(message)
@@ -183,14 +259,22 @@ class MovieJobManager:
                 settings=job.settings,
                 progress=progress,
             )
+        except _MovieCancelled:
+            self._mark_worker_finished(job)
+            return
         except TravelMovieError as error:
             self._fail(job, str(error))
+            self._mark_worker_finished(job)
             return
         except Exception:
             self._fail(job, "Внутренняя ошибка монтажа.")
+            self._mark_worker_finished(job)
             return
 
-        with self._lock:
+        with self._condition:
+            if job.cancel_requested:
+                job.worker_finished = True
+                return
             job.status = JobStatus.COMPLETED
             job.finished_at = datetime.now(UTC)
             job.message = "Фильм готов."
@@ -200,9 +284,12 @@ class MovieJobManager:
             job.progress_total = 1000
             _complete_subtasks(job)
             _append_log(job, job.message)
+            job.worker_finished = True
 
     def _fail(self, job: _MovieJob, error: str) -> None:
         with self._lock:
+            if job.cancel_requested:
+                return
             job.status = JobStatus.FAILED
             job.finished_at = datetime.now(UTC)
             job.message = "Монтаж завершился с ошибкой."
@@ -211,11 +298,20 @@ class MovieJobManager:
             _fail_active_subtask(job, error)
             _append_log(job, error, level="error")
 
+    def _mark_worker_finished(self, job: _MovieJob) -> None:
+        with self._condition:
+            job.worker_finished = True
+            self._condition.notify_all()
+
     def _workspace_is_active(self, workspace: Path) -> bool:
         key = os.path.normcase(str(workspace.resolve()))
         return any(
             os.path.normcase(str(job.workspace.resolve())) == key
-            and job.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+            and (
+                job.status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED}
+                or job.status == JobStatus.CANCELLED
+                and not job.worker_finished
+            )
             for job in self._jobs.values()
         )
 
@@ -224,7 +320,15 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
     result = job.result
     now = job.finished_at or datetime.now(UTC)
     started_at = job.started_at or job.created_at
-    elapsed_seconds = max(0.0, (now - started_at).total_seconds())
+    active_pause_seconds = (
+        max(0.0, (now - job.paused_at).total_seconds())
+        if job.paused_at is not None
+        else 0.0
+    )
+    elapsed_seconds = max(
+        0.0,
+        (now - started_at).total_seconds() - job.paused_seconds - active_pause_seconds,
+    )
     progress_percent = (
         min(100.0, job.progress_current / job.progress_total * 100)
         if job.progress_total > 0
@@ -426,7 +530,7 @@ def _phase_from_message(message: str) -> str:
         (("профиль ресурсов", "проверка медиатеки", "media scan"), "media_scan"),
         (("детектирование сцен", "найдено сцен"), "scene_detection"),
         (("кадры",), "frame_sampling"),
-        (("opencv", "качества"), "quality_analysis"),
+        (("opencv", "cuda quality", "качества"), "quality_analysis"),
         (("ai-анализ", "ai-кэш", "vision"), "vision_analysis"),
         (("whisper", "реч"), "speech_analysis"),
         (("повтор", "описан", "событи", "сценари", "ai-отбор"), "story_builder"),

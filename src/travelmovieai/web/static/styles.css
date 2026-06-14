@@ -485,6 +485,18 @@ input::placeholder {
   background: rgba(255, 122, 115, 0.07);
 }
 
+.status-chip.paused {
+  border-color: rgba(255, 196, 92, 0.35);
+  color: #ffd27d;
+  background: rgba(255, 196, 92, 0.09);
+}
+
+.status-chip.cancelled {
+  border-color: rgba(255, 122, 115, 0.24);
+  color: var(--red);
+  background: rgba(255, 122, 115, 0.07);
+}
+
 .job-time {
   color: var(--muted);
   font-family: "SFMono-Regular", Consolas, monospace;
@@ -1000,6 +1012,30 @@ input::placeholder {
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 30px;
   font-weight: 500;
+}
+
+.movie-control-actions {
+  display: flex;
+  gap: 10px;
+  margin: 18px 0 4px;
+}
+
+.danger-button {
+  border: 1px solid rgba(255, 101, 73, 0.45);
+  border-radius: 10px;
+  background: rgba(255, 101, 73, 0.1);
+  color: #ff9b87;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+.danger-button:hover {
+  background: rgba(255, 101, 73, 0.18);
+}
+
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .movie-progress-meter {

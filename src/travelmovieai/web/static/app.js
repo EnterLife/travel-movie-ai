@@ -63,6 +63,8 @@ const sceneReview = document.querySelector("#scene-review");
 const sceneGrid = document.querySelector("#scene-grid");
 const movieDownload = document.querySelector("#movie-download");
 const moviePreview = document.querySelector("#movie-preview");
+const moviePauseButton = document.querySelector("#movie-pause-button");
+const movieCancelButton = document.querySelector("#movie-cancel-button");
 
 let currentJob = null;
 let currentAssets = [];
@@ -72,10 +74,14 @@ let serverReady = false;
 let movieReady = false;
 let currentMovieJob = null;
 let loadedCapabilities = null;
+let defaultWorkspaceRoot = "";
+let workspaceIsAutomatic = true;
 
 const statusLabels = {
   queued: "В очереди",
   running: "Выполняется",
+  paused: "Пауза",
+  cancelled: "Остановлено",
   completed: "Готово",
   failed: "Ошибка",
 };
@@ -133,6 +139,7 @@ async function pickDirectory(purpose, field, button) {
     });
     if (payload.selected_path) {
       field.value = payload.selected_path;
+      if (purpose === "workspace") workspaceIsAutomatic = false;
       field.dispatchEvent(new Event("change", { bubbles: true }));
     }
   } catch (error) {
@@ -180,6 +187,8 @@ async function loadCapabilities(includeLmStudio = visionProvider.value === "lm-s
     const suffix = includeLmStudio ? "?include_lm_studio=true" : "";
     const capabilities = await requestJson(`/api/capabilities${suffix}`);
     loadedCapabilities = capabilities;
+    defaultWorkspaceRoot = capabilities.default_workspace_root || "";
+    updateAutomaticWorkspace();
     renderCapabilities(capabilities);
     populateModels(capabilities);
     if (!capabilities.cuda.ffmpeg_nvenc && renderDevice.value === "cuda") {
@@ -214,6 +223,10 @@ function renderCapabilities(capabilities) {
     capabilityChip(
       capabilities.cuda.ffmpeg_nvenc ? "NVENC готов" : "NVENC недоступен",
       capabilities.cuda.ffmpeg_nvenc,
+    ),
+    capabilityChip(
+      capabilities.cuda.torch_cuda ? "Vision AI · CUDA" : "Vision AI · CPU",
+      capabilities.cuda.torch_cuda,
     ),
     capabilityChip(
       capabilities.opencv_available ? "OpenCV готов" : "OpenCV fallback: Pillow",
@@ -283,6 +296,14 @@ function populateFlorenceModels() {
 
 function shortModelName(model) {
   return model.split("/").pop();
+}
+
+function updateAutomaticWorkspace() {
+  if (!workspaceIsAutomatic || !defaultWorkspaceRoot) return;
+  const sourceName = lastPathPart(inputPath.value.trim());
+  const separator = defaultWorkspaceRoot.includes("\\") ? "\\" : "/";
+  const root = defaultWorkspaceRoot.replace(/[\\/]+$/, "");
+  workspace.value = sourceName ? `${root}${separator}${sourceName}` : root;
 }
 
 form.addEventListener("submit", async (event) => {
@@ -514,6 +535,10 @@ async function pollMovie(jobId) {
         movieButton.disabled = false;
         return;
       }
+      if (currentMovieJob.status === "cancelled") {
+        movieButton.disabled = false;
+        return;
+      }
     } catch (error) {
       showError(error.message);
       movieButton.disabled = false;
@@ -531,7 +556,14 @@ function showMovieProgress(job) {
       ? "Фильм готов"
       : job.status === "failed"
         ? "Ошибка монтажа"
+        : job.status === "paused"
+          ? "Монтаж на паузе"
+          : job.status === "cancelled"
+            ? "Монтаж остановлен"
         : "Идёт монтаж";
+  moviePauseButton.disabled = !["running", "paused", "queued"].includes(job.status);
+  moviePauseButton.textContent = job.status === "paused" ? "Продолжить" : "Пауза";
+  movieCancelButton.disabled = !["running", "paused", "queued"].includes(job.status);
   movieProgressMessage.textContent = job.message;
   const percent = Math.max(0, Math.min(100, job.progress_percent || 0));
   movieProgressBar.style.width = `${Math.max(2, percent)}%`;
@@ -873,6 +905,39 @@ browseInputPath.addEventListener("click", () =>
 browseWorkspace.addEventListener("click", () =>
   pickDirectory("workspace", workspace, browseWorkspace),
 );
+inputPath.addEventListener("input", updateAutomaticWorkspace);
+inputPath.addEventListener("change", updateAutomaticWorkspace);
+workspace.addEventListener("input", () => {
+  workspaceIsAutomatic = false;
+});
+moviePauseButton.addEventListener("click", async () => {
+  if (!currentMovieJob) return;
+  try {
+    const action = currentMovieJob.status === "paused" ? "resume" : "pause";
+    currentMovieJob = await requestJson(
+      `/api/movies/${currentMovieJob.id}/${action}`,
+      { method: "POST" },
+    );
+    showMovieProgress(currentMovieJob);
+  } catch (error) {
+    showError(error.message);
+  }
+});
+movieCancelButton.addEventListener("click", async () => {
+  if (!currentMovieJob) return;
+  if (!window.confirm("Полностью остановить монтаж? Уже созданные кэш-файлы сохранятся.")) {
+    return;
+  }
+  try {
+    currentMovieJob = await requestJson(
+      `/api/movies/${currentMovieJob.id}/cancel`,
+      { method: "POST" },
+    );
+    showMovieProgress(currentMovieJob);
+  } catch (error) {
+    showError(error.message);
+  }
+});
 visionProvider.addEventListener("change", () => {
   if (visionProvider.value === "lm-studio") {
     loadCapabilities(true);

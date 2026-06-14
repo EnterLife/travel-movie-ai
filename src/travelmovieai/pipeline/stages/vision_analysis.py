@@ -33,6 +33,7 @@ class VisionAnalysisStage(Stage):
             lm_studio_url=context.settings.lm_studio_url,
             lm_studio_api_key=context.settings.lm_studio_api_key,
             timeout_seconds=context.settings.vision_timeout_seconds,
+            model_batch_size=resources.model_batch_size,
         )
         report = analyze_scenes(repository.list_scenes(), provider, context.style)
         repository.synchronize_scenes(report.scenes)

@@ -78,6 +78,10 @@ From the repository root:
 7. creates `.env` from `.env.example` without overwriting an existing file;
 8. verifies Python imports, FFmpeg, and FFprobe.
 
+If the environment already contains CPU-only PyTorch, setup removes that wheel
+before installing the CUDA build. This is necessary because pip otherwise treats
+CPU and CUDA wheels with the same public version as already satisfied.
+
 Use a smaller runtime-only environment when development tools are unnecessary:
 
 ```powershell

@@ -49,7 +49,7 @@ if errorlevel 1 (
 
 echo.
 echo Updating packaging tools...
-"%PYTHON_EXE%" -m pip install --upgrade pip setuptools wheel
+"%PYTHON_EXE%" -m pip install --upgrade pip wheel "setuptools<82"
 if errorlevel 1 goto :error
 
 call :ensure_pytorch_cuda
@@ -102,12 +102,14 @@ if not errorlevel 1 (
 
 echo.
 echo NVIDIA GPU detected. Installing CUDA-enabled PyTorch...
-"%PYTHON_EXE%" -m pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu128
+"%PYTHON_EXE%" -m pip uninstall --yes torch torchvision torchaudio
 if errorlevel 1 exit /b 1
-"%PYTHON_EXE%" -c "import torch; print('PyTorch', torch.__version__, '| CUDA', torch.version.cuda, '|', torch.cuda.get_device_name(0)); raise SystemExit(0 if torch.cuda.is_available() else 1)"
+"%PYTHON_EXE%" -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 exit /b 1
+"%PYTHON_EXE%" -c "import torch; available = torch.cuda.is_available(); print('PyTorch', torch.__version__, '| CUDA runtime', torch.version.cuda, '| GPU', torch.cuda.get_device_name(0) if available else 'unavailable'); raise SystemExit(0 if available else 1)"
 if errorlevel 1 (
-  echo CUDA PyTorch installation completed, but the GPU is still unavailable.
-  echo Update the NVIDIA driver and run this setup again.
+  echo A CUDA PyTorch wheel was installed, but the GPU is still unavailable.
+  echo Check the NVIDIA driver, restart Windows, and run this setup again.
   exit /b 1
 )
 exit /b 0

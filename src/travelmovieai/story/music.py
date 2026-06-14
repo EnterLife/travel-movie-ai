@@ -28,7 +28,7 @@ type MusicProfile = Literal["calm", "lounge", "cinematic", "warm", "energetic"]
 type FloatArray = NDArray[np.float64]
 type NeuralGeneratorName = Literal["ace-step", "musicgen"]
 type MusicGeneratorName = Literal["procedural", "ace-step", "musicgen"]
-ARRANGEMENT_VERSION = "adaptive-lounge-v2"
+ARRANGEMENT_VERSION = "adaptive-lounge-v3"
 MusicProgress = Callable[[int, int, str], None]
 
 
@@ -57,11 +57,11 @@ STYLE_PROFILES: dict[StoryStyle, MusicProfile] = {
     StoryStyle.ROMANTIC: "warm",
 }
 PROFILE_BPM = {
-    "calm": 62,
-    "lounge": 84,
-    "cinematic": 72,
-    "warm": 78,
-    "energetic": 104,
+    "calm": 60,
+    "lounge": 76,
+    "cinematic": 68,
+    "warm": 72,
+    "energetic": 96,
 }
 PROFILE_CHORDS = {
     "calm": (
@@ -281,7 +281,7 @@ def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
                 MusicAccent(
                     time_seconds=min(plan.total_duration_seconds, start),
                     kind="event_change" if event_changed else "scene_change",
-                    strength=0.62 if event_changed else 0.28,
+                    strength=0.32 if event_changed else 0.16,
                     scene_id=clip.scene_id,
                     label=("Смена события" if event_changed else f"Смена сцены {index + 1}"),
                 )
@@ -293,7 +293,7 @@ def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
                 MusicAccent(
                     time_seconds=min(plan.total_duration_seconds, accent_time),
                     kind="highlight",
-                    strength=min(1.0, 0.55 + clip.semantic_score / 220),
+                    strength=min(0.45, 0.32 + clip.semantic_score / 800),
                     scene_id=clip.scene_id,
                     label=clip.caption or f"Важная сцена {index + 1}",
                 )
@@ -321,12 +321,14 @@ def choose_music_profile(
     locations = {str(scene.metadata.get("location_type", "")).casefold() for scene in scenes}
     activities = {str(scene.metadata.get("activity", "")).casefold() for scene in scenes}
 
-    if {"adventurous", "exciting", "energetic"} & emotions or (saturation > 58 and sharpness > 55):
-        profile: MusicProfile = "energetic"
-    elif {"romantic", "joyful", "emotional"} & emotions or (brightness > 58 and saturation > 48):
+    if {"adventurous", "exciting", "energetic"} & emotions:
+        profile: MusicProfile = "lounge"
+    elif {"romantic", "joyful", "emotional"} & emotions or (
+        brightness > 62 and saturation > 52
+    ):
         profile = "warm"
-    elif brightness < 38 or settings.story_style is StoryStyle.CINEMATIC:
-        profile = "cinematic"
+    elif brightness < 38:
+        profile = "calm"
     elif (
         {"relaxing"} & emotions
         or {"beach", "sea", "city", "hotel", "restaurant", "park"} & locations
@@ -334,7 +336,11 @@ def choose_music_profile(
     ):
         profile = "lounge"
     else:
-        profile = STYLE_PROFILES[settings.story_style]
+        profile = (
+            "warm"
+            if settings.story_style in {StoryStyle.FAMILY, StoryStyle.ROMANTIC}
+            else "lounge"
+        )
     return (
         profile,
         "AI-профиль выбран по стилю фильма, эмоциям сцен и OpenCV-метрикам "
@@ -360,6 +366,10 @@ def apply_music_accents(
                 )
             sample_rate = source.getframerate()
             source_channels = source.getnchannels()
+            if source.getnframes() <= 0 or source_channels <= 0:
+                raise MusicGenerationError(
+                    "Локальная музыкальная модель вернула пустой WAV."
+                )
             target_frames = round(duration_seconds * sample_rate)
             with wave.open(str(temporary_path), "wb") as target:
                 target.setnchannels(2)
@@ -369,9 +379,14 @@ def apply_music_accents(
                 written = 0
                 while written < target_frames:
                     requested = min(chunk_frames, target_frames - written)
-                    raw = source.readframes(requested)
-                    frames_read = len(raw) // (2 * source_channels)
-                    if frames_read:
+                    chunks: list[NDArray[np.float64]] = []
+                    collected = 0
+                    while collected < requested:
+                        raw = source.readframes(requested - collected)
+                        frames_read = len(raw) // (2 * source_channels)
+                        if frames_read == 0:
+                            source.rewind()
+                            continue
                         samples = np.frombuffer(raw, dtype="<i2").reshape(
                             frames_read,
                             source_channels,
@@ -381,19 +396,13 @@ def apply_music_accents(
                             if source_channels == 1
                             else samples[:, :2]
                         ).astype(np.float64)
-                    else:
-                        stereo = np.empty((0, 2), dtype=np.float64)
-                    if frames_read < requested:
-                        stereo = np.vstack(
-                            (
-                                stereo,
-                                np.zeros((requested - frames_read, 2), dtype=np.float64),
-                            )
-                        )
+                        chunks.append(stereo)
+                        collected += frames_read
+                    stereo = np.vstack(chunks)[:requested]
                     time = np.arange(written, written + requested, dtype=np.float64) / sample_rate
                     accent, energy = _accent_layers(time, accents)
                     stereo *= 1 + energy[:, None]
-                    stereo += accent[:, None] * 3400
+                    stereo += accent[:, None] * 1400
                     fade = np.minimum.reduce(
                         (
                             np.ones_like(time),
@@ -405,6 +414,9 @@ def apply_music_accents(
                     target.writeframesraw(np.clip(stereo, -32767, 32767).astype("<i2").tobytes())
                     written += requested
         os.replace(temporary_path, audio_path)
+    except MusicGenerationError:
+        temporary_path.unlink(missing_ok=True)
+        raise
     except (OSError, wave.Error, ValueError) as error:
         temporary_path.unlink(missing_ok=True)
         raise MusicGenerationError(
@@ -418,20 +430,22 @@ def _music_generation_prompt(
     accents: list[MusicAccent],
 ) -> str:
     profile_text = {
-        "calm": "calm ambient lounge",
-        "lounge": "melodic modern lounge",
-        "cinematic": "cinematic travel score",
-        "warm": "warm optimistic lounge",
-        "energetic": "energetic upscale travel lounge",
+        "calm": "soft calm ambient lounge",
+        "lounge": "soft melodic modern lounge",
+        "cinematic": "restrained cinematic travel ambience",
+        "warm": "soft warm optimistic lounge",
+        "energetic": "light upbeat travel lounge",
     }[profile]
     highlights = sum(cue.kind == "highlight" for cue in accents)
     events = sum(cue.kind == "event_change" for cue in accents)
     return (
         f"Instrumental {profile_text}, {bpm} BPM, one coherent recurring melody, "
-        "warm electric piano, clean muted guitar, soft round bass, brushed drums, "
-        "subtle atmospheric pads, elegant professional production, no vocals, "
+        "quiet background underscore, warm electric piano, clean muted guitar, "
+        "soft round bass, very light brushed percussion, subtle atmospheric pads, "
+        "sparse arrangement, low dynamic range, no dramatic build-ups, no loud hits, "
+        "no aggressive percussion, elegant professional production, no vocals, "
         f"gradual narrative development, {events} section changes and "
-        f"{highlights} restrained musical highlights, gentle resolved ending."
+        f"{highlights} very restrained musical highlights, gentle resolved ending."
     )[:500]
 
 
@@ -590,24 +604,26 @@ def generate_ambient_soundtrack(
             hat = _hat_array(time, beat_seconds, sample_rate)
             accent, energy = _accent_layers(time, cue_sheet)
             arc = 0.78 + 0.16 * np.sin(np.pi * np.minimum(1.0, time / max(duration_seconds, 0.001)))
-            rhythm_level = 0.6 if profile == "calm" else 1.15 if profile == "energetic" else 0.85
+            rhythm_level = (
+                0.32 if profile == "calm" else 0.72 if profile == "energetic" else 0.48
+            )
             dynamics = arc + energy
             left = (
                 pad * 0.22 * chord_fade
-                + bass * 0.13
-                + lead * 0.10
-                + kick * 0.09 * rhythm_level
-                + brush * 0.035 * rhythm_level
-                + hat * 0.018 * rhythm_level
-            ) * dynamics + accent * 0.13
+                + bass * 0.11
+                + lead * 0.075
+                + kick * 0.05 * rhythm_level
+                + brush * 0.022 * rhythm_level
+                + hat * 0.009 * rhythm_level
+            ) * dynamics + accent * 0.055
             right = (
                 pad * 0.22 * chord_fade
-                + bass * 0.13
-                + lead * 0.08
-                + kick * 0.09 * rhythm_level
-                + brush * 0.045 * rhythm_level
-                - hat * 0.014 * rhythm_level
-            ) * dynamics + accent * 0.11
+                + bass * 0.11
+                + lead * 0.065
+                + kick * 0.05 * rhythm_level
+                + brush * 0.027 * rhythm_level
+                - hat * 0.007 * rhythm_level
+            ) * dynamics + accent * 0.05
             fade = np.minimum.reduce(
                 (
                     np.ones_like(time),
@@ -714,9 +730,9 @@ def _accent_layers(
         energy += (
             np.exp(-0.5 * np.square(delta / 1.15))
             * cue.strength
-            * (0.18 if cue.kind == "highlight" else 0.1)
+            * (0.07 if cue.kind == "highlight" else 0.035)
         )
-    return accent_layer, cast(FloatArray, np.minimum(0.28, energy))
+    return accent_layer, cast(FloatArray, np.minimum(0.12, energy))
 
 
 def _edge_accents(duration_seconds: float) -> list[MusicAccent]:
@@ -726,13 +742,13 @@ def _edge_accents(duration_seconds: float) -> list[MusicAccent]:
         MusicAccent(
             time_seconds=0,
             kind="intro",
-            strength=0.35,
+            strength=0.18,
             label="Начало фильма",
         ),
         MusicAccent(
             time_seconds=max(0.0, duration_seconds - min(1.2, duration_seconds * 0.2)),
             kind="finale",
-            strength=0.9,
+            strength=0.38,
             label="Финальный музыкальный акцент",
         ),
     ]

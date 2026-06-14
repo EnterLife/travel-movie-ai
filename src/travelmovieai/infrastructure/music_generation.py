@@ -63,8 +63,6 @@ class AceStepMusicGenerator:
         seed: int,
         progress: MusicProgress | None = None,
     ) -> None:
-        if duration_seconds > 600:
-            raise MusicGenerationError("ACE-Step поддерживает композиции длиной до 600 секунд.")
         self._ensure_runtime(progress)
         python_executable = self.runtime_dir / ".venv" / "Scripts" / "python.exe"
         cli_path = self.runtime_dir / "cli.py"
@@ -280,6 +278,8 @@ class AceStepMusicGenerator:
                 "-loglevel",
                 "error",
                 "-y",
+                "-stream_loop",
+                "-1",
                 "-i",
                 str(source_path),
                 "-t",

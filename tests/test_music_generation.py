@@ -32,7 +32,8 @@ class FakeMusicGenerator:
     ) -> None:
         self.calls += 1
         assert "no vocals" in prompt
-        assert bpm == 84
+        assert "low dynamic range" in prompt
+        assert bpm == 76
         assert seed >= 0
         with wave.open(str(output_path), "wb") as audio:
             audio.setnchannels(2)
@@ -84,6 +85,43 @@ def test_ace_step_configuration_enables_low_vram_offload(tmp_path: Path) -> None
     assert "thinking = false" in config
     assert "offload_to_cpu = true" in config
     assert "offload_dit_to_cpu = true" in config
+
+
+def test_ace_step_normalization_loops_short_model_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=tmp_path / "runtime",
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="auto",
+        gpu_memory_mb=6144,
+    )
+    source = tmp_path / "short.wav"
+    source.touch()
+    output = tmp_path / "full.wav"
+    commands: list[list[str]] = []
+
+    def run_ffmpeg(
+        command: list[str],
+        **kwargs: object,
+    ) -> object:
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"normalized")
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(
+        "travelmovieai.infrastructure.music_generation.subprocess.run",
+        run_ffmpeg,
+    )
+
+    generator._normalize(source, output, 90)
+
+    assert commands[0][5:7] == ["-stream_loop", "-1"]
+    assert output.read_bytes() == b"normalized"
 
 
 def test_ace_step_runtime_uses_unified_windows_setup(

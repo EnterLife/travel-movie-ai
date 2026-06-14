@@ -20,6 +20,7 @@ from travelmovieai.domain.models import (
     Scene,
 )
 from travelmovieai.story.music import (
+    apply_music_accents,
     build_music_accents,
     build_music_plan,
     choose_music_profile,
@@ -102,12 +103,12 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
         montage_plan,
     )
 
-    assert profile == "energetic"
+    assert profile == "lounge"
     assert plan.mode == "generated"
     assert plan.source_path == output
     assert plan.generated is True
     assert plan.duration_seconds == 8
-    assert plan.arrangement_version == "adaptive-lounge-v2"
+    assert plan.arrangement_version == "adaptive-lounge-v3"
     with wave.open(str(output), "rb") as soundtrack:
         assert soundtrack.getnchannels() == 2
         assert soundtrack.getnframes() / soundtrack.getframerate() == 8
@@ -138,6 +139,31 @@ def test_lounge_music_is_melodic_stereo_and_deterministic(tmp_path: Path) -> Non
     left = frames[0::4] + frames[1::4]
     right = frames[2::4] + frames[3::4]
     assert left != right
+
+
+def test_short_model_music_is_repeated_across_full_timeline(tmp_path: Path) -> None:
+    output = tmp_path / "short-model.wav"
+    sample_rate = 8000
+    time = np.arange(sample_rate // 4, dtype=np.float64) / sample_rate
+    samples = (np.sin(2 * np.pi * 220 * time) * 5000).astype("<i2")
+    stereo = np.column_stack((samples, samples))
+    with wave.open(str(output), "wb") as soundtrack:
+        soundtrack.setnchannels(2)
+        soundtrack.setsampwidth(2)
+        soundtrack.setframerate(sample_rate)
+        soundtrack.writeframes(stereo.tobytes())
+
+    apply_music_accents(output, duration_seconds=1, accents=[])
+
+    with wave.open(str(output), "rb") as soundtrack:
+        extended = np.frombuffer(
+            soundtrack.readframes(soundtrack.getnframes()),
+            dtype="<i2",
+        ).reshape(-1, 2)
+    ending = extended[int(0.55 * sample_rate) : int(0.7 * sample_rate)]
+
+    assert len(extended) == sample_rate
+    assert float(np.sqrt(np.mean(ending.astype(np.float64) ** 2))) > 100
 
 
 def test_auto_music_selects_lounge_for_relaxing_travel_scene() -> None:
@@ -251,4 +277,4 @@ def test_highlight_cue_creates_audible_accent(tmp_path: Path) -> None:
     accent_rms = float(np.sqrt(np.mean(accent.astype(np.float64) ** 2)))
     baseline_rms = float(np.sqrt(np.mean(baseline.astype(np.float64) ** 2)))
 
-    assert accent_rms > baseline_rms * 1.3
+    assert accent_rms > baseline_rms * 1.05

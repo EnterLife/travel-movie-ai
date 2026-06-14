@@ -288,15 +288,16 @@ ACE-Step is prepared together with the application:
 .\scripts\setup_windows.bat
 ```
 
-With `Determine from video`, relaxing scenes and travel contexts such as
-beaches, city walks, hotels, restaurants, and parks prefer lounge music.
-Exciting, romantic, warm, or cinematic material can still select another
-profile. Music generation does not download a model or send media to a service.
+With `Determine from video`, TravelMovieAI now favors quiet lounge, calm, or
+warm background music. Energetic and cinematic profiles remain available as
+explicit choices, but automatic music avoids loud hits, aggressive percussion,
+and dramatic build-ups.
 
 `Synchronize with editing` is enabled by default. The application first builds
-the final clip timeline and then generates one continuous composition for its
-exact duration. It does not repeat a short loop. A cue sheet places musical
-accents at:
+the final clip timeline and then requests one composition for its exact
+duration. If the model returns a shorter WAV, TravelMovieAI extends it to the
+full timeline instead of filling the remainder with silence. A cue sheet places
+restrained musical accents at:
 
 - transitions between clips;
 - changes between detected trip events;

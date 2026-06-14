@@ -105,6 +105,7 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
             width=320,
             height=240,
             fps=24,
+            music_engine="procedural",
         ),
     )
 

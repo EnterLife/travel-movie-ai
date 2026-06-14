@@ -164,6 +164,9 @@ def test_web_interface_serves_page_and_health() -> None:
     assert 'class="section-number"' not in page.text
     assert "STAGE 01" not in page.text
     assert "Соберите клип путешествия" in page.text
+    assert 'id="music-engine"' in page.text
+    assert 'id="music-model"' in page.text
+    assert "ACE-Step only" in page.text
     assert health.json()["status"] == "ok"
     assert health.json()["ready"] is True
     assert health.json()["ffprobe"]["available"] is True
@@ -261,6 +264,8 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     payload = response.json()
     assert response.status_code == 200
     assert payload["local_ai"]["resolved_model"] == "Qwen/Qwen2.5-VL-3B-Instruct"
+    assert payload["music_ai"]["resolved_model"] == "ACE-Step/acestep-v15-turbo"
+    assert payload["music_ai"]["available"] is True
     assert payload["default_workspace_root"].endswith("workspace")
     assert payload["ai"]["available"] is True
     assert payload["ai"]["models"][1]["likely_vision"] is True

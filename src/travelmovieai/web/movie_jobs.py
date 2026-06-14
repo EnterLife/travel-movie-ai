@@ -32,8 +32,8 @@ _SUBTASK_RANGES = {
     "quality_analysis": (32.0, 45.0, "OpenCV-анализ"),
     "vision_analysis": (45.0, 70.0, "Vision AI"),
     "speech_analysis": (70.0, 75.0, "Распознавание речи"),
-    "story_builder": (75.0, 83.0, "Сюжет и отбор"),
-    "music": (83.0, 84.0, "Музыка"),
+    "story_builder": (75.0, 82.0, "Сюжет и отбор"),
+    "music": (82.0, 84.0, "Музыка"),
     "timeline": (84.0, 85.0, "Timeline"),
     "rendering": (85.0, 99.0, "Рендеринг"),
     "validation": (99.0, 100.0, "Проверка фильма"),
@@ -231,10 +231,7 @@ class MovieJobManager:
                 now = datetime.now(UTC)
                 progress_percent = _progress_percent(current, total)
                 phase = _phase_from_message(message)
-                reset_phase = (
-                    phase != job.phase
-                    or "начало анализа сцен" in message.casefold()
-                )
+                reset_phase = phase != job.phase or "начало анализа сцен" in message.casefold()
                 if reset_phase:
                     job.phase_started_at = now
                     job.phase_last_progress_at = None
@@ -321,9 +318,7 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
     now = job.finished_at or datetime.now(UTC)
     started_at = job.started_at or job.created_at
     active_pause_seconds = (
-        max(0.0, (now - job.paused_at).total_seconds())
-        if job.paused_at is not None
-        else 0.0
+        max(0.0, (now - job.paused_at).total_seconds()) if job.paused_at is not None else 0.0
     )
     elapsed_seconds = max(
         0.0,
@@ -379,6 +374,8 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         render_encoder=result.render_encoder if result else None,
         music_mode=result.music_mode if result else None,
         music_profile=result.music_profile if result else None,
+        music_generator=result.music_generator if result else None,
+        music_model=result.music_model if result else None,
     )
 
 
@@ -515,9 +512,7 @@ def _estimate_phase_eta(
     measured_seconds = (last_progress_at - phase_started_at).total_seconds()
     if measured_seconds <= 0:
         return None
-    eta_at_last_progress = (
-        measured_seconds / completed_fraction * (1 - completed_fraction)
-    )
+    eta_at_last_progress = measured_seconds / completed_fraction * (1 - completed_fraction)
     seconds_since_progress = max(0.0, (now - last_progress_at).total_seconds())
     if seconds_since_progress > eta_at_last_progress:
         return None
@@ -534,7 +529,7 @@ def _phase_from_message(message: str) -> str:
         (("ai-анализ", "ai-кэш", "vision"), "vision_analysis"),
         (("whisper", "реч"), "speech_analysis"),
         (("повтор", "описан", "событи", "сценари", "ai-отбор"), "story_builder"),
-        (("музык",), "music"),
+        (("музык", "ace-step"), "music"),
         (("timeline",), "timeline"),
         (("рендер", "клип", "переход", "сборка"), "rendering"),
         (("ffprobe", "фильм готов"), "validation"),

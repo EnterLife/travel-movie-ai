@@ -90,6 +90,10 @@ class LocalAIStatus(BaseModel):
     models: list[ModelOption] = Field(default_factory=list)
 
 
+class MusicAIStatus(LocalAIStatus):
+    runtime_installed: bool = False
+
+
 class CudaStatusResponse(BaseModel):
     available: bool
     gpu_name: str | None = None
@@ -120,6 +124,7 @@ class ResourceProfileResponse(BaseModel):
 class CapabilitiesResponse(BaseModel):
     default_workspace_root: str
     local_ai: LocalAIStatus
+    music_ai: MusicAIStatus
     ai: AIProviderStatus
     cuda: CudaStatusResponse
     resources: ResourceProfileResponse
@@ -177,6 +182,8 @@ class MovieJobResponse(BaseModel):
     render_encoder: str | None = None
     music_mode: str | None = None
     music_profile: str | None = None
+    music_generator: str | None = None
+    music_model: str | None = None
 
 
 class SceneListResponse(BaseModel):

@@ -1,15 +1,19 @@
 """Local soundtrack planning and deterministic melodic generation."""
 
+import hashlib
+import json
 import math
+import os
 import random
 import wave
+from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
-from travelmovieai.core.exceptions import MontageError
+from travelmovieai.core.exceptions import MontageError, MusicGenerationError
 from travelmovieai.domain.enums import MediaType, StoryStyle
 from travelmovieai.domain.models import (
     MediaAsset,
@@ -22,7 +26,27 @@ from travelmovieai.domain.models import (
 
 type MusicProfile = Literal["calm", "lounge", "cinematic", "warm", "energetic"]
 type FloatArray = NDArray[np.float64]
+type NeuralGeneratorName = Literal["ace-step", "musicgen"]
+type MusicGeneratorName = Literal["procedural", "ace-step", "musicgen"]
 ARRANGEMENT_VERSION = "adaptive-lounge-v2"
+MusicProgress = Callable[[int, int, str], None]
+
+
+class NeuralMusicGenerator(Protocol):
+    name: NeuralGeneratorName
+    model: str
+
+    def generate(
+        self,
+        output_path: Path,
+        *,
+        prompt: str,
+        duration_seconds: float,
+        bpm: int,
+        seed: int,
+        progress: MusicProgress | None = None,
+    ) -> None: ...
+
 
 STYLE_PROFILES: dict[StoryStyle, MusicProfile] = {
     StoryStyle.CINEMATIC: "cinematic",
@@ -89,6 +113,8 @@ def build_music_plan(
     bundled_music_dir: Path,
     generated_path: Path,
     montage_plan: QuickMontagePlan,
+    neural_generator: NeuralMusicGenerator | None = None,
+    progress: MusicProgress | None = None,
 ) -> MusicPlan:
     duration_seconds = montage_plan.total_duration_seconds
     accents = (
@@ -134,24 +160,98 @@ def build_music_plan(
             reasoning=reasoning + " Использован явно указанный файл.",
         )
 
-    generate_ambient_soundtrack(
-        generated_path,
-        duration_seconds=duration_seconds,
-        profile=profile,
-        bpm=PROFILE_BPM[profile],
-        accents=accents,
+    bpm = PROFILE_BPM[profile]
+    target_generator = (
+        neural_generator.name
+        if settings.music_engine in {"auto", "ace-step"} and neural_generator is not None
+        else "procedural"
     )
+    target_model = neural_generator.model if neural_generator is not None else None
+    cache_key = _music_cache_key(
+        montage_plan,
+        profile=profile,
+        bpm=bpm,
+        accents=accents,
+        generator=target_generator,
+        model=target_model,
+    )
+    cached = _cached_music_plan(
+        generated_path,
+        cache_key=cache_key,
+        expected_generator=target_generator,
+    )
+    if cached is not None:
+        if progress:
+            progress(1, 1, "Music AI: использована готовая композиция из кэша")
+        return cached
+
+    generator_name: MusicGeneratorName = "procedural"
+    model_name = None
+    fallback_used = False
+    generation_reason = ""
+    if settings.music_engine in {"auto", "ace-step"}:
+        if neural_generator is None:
+            if settings.music_engine == "ace-step":
+                raise MusicGenerationError(
+                    "ACE-Step недоступен. Запустите scripts\\setup_music_ai.bat."
+                )
+            fallback_used = True
+            generation_reason = " ACE-Step недоступен, использован процедурный fallback."
+        else:
+            try:
+                neural_generator.generate(
+                    generated_path,
+                    prompt=_music_generation_prompt(profile, bpm, accents),
+                    duration_seconds=duration_seconds,
+                    bpm=bpm,
+                    seed=_music_seed(montage_plan, profile),
+                    progress=progress,
+                )
+                apply_music_accents(
+                    generated_path,
+                    duration_seconds=duration_seconds,
+                    accents=accents,
+                )
+                generator_name = neural_generator.name
+                model_name = neural_generator.model
+                generation_reason = " Композиция создана специализированной локальной моделью."
+            except MusicGenerationError as error:
+                if settings.music_engine == "ace-step":
+                    raise
+                fallback_used = True
+                generation_reason = (
+                    " ACE-Step не завершил генерацию; использован процедурный "
+                    f"fallback ({_short_error(error)})."
+                )
+
+    if generator_name == "procedural":
+        if progress:
+            progress(0, 1, "Процедурный синтез адаптивной музыки")
+        generate_ambient_soundtrack(
+            generated_path,
+            duration_seconds=duration_seconds,
+            profile=profile,
+            bpm=bpm,
+            accents=accents,
+        )
+        if progress:
+            progress(1, 1, "Адаптивная музыка создана")
+
     return MusicPlan(
         mode="generated",
         source_path=generated_path,
         profile=profile,
-        bpm=PROFILE_BPM[profile],
+        bpm=bpm,
         duration_seconds=duration_seconds,
         accents=accents,
         arrangement_version=ARRANGEMENT_VERSION,
+        generator=generator_name,
+        model=model_name,
+        fallback_used=fallback_used,
+        cache_key=cache_key,
         reasoning=(
             reasoning + f" Создана единая композиция длиной {duration_seconds:.1f} с "
-            f"{len(accents)} синхронизированными музыкальными акцентами."
+            f"{len(accents)} синхронизированными музыкальными акцентами." + generation_reason
         ),
         generated=True,
     )
@@ -241,6 +341,174 @@ def choose_music_profile(
         f"(яркость {brightness:.0f}, насыщенность {saturation:.0f}, "
         f"резкость {sharpness:.0f}).",
     )
+
+
+def apply_music_accents(
+    audio_path: Path,
+    *,
+    duration_seconds: float,
+    accents: list[MusicAccent],
+) -> None:
+    """Normalize a model WAV to the timeline and add sample-accurate accents."""
+
+    temporary_path = audio_path.with_name(f".{audio_path.stem}.synced.wav")
+    try:
+        with wave.open(str(audio_path), "rb") as source:
+            if source.getsampwidth() != 2:
+                raise MusicGenerationError(
+                    "Локальная музыкальная модель вернула неподдерживаемый WAV."
+                )
+            sample_rate = source.getframerate()
+            source_channels = source.getnchannels()
+            target_frames = round(duration_seconds * sample_rate)
+            with wave.open(str(temporary_path), "wb") as target:
+                target.setnchannels(2)
+                target.setsampwidth(2)
+                target.setframerate(sample_rate)
+                chunk_frames = sample_rate * 4
+                written = 0
+                while written < target_frames:
+                    requested = min(chunk_frames, target_frames - written)
+                    raw = source.readframes(requested)
+                    frames_read = len(raw) // (2 * source_channels)
+                    if frames_read:
+                        samples = np.frombuffer(raw, dtype="<i2").reshape(
+                            frames_read,
+                            source_channels,
+                        )
+                        stereo = (
+                            np.repeat(samples, 2, axis=1)
+                            if source_channels == 1
+                            else samples[:, :2]
+                        ).astype(np.float64)
+                    else:
+                        stereo = np.empty((0, 2), dtype=np.float64)
+                    if frames_read < requested:
+                        stereo = np.vstack(
+                            (
+                                stereo,
+                                np.zeros((requested - frames_read, 2), dtype=np.float64),
+                            )
+                        )
+                    time = np.arange(written, written + requested, dtype=np.float64) / sample_rate
+                    accent, energy = _accent_layers(time, accents)
+                    stereo *= 1 + energy[:, None]
+                    stereo += accent[:, None] * 3400
+                    fade = np.minimum.reduce(
+                        (
+                            np.ones_like(time),
+                            time / 1.2,
+                            (duration_seconds - time) / 1.5,
+                        )
+                    )
+                    stereo *= np.maximum(0, fade[:, None])
+                    target.writeframesraw(np.clip(stereo, -32767, 32767).astype("<i2").tobytes())
+                    written += requested
+        os.replace(temporary_path, audio_path)
+    except (OSError, wave.Error, ValueError) as error:
+        temporary_path.unlink(missing_ok=True)
+        raise MusicGenerationError(
+            "Не удалось синхронизировать сгенерированную музыку с timeline."
+        ) from error
+
+
+def _music_generation_prompt(
+    profile: MusicProfile,
+    bpm: int,
+    accents: list[MusicAccent],
+) -> str:
+    profile_text = {
+        "calm": "calm ambient lounge",
+        "lounge": "melodic modern lounge",
+        "cinematic": "cinematic travel score",
+        "warm": "warm optimistic lounge",
+        "energetic": "energetic upscale travel lounge",
+    }[profile]
+    highlights = sum(cue.kind == "highlight" for cue in accents)
+    events = sum(cue.kind == "event_change" for cue in accents)
+    return (
+        f"Instrumental {profile_text}, {bpm} BPM, one coherent recurring melody, "
+        "warm electric piano, clean muted guitar, soft round bass, brushed drums, "
+        "subtle atmospheric pads, elegant professional production, no vocals, "
+        f"gradual narrative development, {events} section changes and "
+        f"{highlights} restrained musical highlights, gentle resolved ending."
+    )[:500]
+
+
+def _music_seed(plan: QuickMontagePlan, profile: MusicProfile) -> int:
+    source = "|".join(
+        (
+            profile,
+            f"{plan.total_duration_seconds:.3f}",
+            *(
+                f"{clip.scene_id}:{clip.duration_seconds:.3f}:{clip.semantic_score}"
+                for clip in plan.clips
+            ),
+        )
+    )
+    return int.from_bytes(hashlib.sha256(source.encode("utf-8")).digest()[:4], "big")
+
+
+def _music_cache_key(
+    plan: QuickMontagePlan,
+    *,
+    profile: MusicProfile,
+    bpm: int,
+    accents: list[MusicAccent],
+    generator: str,
+    model: str | None,
+) -> str:
+    payload = {
+        "version": ARRANGEMENT_VERSION,
+        "profile": profile,
+        "bpm": bpm,
+        "duration": round(plan.total_duration_seconds, 3),
+        "generator": generator,
+        "model": model,
+        "clips": [
+            {
+                "scene_id": str(clip.scene_id) if clip.scene_id else None,
+                "duration": round(clip.duration_seconds, 3),
+                "score": clip.semantic_score,
+                "event_id": str(clip.event_id) if clip.event_id else None,
+            }
+            for clip in plan.clips
+        ],
+        "accents": [accent.model_dump(mode="json") for accent in accents],
+    }
+    serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _cached_music_plan(
+    generated_path: Path,
+    *,
+    cache_key: str,
+    expected_generator: str,
+) -> MusicPlan | None:
+    plan_path = generated_path.parent / "music_plan.json"
+    if not generated_path.is_file() or not plan_path.is_file():
+        return None
+    try:
+        cached = MusicPlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        cached.cache_key != cache_key
+        or cached.generator != expected_generator
+        or cached.source_path is None
+    ):
+        return None
+    return cached.model_copy(
+        update={
+            "source_path": generated_path,
+            "reasoning": cached.reasoning + " Композиция переиспользована из кэша.",
+        }
+    )
+
+
+def _short_error(error: Exception) -> str:
+    return str(error).replace("\r", " ").replace("\n", " ")[:160]
 
 
 def generate_ambient_soundtrack(

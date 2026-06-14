@@ -22,6 +22,10 @@ from travelmovieai.infrastructure.lm_studio import (
     LMStudioModels,
     list_lm_studio_models,
 )
+from travelmovieai.infrastructure.music_generation import (
+    LOCAL_MUSIC_MODELS,
+    resolve_local_music_model,
+)
 from travelmovieai.infrastructure.system import (
     CudaStatus,
     ExecutableStatus,
@@ -47,6 +51,7 @@ from travelmovieai.web.schemas import (
     ModelOption,
     MovieJobResponse,
     MovieRequest,
+    MusicAIStatus,
     ResourceProfileResponse,
     ScanJobHistory,
     ScanJobResponse,
@@ -134,6 +139,11 @@ def create_app(
             gpu_memory_mb=resources.gpu_memory_mb,
             system_memory_mb=resources.memory_mb,
         )
+        music_model = resolve_local_music_model(
+            resolved_settings.music_model,
+            gpu_memory_mb=resources.gpu_memory_mb,
+        )
+        music_runtime = Path(".cache/ace-step/.venv/Scripts/python.exe").resolve()
         return CapabilitiesResponse(
             default_workspace_root=str(resolved_settings.workspace.expanduser().resolve()),
             local_ai=LocalAIStatus(
@@ -152,6 +162,21 @@ def create_app(
                         recommended=model == local_model,
                     )
                     for model in LOCAL_QWEN_MODELS
+                ],
+            ),
+            music_ai=MusicAIStatus(
+                available=(music_runtime.is_file() or resolved_settings.allow_model_download),
+                configured_model=resolved_settings.music_model,
+                resolved_model=music_model,
+                cache_dir=str((resolved_settings.model_cache / "ace-step").expanduser().resolve()),
+                downloads_enabled=resolved_settings.allow_model_download,
+                runtime_installed=music_runtime.is_file(),
+                models=[
+                    ModelOption(
+                        id=model,
+                        recommended=model == music_model,
+                    )
+                    for model in LOCAL_MUSIC_MODELS
                 ],
             ),
             ai=AIProviderStatus(

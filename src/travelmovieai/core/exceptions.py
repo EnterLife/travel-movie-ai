@@ -31,3 +31,7 @@ class MontageError(TravelMovieError):
 
 class VisionAnalysisError(TravelMovieError):
     """Raised when local semantic scene analysis cannot complete."""
+
+
+class MusicGenerationError(TravelMovieError):
+    """Raised when a local music model cannot generate the soundtrack."""

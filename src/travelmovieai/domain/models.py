@@ -192,6 +192,10 @@ class MusicPlan(BaseModel):
     duration_seconds: float | None = Field(default=None, ge=0)
     accents: list[MusicAccent] = Field(default_factory=list)
     arrangement_version: str | None = None
+    generator: Literal["procedural", "ace-step", "musicgen"] | None = None
+    model: str | None = None
+    fallback_used: bool = False
+    cache_key: str | None = None
     reasoning: str = ""
     generated: bool = False
 
@@ -298,6 +302,8 @@ class QuickMontageSettings(BaseModel):
     music_path: Path | None = None
     music_volume: float = Field(default=0.16, ge=0, le=1)
     music_sync: bool = True
+    music_engine: Literal["auto", "ace-step", "procedural"] = "auto"
+    music_model: str | None = Field(default=None, max_length=300)
     preview_mode: bool = False
 
 
@@ -335,6 +341,8 @@ class QuickMontageResult(BaseModel):
     render_encoder: str | None = None
     music_mode: str | None = None
     music_profile: str | None = None
+    music_generator: str | None = None
+    music_model: str | None = None
 
 
 class StageResult(BaseModel):

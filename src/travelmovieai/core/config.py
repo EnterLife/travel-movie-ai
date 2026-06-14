@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     vision_timeout_seconds: float = Field(default=120, ge=5, le=1800)
     vision_provider: Literal["local", "lm-studio", "qwen", "florence"] = "local"
     music_library: Path = Path("assets/music")
+    music_model: str = "auto"
     generated_music_filename: str = Field(
         default="generated_soundtrack.wav",
         min_length=1,

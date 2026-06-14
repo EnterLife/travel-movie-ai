@@ -289,6 +289,18 @@
                 <option value="none">Без музыки</option>
               </select>
 
+              <label for="music-engine">Движок генерации <span>локально</span></label>
+              <select id="music-engine">
+                <option value="auto">AI Auto: ACE-Step с fallback</option>
+                <option value="ace-step">ACE-Step only</option>
+                <option value="procedural">Процедурный синтез</option>
+              </select>
+
+              <label for="music-model">Музыкальная модель <span>автозагрузка</span></label>
+              <select id="music-model">
+                <option value="auto">ACE-Step 1.5 Turbo</option>
+              </select>
+
               <label for="music-profile">Характер <span>AI Auto</span></label>
               <select id="music-profile">
                 <option value="auto">Определить по видео</option>

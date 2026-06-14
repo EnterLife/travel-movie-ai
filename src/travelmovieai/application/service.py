@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -39,6 +40,10 @@ from travelmovieai.editing.timeline import (
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.infrastructure.music_generation import (
+    AceStepMusicGenerator,
+    resolve_local_music_model,
+)
 from travelmovieai.infrastructure.system import ResourceProfile, detect_resource_profile
 from travelmovieai.infrastructure.vision import build_vision_provider
 from travelmovieai.infrastructure.whisper import FasterWhisperProvider
@@ -50,7 +55,7 @@ from travelmovieai.story.builder import (
     build_storyboard,
 )
 from travelmovieai.story.events import detect_events
-from travelmovieai.story.music import build_music_plan
+from travelmovieai.story.music import NeuralMusicGenerator, build_music_plan
 
 
 class TravelMovieService:
@@ -58,9 +63,11 @@ class TravelMovieService:
         self,
         settings: Settings,
         vision_provider_factory: Callable[[Settings], VisionProvider] | None = None,
+        music_generator_factory: Callable[[Settings, str], NeuralMusicGenerator] | None = None,
     ) -> None:
         self.settings = settings
         self._vision_provider_factory = vision_provider_factory
+        self._music_generator_factory = music_generator_factory
         self._resource_profile: ResourceProfile | None = None
 
     def get_resource_profile(self) -> ResourceProfile:
@@ -153,6 +160,7 @@ class TravelMovieService:
                 [],
                 settings,
                 plan,
+                tracker.range(78, 80),
             )
             plan = plan.model_copy(
                 update={
@@ -188,6 +196,8 @@ class TravelMovieService:
             render_encoder=render_encoder,
             music_mode=plan.music_plan.mode if plan.music_plan else None,
             music_profile=plan.music_plan.profile if plan.music_plan else None,
+            music_generator=plan.music_plan.generator if plan.music_plan else None,
+            music_model=plan.music_plan.model if plan.music_plan else None,
         )
 
     def _build_semantic_plan(
@@ -262,20 +272,25 @@ class TravelMovieService:
             f"Vision AI: загрузка {vision_provider.model}. "
             "При первом запуске модель может загружаться в локальный кэш",
         )
-        prepare = getattr(vision_provider, "prepare", None)
-        if callable(prepare):
-            prepare()
-        runtime = getattr(vision_provider, "runtime_description", "готова")
-        tracker.emit(
-            45,
-            f"Vision AI: модель загружена ({runtime}), начало анализа сцен",
-        )
-        vision_report = analyze_scenes(
-            quality_report.scenes,
-            vision_provider,
-            settings.story_style,
-            tracker.range(45, 70),
-        )
+        try:
+            prepare = getattr(vision_provider, "prepare", None)
+            if callable(prepare):
+                prepare()
+            runtime = getattr(vision_provider, "runtime_description", "готова")
+            tracker.emit(
+                45,
+                f"Vision AI: модель загружена ({runtime}), начало анализа сцен",
+            )
+            vision_report = analyze_scenes(
+                quality_report.scenes,
+                vision_provider,
+                settings.story_style,
+                tracker.range(45, 70),
+            )
+        finally:
+            release = getattr(vision_provider, "release", None)
+            if callable(release):
+                release()
         vision_path = context.artifacts_dir / "vision_analysis.json"
         write_json_atomic(vision_path, vision_report)
         speech_scenes = vision_report.scenes
@@ -352,6 +367,7 @@ class TravelMovieService:
             event_scenes,
             settings,
             plan,
+            tracker.range(82, 84),
         )
         tracker.emit(
             83,
@@ -372,7 +388,9 @@ class TravelMovieService:
         scenes: list[Scene],
         settings: QuickMontageSettings,
         montage_plan: QuickMontagePlan,
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> MusicPlan:
+        generator = self._music_generator(settings)
         music_plan = build_music_plan(
             report.assets,
             scenes,
@@ -380,9 +398,41 @@ class TravelMovieService:
             self.settings.music_library.expanduser().resolve(),
             context.artifacts_dir / self.settings.generated_music_filename,
             montage_plan,
+            neural_generator=generator,
+            progress=progress,
         )
         write_json_atomic(context.artifacts_dir / "music_plan.json", music_plan)
         return music_plan
+
+    def _music_generator(
+        self,
+        settings: QuickMontageSettings,
+    ) -> NeuralMusicGenerator | None:
+        if (
+            settings.music_mode not in {"auto", "generated"}
+            or settings.music_engine == "procedural"
+        ):
+            return None
+        model = settings.music_model or self.settings.music_model
+        if self._music_generator_factory is not None:
+            return self._music_generator_factory(self.settings, model)
+        resources = self.get_resource_profile()
+        resolved_model = resolve_local_music_model(
+            model,
+            gpu_memory_mb=resources.gpu_memory_mb,
+        )
+        return cast(
+            NeuralMusicGenerator,
+            AceStepMusicGenerator(
+                resolved_model,
+                runtime_dir=Path(".cache/ace-step").resolve(),
+                model_cache=(self.settings.model_cache / "ace-step").expanduser().resolve(),
+                ffmpeg_binary=self.settings.ffmpeg_binary,
+                allow_download=self.settings.allow_model_download,
+                device=self.settings.device,
+                gpu_memory_mb=resources.gpu_memory_mb,
+            ),
+        )
 
     def _vision_provider(
         self,

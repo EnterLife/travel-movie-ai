@@ -38,6 +38,8 @@ const semanticAnalysis = document.querySelector("#semantic-analysis");
 const qualityAnalysis = document.querySelector("#quality-analysis");
 const speechAnalysis = document.querySelector("#speech-analysis");
 const musicMode = document.querySelector("#music-mode");
+const musicEngine = document.querySelector("#music-engine");
+const musicModel = document.querySelector("#music-model");
 const musicProfile = document.querySelector("#music-profile");
 const musicSync = document.querySelector("#music-sync");
 const musicVolume = document.querySelector("#music-volume");
@@ -230,6 +232,12 @@ function renderCapabilities(capabilities) {
       capabilities.cuda.torch_cuda,
     ),
     capabilityChip(
+      capabilities.music_ai.runtime_installed
+        ? `Music AI · ${shortModelName(capabilities.music_ai.resolved_model)}`
+        : "Music AI · установится при первом запуске",
+      capabilities.music_ai.available,
+    ),
+    capabilityChip(
       capabilities.opencv_available ? "OpenCV готов" : "OpenCV fallback: Pillow",
       capabilities.opencv_available,
     ),
@@ -248,6 +256,7 @@ function capabilityChip(label, available) {
 }
 
 function populateModels(capabilities) {
+  populateMusicModels(capabilities.music_ai);
   if (visionProvider.value === "florence") {
     populateFlorenceModels();
     return;
@@ -269,6 +278,22 @@ function populateModels(capabilities) {
     const option = new Option(localModelLabel(model.id), model.id);
     option.selected = capabilities.local_ai.configured_model === model.id;
     visionModel.append(option);
+  }
+}
+
+function populateMusicModels(musicAi) {
+  musicModel.replaceChildren(
+    new Option(
+      `Auto · ${shortModelName(musicAi.resolved_model)}`,
+      "auto",
+      true,
+      musicAi.configured_model === "auto",
+    ),
+  );
+  for (const model of musicAi.models) {
+    const option = new Option(`${shortModelName(model.id)} · high quality`, model.id);
+    option.selected = musicAi.configured_model === model.id;
+    musicModel.append(option);
   }
 }
 
@@ -514,6 +539,8 @@ movieButton.addEventListener("click", async () => {
           preview_mode: previewMode.checked,
           music_enabled: musicMode.value !== "none",
           music_mode: musicMode.value,
+          music_engine: musicEngine.value,
+          music_model: musicModel.value || null,
           music_profile: musicProfile.value,
           music_sync: musicSync.checked,
           music_volume: Number(musicVolume.value) / 100,
@@ -653,7 +680,7 @@ function showMovieResult(job) {
       job.selection_mode === "semantic" ? "AI-отбор" : "быстрый режим"
     } · ${job.render_encoder || "кодировщик неизвестен"} · ${
       job.music_profile || job.music_mode || "без музыки"
-    }`;
+    } · ${job.music_generator || "музыкальный файл"}`;
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");
@@ -963,6 +990,13 @@ musicMode.addEventListener("change", () => {
   musicPath.disabled = musicMode.value !== "manual";
   musicProfile.disabled = ["manual", "library", "none"].includes(musicMode.value);
   musicSync.disabled = ["manual", "library", "none"].includes(musicMode.value);
+  musicEngine.disabled = ["manual", "library", "none"].includes(musicMode.value);
+  musicModel.disabled =
+    ["manual", "library", "none"].includes(musicMode.value) ||
+    musicEngine.value === "procedural";
+});
+musicEngine.addEventListener("change", () => {
+  musicModel.disabled = musicEngine.value === "procedural";
 });
 musicVolume.addEventListener("input", () => {
   musicVolumeValue.textContent = `${musicVolume.value}%`;

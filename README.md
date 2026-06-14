@@ -258,8 +258,37 @@ ranked selection.
 ### Generated Lounge Music
 
 `AI Auto` and `Generate locally` create a soundtrack entirely on the local
-machine. The `Melodic lounge` profile combines soft seventh chords, bass, a
-light rhythm section, and a restrained lead melody.
+machine. The default AI engine is
+[ACE-Step 1.5](https://github.com/ACE-Step/ACE-Step-1.5), a specialized
+open-source music generation model. It generates an instrumental composition
+from the story style, BPM, duration, and music cue sheet.
+
+The first generation automatically:
+
+1. installs ACE-Step into the isolated `.cache/ace-step` environment;
+2. downloads model weights into `models/ace-step`;
+3. detects the GPU tier and enables CPU offload on low-VRAM systems;
+4. generates and normalizes a WAV file for the exact movie duration.
+
+This does not replace packages in the main `.venv`. On a 6 GB NVIDIA GPU,
+ACE-Step uses its 2B Turbo model with low-VRAM offload. The initial installation
+and model download require internet access, several gigabytes of disk space,
+and significantly more time than subsequent runs.
+
+The music engine options are:
+
+- `AI Auto`: use ACE-Step and fall back to deterministic procedural music if
+  model installation or generation fails;
+- `ACE-Step only`: require neural generation and show an actionable error
+  instead of falling back;
+- `Procedural synthesis`: use the fast built-in lounge arranger without model
+  downloads.
+
+ACE-Step can also be prepared before starting the web application:
+
+```powershell
+.\scripts\setup_music_ai.bat
+```
 
 With `Determine from video`, relaxing scenes and travel contexts such as
 beaches, city walks, hotels, restaurants, and parks prefer lounge music.
@@ -277,9 +306,10 @@ accents at:
 - the opening and final moments.
 
 The cue sheet, timestamps, strengths, and arrangement version are stored in
-`artifacts/music_plan.json`. Rebuilding the same timeline produces the same
-music, while changing clip order, duration, or selected highlights reshapes the
-composition to match the new movie.
+`artifacts/music_plan.json`, together with the generator, model identifier, and
+fallback status. Rebuilding the same timeline uses a deterministic seed, while
+changing clip order, duration, or selected highlights reshapes the composition
+to match the new movie.
 
 ## CLI
 
@@ -351,6 +381,7 @@ Do not commit `.env`.
 | `TRAVELMOVIEAI_WHISPER_MODEL` | `medium` or `large-v3` | `medium` |
 | `TRAVELMOVIEAI_DEVICE` | `auto`, `cuda`, `directml`, or `cpu` | `auto` |
 | `TRAVELMOVIEAI_MUSIC_LIBRARY` | Local soundtrack directory | `./assets/music` |
+| `TRAVELMOVIEAI_MUSIC_MODEL` | Local music model identifier or `auto` | `auto` |
 | `TRAVELMOVIEAI_GENERATED_MUSIC_FILENAME` | Generated soundtrack filename | `generated_soundtrack.wav` |
 | `TRAVELMOVIEAI_WORKERS` | Parallel worker override; `0` means auto | `0` |
 | `TRAVELMOVIEAI_BATCH_SIZE` | Model batch override; `0` means auto | `0` |

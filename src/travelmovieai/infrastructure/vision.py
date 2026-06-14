@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import importlib
 import json
 import mimetypes
@@ -88,6 +89,13 @@ class LocalQwenVisionProvider:
 
     def prepare(self) -> None:
         self._ensure_loaded()
+
+    def release(self) -> None:
+        self._loaded_model = None
+        self._processor = None
+        gc.collect()
+        if self._torch is not None and self._torch.cuda.is_available():
+            self._torch.cuda.empty_cache()
 
     def analyze(self, image_path: Path, style: StoryStyle) -> SceneUnderstanding:
         return self.analyze_batch([image_path], style)[0]
@@ -491,6 +499,13 @@ class Florence2VisionProvider:
             ) from error
         caption = str(parsed.get(task, generated)).strip()
         return _understanding_from_caption(caption, style)
+
+    def release(self) -> None:
+        self._loaded_model = None
+        self._processor = None
+        gc.collect()
+        if self._torch is not None and self._torch.cuda.is_available():
+            self._torch.cuda.empty_cache()
 
     def _ensure_loaded(self) -> None:
         if self._loaded_model is not None:

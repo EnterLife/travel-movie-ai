@@ -163,17 +163,9 @@ a {
   padding: 80px 0 58px;
 }
 
-.eyebrow,
-.section-number {
-  color: var(--accent);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  letter-spacing: 0.16em;
-}
-
 .hero h1 {
   max-width: 820px;
-  margin: 18px 0 22px;
+  margin: 0 0 22px;
   font-size: clamp(44px, 7vw, 84px);
   font-weight: 560;
   line-height: 0.98;
@@ -219,7 +211,7 @@ a {
 
 .panel-heading h2,
 .results-heading h2 {
-  margin: 7px 0 0;
+  margin: 0;
   font-size: 25px;
   font-weight: 540;
   letter-spacing: -0.035em;
@@ -761,7 +753,7 @@ input::placeholder {
 .movie-progress h3,
 .movie-result h3,
 .scene-review h3 {
-  margin: 7px 0 0;
+  margin: 0;
   font-size: 21px;
   font-weight: 540;
   letter-spacing: -0.035em;

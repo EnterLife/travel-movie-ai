@@ -35,6 +35,7 @@ initializing model-heavy dependencies.
 
 - `src/travelmovieai/cli.py` - Typer commands and CLI option definitions.
 - `main.py` - repository entry point for the local web server.
+- `scripts/setup_windows.bat` - complete Windows system and virtual-environment setup.
 - `scripts/run_web.bat` - one-click Windows environment bootstrap and web launch.
 - `src/travelmovieai/web/` - HTTP API, background jobs, and static web interface.
 - `src/travelmovieai/core/` - settings and shared exceptions.
@@ -52,12 +53,11 @@ initializing model-heavy dependencies.
 - `configs/` - checked-in example or default configuration.
 - `assets/music/` - local soundtrack assets that are safe to distribute.
 - `assets/fonts/` - local fonts used by titles, subtitles, and reports.
-- `docs/` - architecture and setup documentation.
-- `docs/roadmap.md` - prioritized implementation stages and completion criteria.
+- `README.md` - installation, usage, architecture, product requirements, and roadmap.
 - `workspace/` - generated per-project data; never commit it.
 
-See `docs/TECHNICAL_SPECIFICATION.md` for product requirements and
-`docs/architecture.md` for package boundaries and runtime artifacts.
+See `README.md` for product requirements, package boundaries, runtime
+artifacts, setup instructions, and the prioritized roadmap.
 
 ## Product Direction
 
@@ -100,7 +100,7 @@ The canonical stage order is defined by `PipelineStage` and registered in
 
 Do not reorder stages or change artifact contracts casually. When a stage
 contract changes, update its domain model, serialization, downstream consumers,
-tests, and architecture documentation together.
+  tests, and the README architecture documentation together.
 
 Each stage should:
 
@@ -304,12 +304,12 @@ run, state that explicitly.
 
 ## Documentation Rules
 
-- Update `README.md` when installation or user-facing CLI behavior changes.
+- Keep all project documentation in `README.md`.
+- Update `README.md` when installation, user-facing behavior, architecture,
+  pipeline contracts, product requirements, or roadmap status changes.
 - Update `.env.example` when adding or renaming settings.
-- Update `docs/architecture.md` when package boundaries, runtime artifacts, or
-  pipeline contracts change.
-- Update `docs/TECHNICAL_SPECIFICATION.md` only when product requirements change, not
-  merely to describe an implementation detail.
+- Do not create separate setup, architecture, specification, or roadmap
+  documents unless explicitly requested.
 - Keep command examples valid for Windows PowerShell, the primary development
   environment.
 

@@ -126,6 +126,8 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "TravelMovieAI" in page.text
     assert "D:\\Vacation\\Japan2026" not in page.text
     assert "Выбрать папку" in page.text
+    assert 'class="section-number"' not in page.text
+    assert "STAGE 01" not in page.text
     assert health.json()["status"] == "ok"
     assert health.json()["ready"] is True
     assert health.json()["ffprobe"]["available"] is True

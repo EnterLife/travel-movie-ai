@@ -112,6 +112,13 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     assert result.output_path.stat().st_size > 0
     assert result.clip_count == 2
     assert result.timeline_path.is_file()
+    timeline = json.loads(result.timeline_path.read_text(encoding="utf-8"))
+    music_plan = timeline["music_plan"]
+    assert music_plan["generated"] is True
+    assert music_plan["duration_seconds"] == pytest.approx(result.duration_seconds)
+    assert music_plan["arrangement_version"] == "adaptive-lounge-v2"
+    assert music_plan["accents"][0]["kind"] == "intro"
+    assert music_plan["accents"][-1]["kind"] == "finale"
 
     probe = subprocess.run(
         [

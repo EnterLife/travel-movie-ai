@@ -171,9 +171,17 @@ and Qwen2.5-VL-7B on larger GPUs. The 32B model is available as an explicit
 choice and is not selected automatically because it requires substantially more
 RAM and VRAM.
 
-On NVIDIA GPUs with less than 10 GB VRAM, Qwen automatically uses 4-bit NF4
-quantization. This keeps all model layers on CUDA instead of offloading roughly
-half of the model to system RAM. Larger GPUs use the model's native precision.
+For higher scene-understanding quality, select `Qwen2.5-VL-7B-Instruct` in the
+web UI. On a 6 GB NVIDIA GPU the application loads it in 4-bit NF4 mode and
+automatically places part of the model in system RAM. This keeps CUDA busy while
+using available memory, but it is slower than 3B. The explicit 32B option is
+experimental on consumer hardware and may be impractically slow even with
+offload. Use 3B for previews and 7B for the final semantic pass.
+
+When a selected Qwen model does not fit in native precision, TravelMovieAI uses
+4-bit NF4 quantization. Models that still exceed the available VRAM use
+Accelerate placement across CUDA and system RAM. Smaller models remain entirely
+on CUDA whenever possible.
 
 ```dotenv
 TRAVELMOVIEAI_VISION_PROVIDER=local
@@ -246,6 +254,32 @@ Quick mode selects short clips chronologically without Vision AI. Semantic mode
 adds scene detection, frame sampling, quality and Vision analysis, optional
 speech recognition, duplicate detection, event grouping, story building, and
 ranked selection.
+
+### Generated Lounge Music
+
+`AI Auto` and `Generate locally` create a soundtrack entirely on the local
+machine. The `Melodic lounge` profile combines soft seventh chords, bass, a
+light rhythm section, and a restrained lead melody.
+
+With `Determine from video`, relaxing scenes and travel contexts such as
+beaches, city walks, hotels, restaurants, and parks prefer lounge music.
+Exciting, romantic, warm, or cinematic material can still select another
+profile. Music generation does not download a model or send media to a service.
+
+`Synchronize with editing` is enabled by default. The application first builds
+the final clip timeline and then generates one continuous composition for its
+exact duration. It does not repeat a short loop. A cue sheet places musical
+accents at:
+
+- transitions between clips;
+- changes between detected trip events;
+- the center of high-scoring Vision AI scenes;
+- the opening and final moments.
+
+The cue sheet, timestamps, strengths, and arrangement version are stored in
+`artifacts/music_plan.json`. Rebuilding the same timeline produces the same
+music, while changing clip order, duration, or selected highlights reshapes the
+composition to match the new movie.
 
 ## CLI
 
@@ -407,7 +441,7 @@ Media Scan
 | Event Detection | Group scenes into trip events | Implemented |
 | Story Builder | Build opening, journey, highlights, and finale sections | Basic implementation |
 | Scene Ranking | Explain selection and rejection decisions | Implemented |
-| Music Selection | Generate or select a local soundtrack | Basic implementation |
+| Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented |
 | Narration and Voice | Generate and synthesize optional voice-over | Planned |
 | Timeline Builder | Produce a declarative edit plan | Implemented |
 | Rendering | Render, atomically replace, and validate the MP4 | Implemented |

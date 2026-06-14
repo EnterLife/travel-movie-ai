@@ -81,6 +81,30 @@ def test_local_provider_factory_is_lazy(tmp_path: Path) -> None:
     assert not provider.cache_dir.exists()
 
 
+def test_large_local_model_uses_gpu_and_ram_offload_on_six_gb_gpu(
+    tmp_path: Path,
+) -> None:
+    provider = build_vision_provider(
+        provider="local",
+        model="Qwen/Qwen2.5-VL-7B-Instruct",
+        device="auto",
+        cache_dir=tmp_path / "models",
+        allow_download=True,
+        gpu_memory_mb=6144,
+        system_memory_mb=32768,
+        lm_studio_url="http://localhost:1234/v1",
+        lm_studio_api_key=None,
+        timeout_seconds=120,
+        model_batch_size=8,
+    )
+
+    assert isinstance(provider, LocalQwenVisionProvider)
+    assert provider.quantize_4bit is True
+    assert provider.use_cpu_offload is True
+    assert provider.batch_size == 1
+    assert provider._max_memory() == {0: "5376MiB", "cpu": "28672MiB"}
+
+
 def test_local_qwen_response_normalizes_common_schema_drift() -> None:
     result = _parse_local_qwen_understanding(
         """

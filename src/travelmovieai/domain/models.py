@@ -176,11 +176,22 @@ class SceneSelectionReport(BaseModel):
     decisions: list[SceneSelectionDecision] = Field(default_factory=list)
 
 
+class MusicAccent(BaseModel):
+    time_seconds: float = Field(ge=0)
+    kind: Literal["intro", "scene_change", "event_change", "highlight", "finale"]
+    strength: float = Field(ge=0, le=1)
+    scene_id: UUID | None = None
+    label: str = Field(default="", max_length=300)
+
+
 class MusicPlan(BaseModel):
     mode: Literal["none", "manual", "library", "generated"]
     source_path: Path | None = None
-    profile: Literal["calm", "cinematic", "warm", "energetic"] | None = None
+    profile: Literal["calm", "lounge", "cinematic", "warm", "energetic"] | None = None
     bpm: int | None = Field(default=None, ge=40, le=180)
+    duration_seconds: float | None = Field(default=None, ge=0)
+    accents: list[MusicAccent] = Field(default_factory=list)
+    arrangement_version: str | None = None
     reasoning: str = ""
     generated: bool = False
 
@@ -211,9 +222,9 @@ class MultimodalSceneDescription(BaseModel):
     transcript: str | None = None
     quality_score: float | None = Field(default=None, ge=0, le=100)
     audio_context: list[str] = Field(default_factory=list)
-    source_modalities: list[
-        Literal["vision", "speech", "opencv", "audio"]
-    ] = Field(default_factory=list)
+    source_modalities: list[Literal["vision", "speech", "opencv", "audio"]] = Field(
+        default_factory=list
+    )
 
 
 class MultimodalDescriptionReport(BaseModel):
@@ -276,9 +287,17 @@ class QuickMontageSettings(BaseModel):
     transition_duration_seconds: float = Field(default=0.5, ge=0, le=3)
     music_enabled: bool = True
     music_mode: Literal["auto", "generated", "library", "manual", "none"] = "auto"
-    music_profile: Literal["auto", "calm", "cinematic", "warm", "energetic"] = "auto"
+    music_profile: Literal[
+        "auto",
+        "calm",
+        "lounge",
+        "cinematic",
+        "warm",
+        "energetic",
+    ] = "auto"
     music_path: Path | None = None
     music_volume: float = Field(default=0.16, ge=0, le=1)
+    music_sync: bool = True
     preview_mode: bool = False
 
 

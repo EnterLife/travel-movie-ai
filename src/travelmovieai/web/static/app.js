@@ -39,6 +39,7 @@ const qualityAnalysis = document.querySelector("#quality-analysis");
 const speechAnalysis = document.querySelector("#speech-analysis");
 const musicMode = document.querySelector("#music-mode");
 const musicProfile = document.querySelector("#music-profile");
+const musicSync = document.querySelector("#music-sync");
 const musicVolume = document.querySelector("#music-volume");
 const musicVolumeValue = document.querySelector("#music-volume-value");
 const musicPath = document.querySelector("#music-path");
@@ -265,7 +266,7 @@ function populateModels(capabilities) {
     ),
   );
   for (const model of capabilities.local_ai.models) {
-    const option = new Option(shortModelName(model.id), model.id);
+    const option = new Option(localModelLabel(model.id), model.id);
     option.selected = capabilities.local_ai.configured_model === model.id;
     visionModel.append(option);
   }
@@ -296,6 +297,14 @@ function populateFlorenceModels() {
 
 function shortModelName(model) {
   return model.split("/").pop();
+}
+
+function localModelLabel(model) {
+  const name = shortModelName(model);
+  if (name.includes("3B")) return `${name} · быстро, 6 ГБ VRAM`;
+  if (name.includes("7B")) return `${name} · высокое качество, GPU + RAM`;
+  if (name.includes("32B")) return `${name} · максимум, очень медленно`;
+  return name;
 }
 
 function updateAutomaticWorkspace() {
@@ -506,6 +515,7 @@ movieButton.addEventListener("click", async () => {
           music_enabled: musicMode.value !== "none",
           music_mode: musicMode.value,
           music_profile: musicProfile.value,
+          music_sync: musicSync.checked,
           music_volume: Number(musicVolume.value) / 100,
           music_path: musicPath.value.trim() || null,
         },
@@ -952,6 +962,7 @@ visionProvider.addEventListener("change", () => {
 musicMode.addEventListener("change", () => {
   musicPath.disabled = musicMode.value !== "manual";
   musicProfile.disabled = ["manual", "library", "none"].includes(musicMode.value);
+  musicSync.disabled = ["manual", "library", "none"].includes(musicMode.value);
 });
 musicVolume.addEventListener("input", () => {
   musicVolumeValue.textContent = `${musicVolume.value}%`;

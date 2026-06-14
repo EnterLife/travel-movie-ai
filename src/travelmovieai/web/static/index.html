@@ -282,7 +282,7 @@
               <h4>Музыкальный режиссёр</h4>
               <label for="music-mode">Источник музыки <span>локально</span></label>
               <select id="music-mode">
-                <option value="auto">AI Auto: сгенерировать по OpenCV</option>
+                <option value="auto">AI Auto: подстроить под монтаж</option>
                 <option value="generated">Сгенерировать локально</option>
                 <option value="library">Выбрать из библиотеки</option>
                 <option value="manual">Указать файл</option>
@@ -292,11 +292,20 @@
               <label for="music-profile">Характер <span>AI Auto</span></label>
               <select id="music-profile">
                 <option value="auto">Определить по видео</option>
+                <option value="lounge">Мелодичный lounge</option>
                 <option value="calm">Спокойный</option>
                 <option value="cinematic">Кинематографичный</option>
                 <option value="warm">Тёплый</option>
                 <option value="energetic">Энергичный</option>
               </select>
+
+              <label class="toggle-row" for="music-sync">
+                <input id="music-sync" type="checkbox" checked>
+                <span>
+                  <strong>Синхронизировать с монтажом</strong>
+                  <small>Акценты на важных сценах, сменах событий и в финале</small>
+                </span>
+              </label>
 
               <label for="music-volume">
                 Громкость

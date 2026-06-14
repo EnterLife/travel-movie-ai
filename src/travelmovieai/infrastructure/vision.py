@@ -59,6 +59,9 @@ class LocalQwenVisionProvider:
         cache_dir: Path = Path("models"),
         allow_download: bool = True,
         quantize_4bit: bool = False,
+        use_cpu_offload: bool = False,
+        gpu_memory_mb: int | None = None,
+        system_memory_mb: int | None = None,
         batch_size: int = 1,
     ) -> None:
         self.model = model
@@ -66,6 +69,9 @@ class LocalQwenVisionProvider:
         self.cache_dir = cache_dir
         self.allow_download = allow_download
         self.quantize_4bit = quantize_4bit
+        self.use_cpu_offload = use_cpu_offload
+        self.gpu_memory_mb = gpu_memory_mb
+        self.system_memory_mb = system_memory_mb
         self.batch_size = max(1, batch_size)
         self._processor: Any = None
         self._loaded_model: Any = None
@@ -77,7 +83,8 @@ class LocalQwenVisionProvider:
             return "не загружена"
         device = str(self._loaded_model.device)
         precision = "4-bit NF4" if self.quantize_4bit else "native precision"
-        return f"{device}, {precision}"
+        placement = ", GPU + RAM offload" if self.use_cpu_offload else ""
+        return f"{device}, {precision}{placement}"
 
     def prepare(self) -> None:
         self._ensure_loaded()
@@ -226,7 +233,7 @@ class LocalQwenVisionProvider:
                 cache_dir=self.cache_dir,
                 local_files_only=not self.allow_download,
                 min_pixels=256 * 28 * 28,
-                max_pixels=640 * 28 * 28,
+                max_pixels=(768 if _model_size_billions(self.model) >= 7 else 640) * 28 * 28,
             )
             model_options: dict[str, Any] = {
                 "cache_dir": self.cache_dir,
@@ -235,18 +242,31 @@ class LocalQwenVisionProvider:
                 "attn_implementation": "sdpa",
             }
             if resolved_device == "cuda" and self.quantize_4bit:
+                device_map: dict[str, int] | str = {"": 0}
                 model_options.update(
                     {
                         "dtype": self._torch.float16,
-                        "device_map": {"": 0},
+                        "device_map": device_map,
                         "quantization_config": transformers.BitsAndBytesConfig(
                             load_in_4bit=True,
                             bnb_4bit_quant_type="nf4",
                             bnb_4bit_compute_dtype=self._torch.float16,
                             bnb_4bit_use_double_quant=True,
+                            llm_int8_enable_fp32_cpu_offload=self.use_cpu_offload,
                         ),
                     }
                 )
+                if self.use_cpu_offload:
+                    offload_dir = self.cache_dir / "offload" / self.model.replace("/", "--")
+                    offload_dir.mkdir(parents=True, exist_ok=True)
+                    model_options.update(
+                        {
+                            "device_map": "auto",
+                            "max_memory": self._max_memory(),
+                            "offload_folder": offload_dir,
+                            "offload_state_dict": True,
+                        }
+                    )
             else:
                 model_options.update(
                     {
@@ -268,6 +288,14 @@ class LocalQwenVisionProvider:
             raise VisionAnalysisError(
                 f"Не удалось загрузить Qwen Vision '{self.model}'. {download_hint}"
             ) from error
+
+    def _max_memory(self) -> dict[int | str, str]:
+        gpu_memory_mb = max(1024, (self.gpu_memory_mb or 6144) - 768)
+        system_memory_mb = max(4096, (self.system_memory_mb or 16384) - 4096)
+        return {
+            0: f"{gpu_memory_mb}MiB",
+            "cpu": f"{system_memory_mb}MiB",
+        }
 
 
 class LMStudioVisionProvider:
@@ -528,6 +556,17 @@ def resolve_local_vision_model(
     return LOCAL_QWEN_MODELS[0]
 
 
+def _model_size_billions(model: str) -> int:
+    normalized = model.casefold()
+    if "32b" in normalized:
+        return 32
+    if "7b" in normalized:
+        return 7
+    if "3b" in normalized:
+        return 3
+    return 7
+
+
 def build_vision_provider(
     *,
     provider: str,
@@ -572,23 +611,31 @@ def build_vision_provider(
             timeout_seconds=timeout_seconds,
             api_key=lm_studio_api_key,
         )
+    resolved_model = resolve_local_vision_model(
+        configured_model,
+        gpu_memory_mb=gpu_memory_mb,
+        system_memory_mb=system_memory_mb,
+    )
+    model_size = _model_size_billions(resolved_model)
+    gpu_memory = gpu_memory_mb or 0
+    quantize_4bit = (
+        device in {"auto", "cuda"} and gpu_memory > 0 and gpu_memory < model_size * 2048 + 1536
+    )
+    use_cpu_offload = quantize_4bit and model_size >= 7 and gpu_memory < model_size * 768 + 1536
     return LocalQwenVisionProvider(
-        resolve_local_vision_model(
-            configured_model,
-            gpu_memory_mb=gpu_memory_mb,
-            system_memory_mb=system_memory_mb,
-        ),
+        resolved_model,
         device=device,
         cache_dir=cache_dir,
         allow_download=allow_download,
-        quantize_4bit=(
-            device in {"auto", "cuda"}
-            and gpu_memory_mb is not None
-            and 0 < gpu_memory_mb < 10 * 1024
-        ),
+        quantize_4bit=quantize_4bit,
+        use_cpu_offload=use_cpu_offload,
+        gpu_memory_mb=gpu_memory_mb,
+        system_memory_mb=system_memory_mb,
         batch_size=(
-            min(2, model_batch_size)
-            if (gpu_memory_mb or 0) < 10 * 1024
+            1
+            if model_size >= 7
+            else min(2, model_batch_size)
+            if gpu_memory < 10 * 1024
             else model_batch_size
         ),
     )
@@ -655,9 +702,7 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
         {
             "caption": str(payload.get("caption") or "Travel scene")[:500],
             "detailed_description": str(
-                payload.get("detailed_description")
-                or payload.get("caption")
-                or "Travel scene."
+                payload.get("detailed_description") or payload.get("caption") or "Travel scene."
             )[:1500],
             "people_groups": groups,
             "landmarks": landmarks,

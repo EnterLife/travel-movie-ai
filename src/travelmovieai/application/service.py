@@ -146,12 +146,13 @@ class TravelMovieService:
         else:
             tracker.emit(10, "Быстрый отбор клипов по длительности")
             plan = build_quick_montage_plan(report.assets, settings)
+            tracker.emit(78, "Построение музыкальной карты по границам клипов")
             music_plan = self._build_music_plan(
                 context,
                 report,
                 [],
                 settings,
-                plan.total_duration_seconds,
+                plan,
             )
             plan = plan.model_copy(
                 update={
@@ -344,14 +345,19 @@ class TravelMovieService:
             context.artifacts_dir / "selection_decisions.json",
             build_selection_report(event_scenes, plan, settings),
         )
+        tracker.emit(82, "Построение музыкальной карты по важности сцен и событиям")
         music_plan = self._build_music_plan(
             context,
             report,
             event_scenes,
             settings,
-            plan.total_duration_seconds,
+            plan,
         )
-        tracker.emit(83, f"Музыка: {music_plan.mode}, профиль {music_plan.profile}")
+        tracker.emit(
+            83,
+            f"Музыка: {music_plan.mode}, профиль {music_plan.profile}, "
+            f"акцентов {len(music_plan.accents)}",
+        )
         return plan.model_copy(
             update={
                 "music_plan": music_plan,
@@ -365,7 +371,7 @@ class TravelMovieService:
         report: MediaScanReport,
         scenes: list[Scene],
         settings: QuickMontageSettings,
-        duration_seconds: float,
+        montage_plan: QuickMontagePlan,
     ) -> MusicPlan:
         music_plan = build_music_plan(
             report.assets,
@@ -373,7 +379,7 @@ class TravelMovieService:
             settings,
             self.settings.music_library.expanduser().resolve(),
             context.artifacts_dir / self.settings.generated_music_filename,
-            duration_seconds,
+            montage_plan,
         )
         write_json_atomic(context.artifacts_dir / "music_plan.json", music_plan)
         return music_plan

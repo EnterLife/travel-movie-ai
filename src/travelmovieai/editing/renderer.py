@@ -250,7 +250,9 @@ class QuickMontageRenderer:
         for segment in segments:
             command.extend(["-i", str(segment)])
         if plan.music_path is not None:
-            command.extend(["-stream_loop", "-1", "-i", str(plan.music_path)])
+            if plan.music_plan is None or not plan.music_plan.generated:
+                command.extend(["-stream_loop", "-1"])
+            command.extend(["-i", str(plan.music_path)])
         command.extend(
             [
                 "-filter_complex_script",

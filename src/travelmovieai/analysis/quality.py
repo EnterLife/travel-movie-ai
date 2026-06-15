@@ -34,6 +34,7 @@ class VisualQualityAnalyzer:
         panels = _split_contact_sheet_cv(image)
         panel_metrics = [_opencv_panel_metrics(cv2, panel) for panel in panels]
         panel_scores = [_panel_quality_score(*item) for item in panel_metrics]
+        panel_details = _panel_details(panel_metrics, panel_scores)
         brightness = _average(item[0] for item in panel_metrics)
         contrast = _average(item[1] for item in panel_metrics)
         sharpness = _average(item[2] for item in panel_metrics)
@@ -52,6 +53,7 @@ class VisualQualityAnalyzer:
             camera_shake_score,
             "opencv",
             panel_scores,
+            panel_details,
         )
 
     def _analyze_pillow(self, image_path: Path) -> VisualQualityMetrics:
@@ -60,6 +62,7 @@ class VisualQualityAnalyzer:
             panels = _split_contact_sheet_pillow(rgb)
             panel_metrics = [_pillow_panel_metrics(panel) for panel in panels]
             panel_scores = [_panel_quality_score(*item) for item in panel_metrics]
+            panel_details = _panel_details(panel_metrics, panel_scores)
             brightness = _average(item[0] for item in panel_metrics)
             contrast = _average(item[1] for item in panel_metrics)
             sharpness = _average(item[2] for item in panel_metrics)
@@ -78,6 +81,7 @@ class VisualQualityAnalyzer:
             0,
             "pillow",
             panel_scores,
+            panel_details,
         )
 
 
@@ -106,6 +110,7 @@ class TorchCudaQualityAnalyzer:
         )
         static = [self._panel_metrics(panel) for panel in panels]
         panel_scores = [_panel_quality_score(*item) for item in static]
+        panel_details = _panel_details(static, panel_scores)
         brightness = _average(item[0] for item in static)
         contrast = _average(item[1] for item in static)
         sharpness = _average(item[2] for item in static)
@@ -124,6 +129,7 @@ class TorchCudaQualityAnalyzer:
             0,
             "torch-cuda",
             panel_scores,
+            panel_details,
         )
 
     def _panel_metrics(
@@ -253,6 +259,7 @@ def _metrics(
     camera_shake_score: float,
     backend: str,
     panel_quality_scores: list[float] | None = None,
+    panel_details: list[dict[str, float | int]] | None = None,
 ) -> VisualQualityMetrics:
     exposure = _clamp(100 - abs(brightness - 52) * 2.3)
     saturation_quality = _clamp(100 - abs(saturation - 45) * 1.2)
@@ -277,6 +284,7 @@ def _metrics(
     )
     panel_scores = panel_quality_scores or []
     best_index = _best_panel_index(panel_scores)
+    panel_position = _panel_position(best_index, len(panel_scores))
     return VisualQualityMetrics(
         brightness=brightness,
         contrast=contrast,
@@ -290,10 +298,46 @@ def _metrics(
         quality_score=score,
         panel_quality_scores=panel_scores,
         best_panel_index=best_index,
-        best_panel_position=_panel_position(best_index, len(panel_scores)),
+        best_panel_position=panel_position,
+        panel_details=panel_details or [],
+        candidate_windows=_quality_candidate_windows(panel_scores),
         rejection_reasons=rejection_reasons,
         backend=backend,
     )
+
+
+def _panel_details(
+    panel_metrics: list[tuple[float, float, float, float, float, float]],
+    panel_scores: list[float],
+) -> list[dict[str, float | int]]:
+    return [
+        {
+            "index": index,
+            "position": _panel_position(index, len(panel_scores)) or 0.5,
+            "score": score,
+            "brightness": metrics[0],
+            "contrast": metrics[1],
+            "sharpness": metrics[2],
+            "saturation": metrics[3],
+            "colorfulness": metrics[4],
+            "noise_score": metrics[5],
+        }
+        for index, (metrics, score) in enumerate(
+            zip(panel_metrics, panel_scores, strict=True)
+        )
+    ]
+
+
+def _quality_candidate_windows(panel_scores: list[float]) -> list[dict[str, float | str]]:
+    return [
+        {
+            "relative_position": _panel_position(index, len(panel_scores)) or 0.5,
+            "score": score,
+            "source": "visual_quality",
+            "label": f"visual panel {index + 1}/{len(panel_scores)}",
+        }
+        for index, score in enumerate(panel_scores)
+    ]
 
 
 def _panel_quality_score(

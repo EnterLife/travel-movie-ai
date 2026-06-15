@@ -145,6 +145,8 @@ class VisualQualityMetrics(BaseModel):
     panel_quality_scores: list[float] = Field(default_factory=list, max_length=12)
     best_panel_index: int | None = Field(default=None, ge=0)
     best_panel_position: float | None = Field(default=None, ge=0, le=1)
+    panel_details: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    candidate_windows: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
     rejection_reasons: list[str] = Field(default_factory=list)
     backend: str
 

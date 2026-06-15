@@ -279,6 +279,106 @@ def test_semantic_selection_prefers_explicit_highlight_window(
     assert "highlight window: best smile" in plan.clips[0].selection_reason
 
 
+def test_semantic_selection_uses_quality_candidate_windows(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "candidate-window.mp4", created_at, duration=12)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=12,
+        quality_metrics={
+            "candidate_windows": [
+                {
+                    "relative_position": 0.25,
+                    "score": 45,
+                    "source": "visual_quality",
+                    "label": "soft opening",
+                },
+                {
+                    "relative_position": 0.75,
+                    "score": 88,
+                    "source": "visual_quality",
+                    "label": "clean viewpoint",
+                },
+            ]
+        },
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert plan.clips[0].source_start_seconds == 7.5
+    assert "visual candidate: clean viewpoint" in plan.clips[0].selection_reason
+
+
+def test_semantic_selection_accepts_top_level_relative_candidate_window(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "future-audio-window.mp4", created_at, duration=12)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=12,
+        candidate_windows=[
+            {
+                "relative_position": 0.7,
+                "score": 93,
+                "label": "future multimodal peak",
+            }
+        ],
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert round(plan.clips[0].source_start_seconds, 1) == 6.9
+    assert "highlight window: future multimodal peak" in plan.clips[0].selection_reason
+
+
+def test_semantic_selection_uses_best_panel_position_without_panel_scores(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "panel-position.mp4", created_at, duration=12)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=12,
+        quality_metrics={
+            "quality_score": 77,
+            "best_panel_index": 1,
+            "best_panel_position": 0.5,
+        },
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert plan.clips[0].source_start_seconds == 4.5
+    assert "best visual panel 2" in plan.clips[0].selection_reason
+
+
 def _pattern(path: Path, offset: int) -> None:
     image = Image.new("RGB", (180, 90), "black")
     draw = ImageDraw.Draw(image)

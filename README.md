@@ -265,6 +265,12 @@ windows, then the best visual panel from the sampled contact sheet, then a
 neutral center cut. This keeps the final movie focused on the strongest moment
 inside each selected scene.
 
+Visual quality analysis stores per-panel scores and ready-to-use
+`candidate_windows` in scene metadata. Future audio, face, speech, and object
+analysis can add their own candidate windows to the same contract, allowing the
+timeline builder to choose the best moment inside a long source scene without
+changing the renderer.
+
 ### Generated Lounge Music
 
 `AI Auto` and `Generate locally` create a soundtrack entirely on the local

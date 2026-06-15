@@ -348,7 +348,10 @@ def _explicit_window_candidates(
         start = _window_start_from_metadata(scene, item)
         end = _window_end_from_metadata(scene, item)
         if start is None:
-            continue
+            position = _first_float(item.get("relative_position"), item.get("position"))
+            if position is None:
+                continue
+            start = available_seconds * max(0.0, min(1.0, position)) - duration_seconds / 2
         if end is not None and end > start:
             center = start + (end - start) / 2
             start = center - duration_seconds / 2
@@ -376,12 +379,20 @@ def _quality_panel_candidates(
     metrics = scene.metadata.get("quality_metrics", {})
     if not isinstance(metrics, dict):
         return []
+    metric_candidates = _quality_metric_window_candidates(
+        metrics,
+        available_seconds,
+        duration_seconds,
+    )
+    if metric_candidates:
+        return metric_candidates
+
     raw_scores = metrics.get("panel_quality_scores", [])
     if not isinstance(raw_scores, list):
-        return []
+        return _best_panel_position_candidate(metrics, available_seconds, duration_seconds)
     scores = [_float_value(score) for score in raw_scores if isinstance(score, int | float)]
     if not scores:
-        return []
+        return _best_panel_position_candidate(metrics, available_seconds, duration_seconds)
 
     candidates: list[tuple[float, float, str]] = []
     for index, score in enumerate(scores):
@@ -395,6 +406,80 @@ def _quality_panel_candidates(
             )
         )
     return candidates
+
+
+def _quality_metric_window_candidates(
+    metrics: dict[object, object],
+    available_seconds: float,
+    duration_seconds: float,
+) -> list[tuple[float, float, str]]:
+    raw_windows = metrics.get("candidate_windows", [])
+    if not isinstance(raw_windows, list):
+        return []
+
+    candidates: list[tuple[float, float, str]] = []
+    for item in raw_windows:
+        if not isinstance(item, dict):
+            continue
+        position = _first_float(
+            item.get("relative_position"),
+            item.get("position"),
+            item.get("best_panel_position"),
+        )
+        start = _first_float(
+            item.get("relative_start_seconds"),
+            item.get("start_offset_seconds"),
+            item.get("start"),
+        )
+        if position is not None:
+            start = available_seconds * max(0.0, min(1.0, position)) - duration_seconds / 2
+        if start is None:
+            continue
+        score = _float_value(item.get("score"), 60.0)
+        label = str(item.get("label", "")).strip()
+        source = str(item.get("source", "")).strip()
+        if source == "visual_quality" and label.startswith("visual panel "):
+            reason = f"best visual window {label.removeprefix('visual panel ')[:80]}"
+        else:
+            reason_label = label or source
+            reason = (
+                "visual candidate"
+                if not reason_label
+                else f"visual candidate: {reason_label[:80]}"
+            )
+        candidates.append(
+            (
+                score,
+                _clamp_window_start(start, available_seconds, duration_seconds),
+                reason,
+            )
+        )
+    return candidates
+
+
+def _best_panel_position_candidate(
+    metrics: dict[object, object],
+    available_seconds: float,
+    duration_seconds: float,
+) -> list[tuple[float, float, str]]:
+    position = _first_float(metrics.get("best_panel_position"))
+    if position is None:
+        return []
+    start = available_seconds * max(0.0, min(1.0, position)) - duration_seconds / 2
+    score = _float_value(metrics.get("quality_score"), 60.0)
+    index = _first_float(metrics.get("best_panel_index"))
+    label = (
+        "best visual panel"
+        if index is None
+        else f"best visual panel {int(index) + 1}"
+    )
+    return [
+        (
+            score,
+            _clamp_window_start(start, available_seconds, duration_seconds),
+            label,
+        )
+    ]
 
 
 def _window_start_from_metadata(scene: Scene, item: dict[object, object]) -> float | None:

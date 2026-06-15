@@ -639,6 +639,7 @@ workspace/<project>/
     |-- storyboard.json
     |-- selection_decisions.json
     |-- music_plan.json
+    |-- montage_quality_report.json
     |-- quick_timeline.json
     |-- preview.mp4
     `-- final.mp4
@@ -653,6 +654,12 @@ manual overrides. SQLite uses foreign keys and WAL mode.
 
 Critical JSON and media outputs are written atomically. Source media remains
 read-only.
+
+`montage_quality_report.json` is a pre-render quality gate for the planned
+movie. It records duration coverage, event and source diversity, average
+semantic and visual quality, selected window types, music coverage, and
+actionable issues such as a short timeline, repeated source dominance, disabled
+music, or selected dark/blurred scenes.
 
 ## Cache and Reproducibility
 

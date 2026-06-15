@@ -32,6 +32,7 @@ from travelmovieai.domain.models import (
     SceneDetectionReport,
     StageResult,
 )
+from travelmovieai.editing.quality_report import build_montage_quality_report
 from travelmovieai.editing.renderer import QuickMontageRenderer
 from travelmovieai.editing.timeline import (
     build_quick_montage_plan,
@@ -166,6 +167,10 @@ class TravelMovieService:
                     "music_plan": music_plan,
                     "music_path": music_plan.source_path,
                 }
+            )
+            write_json_atomic(
+                context.artifacts_dir / "montage_quality_report.json",
+                build_montage_quality_report(plan, []),
             )
             tracker.emit(80, "Быстрый монтажный план сформирован")
         timeline_path = context.artifacts_dir / "quick_timeline.json"
@@ -373,12 +378,17 @@ class TravelMovieService:
             f"Музыка: {music_plan.mode}, профиль {music_plan.profile}, "
             f"акцентов {len(music_plan.accents)}",
         )
-        return plan.model_copy(
+        final_plan = plan.model_copy(
             update={
                 "music_plan": music_plan,
                 "music_path": music_plan.source_path,
             }
         )
+        write_json_atomic(
+            context.artifacts_dir / "montage_quality_report.json",
+            build_montage_quality_report(final_plan, event_scenes),
+        )
+        return final_plan
 
     def _build_music_plan(
         self,

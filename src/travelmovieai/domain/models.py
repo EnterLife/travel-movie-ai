@@ -181,6 +181,36 @@ class SceneSelectionReport(BaseModel):
     decisions: list[SceneSelectionDecision] = Field(default_factory=list)
 
 
+class MontageQualityIssue(BaseModel):
+    severity: Literal["info", "warning", "critical"]
+    code: str = Field(min_length=1, max_length=80)
+    message: str = Field(min_length=1, max_length=500)
+    scene_id: UUID | None = None
+    clip_index: int | None = Field(default=None, ge=0)
+
+
+class MontageQualityReport(BaseModel):
+    created_at: datetime
+    score: float = Field(ge=0, le=100)
+    target_duration_seconds: float = Field(ge=0)
+    planned_duration_seconds: float = Field(ge=0)
+    duration_ratio: float = Field(ge=0)
+    clip_count: int = Field(ge=0)
+    selected_scene_count: int = Field(ge=0)
+    selected_event_count: int = Field(ge=0)
+    total_event_count: int = Field(ge=0)
+    event_coverage_ratio: float = Field(ge=0, le=1)
+    source_count: int = Field(ge=0)
+    dominant_source_ratio: float = Field(ge=0, le=1)
+    average_semantic_score: float | None = Field(default=None, ge=0, le=100)
+    average_quality_score: float | None = Field(default=None, ge=0, le=100)
+    window_selection: dict[str, int] = Field(default_factory=dict)
+    music_mode: str | None = None
+    music_duration_seconds: float | None = Field(default=None, ge=0)
+    music_accent_count: int = Field(default=0, ge=0)
+    issues: list[MontageQualityIssue] = Field(default_factory=list)
+
+
 class MusicAccent(BaseModel):
     time_seconds: float = Field(ge=0)
     kind: Literal["intro", "scene_change", "event_change", "highlight", "finale"]

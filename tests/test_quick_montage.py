@@ -119,6 +119,15 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     assert result.output_path.stat().st_size > 0
     assert result.clip_count == 2
     assert result.timeline_path.is_file()
+    quality_report = json.loads(
+        (workspace / "artifacts" / "montage_quality_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert quality_report["clip_count"] == result.clip_count
+    assert quality_report["planned_duration_seconds"] == pytest.approx(
+        result.duration_seconds
+    )
     timeline = json.loads(result.timeline_path.read_text(encoding="utf-8"))
     music_plan = timeline["music_plan"]
     assert music_plan["generated"] is True
@@ -201,6 +210,13 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     assert len(vision["scenes"]) >= 2
     assert (workspace / "artifacts" / "events.json").is_file()
     assert (workspace / "artifacts" / "scene_descriptions.json").is_file()
+    quality_report = json.loads(
+        (workspace / "artifacts" / "montage_quality_report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert quality_report["selected_scene_count"] == first.clip_count
+    assert quality_report["music_mode"] == "library"
     assert timeline["selection_mode"] == "semantic"
     assert timeline["music_path"].endswith("cinematic theme.wav")
     assert all(clip["semantic_score"] is not None for clip in timeline["clips"])

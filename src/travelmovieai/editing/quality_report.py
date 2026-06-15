@@ -1,9 +1,17 @@
 """Quality gates for planned quick montage timelines."""
 
+import json
+import math
+import shutil
+import struct
+import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import TypedDict
 from uuid import UUID
 
+from travelmovieai.core.exceptions import DependencyUnavailableError, MontageError
 from travelmovieai.domain.models import (
     MontageClip,
     MontageQualityIssue,
@@ -11,6 +19,12 @@ from travelmovieai.domain.models import (
     QuickMontagePlan,
     Scene,
 )
+
+
+class _RenderedProbe(TypedDict):
+    duration: float
+    has_video: bool
+    has_audio: bool
 
 
 def build_montage_quality_report(
@@ -79,6 +93,44 @@ def build_montage_quality_report(
         ),
         music_accent_count=len(plan.music_plan.accents) if plan.music_plan else 0,
         issues=issues,
+    )
+
+
+def enrich_montage_quality_report_with_render(
+    report: MontageQualityReport,
+    output_path: Path,
+    *,
+    ffprobe_binary: str = "ffprobe",
+    ffmpeg_binary: str = "ffmpeg",
+) -> MontageQualityReport:
+    probe = _probe_rendered_movie(output_path, ffprobe_binary)
+    audio_rms = _rendered_audio_rms(
+        output_path,
+        duration_seconds=probe["duration"],
+        has_audio=probe["has_audio"],
+        ffmpeg_binary=ffmpeg_binary,
+    )
+    issues = [
+        *report.issues,
+        *_render_issues(
+            report,
+            rendered_duration=probe["duration"],
+            has_video=probe["has_video"],
+            has_audio=probe["has_audio"],
+            audio_rms=audio_rms,
+        ),
+    ]
+    return report.model_copy(
+        update={
+            "score": _report_score(issues),
+            "rendered_path": output_path.resolve(),
+            "rendered_duration_seconds": probe["duration"],
+            "rendered_duration_delta_seconds": probe["duration"] - report.planned_duration_seconds,
+            "rendered_has_video": probe["has_video"],
+            "rendered_has_audio": probe["has_audio"],
+            "rendered_audio_rms": audio_rms,
+            "issues": issues,
+        }
     )
 
 
@@ -199,6 +251,184 @@ def _quality_issues(
                 )
             )
     return issues
+
+
+def _render_issues(
+    report: MontageQualityReport,
+    *,
+    rendered_duration: float,
+    has_video: bool,
+    has_audio: bool,
+    audio_rms: dict[str, float],
+) -> list[MontageQualityIssue]:
+    issues: list[MontageQualityIssue] = []
+    if not has_video:
+        issues.append(
+            MontageQualityIssue(
+                severity="critical",
+                code="render_missing_video",
+                message="Rendered movie does not contain a video stream.",
+            )
+        )
+    if not has_audio:
+        issues.append(
+            MontageQualityIssue(
+                severity="critical",
+                code="render_missing_audio",
+                message="Rendered movie does not contain an audio stream.",
+            )
+        )
+    delta = abs(rendered_duration - report.planned_duration_seconds)
+    if delta > max(0.35, report.planned_duration_seconds * 0.03):
+        issues.append(
+            MontageQualityIssue(
+                severity="warning",
+                code="render_duration_mismatch",
+                message=(
+                    "Rendered duration differs from the planned timeline by "
+                    f"{delta:.2f} seconds."
+                ),
+            )
+        )
+    if has_audio and audio_rms:
+        audible_segments = sum(1 for value in audio_rms.values() if value >= 50)
+        if audible_segments == 0:
+            issues.append(
+                MontageQualityIssue(
+                    severity="critical",
+                    code="render_silent_audio",
+                    message="Rendered movie audio is silent in sampled sections.",
+                )
+            )
+        elif audio_rms.get("end", 0.0) < 50 and report.music_mode not in {None, "none"}:
+            issues.append(
+                MontageQualityIssue(
+                    severity="warning",
+                    code="render_audio_fades_out_early",
+                    message="Rendered movie audio is very quiet near the end.",
+                )
+            )
+    elif has_audio:
+        issues.append(
+            MontageQualityIssue(
+                severity="info",
+                code="render_audio_rms_unavailable",
+                message="Rendered audio RMS could not be measured.",
+            )
+        )
+    return issues
+
+
+def _probe_rendered_movie(output_path: Path, ffprobe_binary: str) -> _RenderedProbe:
+    resolved = shutil.which(ffprobe_binary) or ffprobe_binary
+    try:
+        completed = subprocess.run(
+            [
+                resolved,
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(output_path),
+            ],
+            capture_output=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError as error:
+        raise DependencyUnavailableError(
+            f"FFprobe executable was not found: {ffprobe_binary}"
+        ) from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or "unknown FFprobe error"
+        raise MontageError(f"Не удалось проверить итоговый фильм: {detail}")
+    try:
+        payload = json.loads(completed.stdout)
+        streams = payload.get("streams", [])
+        stream_types = {stream.get("codec_type") for stream in streams}
+        duration = float(payload.get("format", {}).get("duration", 0))
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise MontageError("FFprobe вернул некорректные данные итогового фильма.") from error
+    return {
+        "duration": max(0.0, duration),
+        "has_video": "video" in stream_types,
+        "has_audio": "audio" in stream_types,
+    }
+
+
+def _rendered_audio_rms(
+    output_path: Path,
+    *,
+    duration_seconds: object,
+    has_audio: object,
+    ffmpeg_binary: str,
+) -> dict[str, float]:
+    if not has_audio or not isinstance(duration_seconds, int | float) or duration_seconds <= 0:
+        return {}
+    sample_duration = min(0.5, max(0.2, duration_seconds / 8))
+    starts = {
+        "start": 0.0,
+        "middle": max(0.0, duration_seconds * 0.5 - sample_duration / 2),
+        "end": max(0.0, duration_seconds - sample_duration - 0.05),
+    }
+    values: dict[str, float] = {}
+    for label, start in starts.items():
+        rms = _audio_rms(
+            output_path,
+            start_seconds=start,
+            duration_seconds=sample_duration,
+            ffmpeg_binary=ffmpeg_binary,
+        )
+        if rms is not None:
+            values[label] = rms
+    return values
+
+
+def _audio_rms(
+    output_path: Path,
+    *,
+    start_seconds: float,
+    duration_seconds: float,
+    ffmpeg_binary: str,
+) -> float | None:
+    resolved = shutil.which(ffmpeg_binary) or ffmpeg_binary
+    try:
+        completed = subprocess.run(
+            [
+                resolved,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{start_seconds:.3f}",
+                "-t",
+                f"{duration_seconds:.3f}",
+                "-i",
+                str(output_path),
+                "-vn",
+                "-f",
+                "s16le",
+                "-ac",
+                "1",
+                "-ar",
+                "8000",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if completed.returncode != 0:
+        return None
+    sample_count = len(completed.stdout) // 2
+    if sample_count <= 0:
+        return 0.0
+    samples = struct.unpack(f"<{sample_count}h", completed.stdout[: sample_count * 2])
+    return math.sqrt(sum(sample * sample for sample in samples) / sample_count)
 
 
 def _report_score(issues: list[MontageQualityIssue]) -> float:

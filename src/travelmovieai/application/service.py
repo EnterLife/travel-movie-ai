@@ -23,6 +23,7 @@ from travelmovieai.domain.enums import PipelineStage, StoryStyle
 from travelmovieai.domain.models import (
     MediaAsset,
     MediaScanReport,
+    MontageQualityReport,
     MusicPlan,
     QualityAnalysisReport,
     QuickMontagePlan,
@@ -32,7 +33,10 @@ from travelmovieai.domain.models import (
     SceneDetectionReport,
     StageResult,
 )
-from travelmovieai.editing.quality_report import build_montage_quality_report
+from travelmovieai.editing.quality_report import (
+    build_montage_quality_report,
+    enrich_montage_quality_report_with_render,
+)
 from travelmovieai.editing.renderer import QuickMontageRenderer
 from travelmovieai.editing.timeline import (
     build_quick_montage_plan,
@@ -142,6 +146,8 @@ class TravelMovieService:
         except (OSError, ValidationError) as error:
             raise MontageError("Не удалось прочитать результаты Media Scan.") from error
 
+        quality_report_path = context.artifacts_dir / "montage_quality_report.json"
+        quality_report: MontageQualityReport | None = None
         if settings.semantic_analysis:
             plan = self._build_semantic_plan(
                 context,
@@ -168,10 +174,8 @@ class TravelMovieService:
                     "music_path": music_plan.source_path,
                 }
             )
-            write_json_atomic(
-                context.artifacts_dir / "montage_quality_report.json",
-                build_montage_quality_report(plan, []),
-            )
+            quality_report = build_montage_quality_report(plan, [])
+            write_json_atomic(quality_report_path, quality_report)
             tracker.emit(80, "Быстрый монтажный план сформирован")
         timeline_path = context.artifacts_dir / "quick_timeline.json"
         default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
@@ -189,6 +193,24 @@ class TravelMovieService:
             resolved_output,
             context.cache_dir,
             tracker.range(85, 100),
+        )
+        if quality_report is None:
+            try:
+                quality_report = MontageQualityReport.model_validate_json(
+                    quality_report_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValidationError):
+                quality_report = build_montage_quality_report(plan, [])
+        if not quality_report_path.is_file():
+            write_json_atomic(quality_report_path, quality_report)
+        write_json_atomic(
+            quality_report_path,
+            enrich_montage_quality_report_with_render(
+                quality_report,
+                resolved_output,
+                ffprobe_binary=self.settings.ffprobe_binary,
+                ffmpeg_binary=self.settings.ffmpeg_binary,
+            ),
         )
         tracker.emit(100, "Фильм готов и проверен через FFprobe")
         return QuickMontageResult(
@@ -384,9 +406,10 @@ class TravelMovieService:
                 "music_path": music_plan.source_path,
             }
         )
+        montage_quality_report = build_montage_quality_report(final_plan, event_scenes)
         write_json_atomic(
             context.artifacts_dir / "montage_quality_report.json",
-            build_montage_quality_report(final_plan, event_scenes),
+            montage_quality_report,
         )
         return final_plan
 

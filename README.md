@@ -659,7 +659,10 @@ read-only.
 movie. It records duration coverage, event and source diversity, average
 semantic and visual quality, selected window types, music coverage, and
 actionable issues such as a short timeline, repeated source dominance, disabled
-music, or selected dark/blurred scenes.
+music, or selected dark/blurred scenes. After rendering, the same report is
+enriched with FFprobe/FFmpeg checks for the actual MP4: rendered duration,
+video/audio stream presence, plan-vs-render duration delta, and sampled audio
+RMS near the beginning, middle, and end of the movie.
 
 ## Cache and Reproducibility
 

@@ -128,6 +128,15 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     assert quality_report["planned_duration_seconds"] == pytest.approx(
         result.duration_seconds
     )
+    assert quality_report["rendered_path"] == str(result.output_path)
+    assert quality_report["rendered_has_video"] is True
+    assert quality_report["rendered_has_audio"] is True
+    assert quality_report["rendered_duration_seconds"] == pytest.approx(
+        result.duration_seconds,
+        abs=0.2,
+    )
+    assert set(quality_report["rendered_audio_rms"]) == {"start", "middle", "end"}
+    assert quality_report["rendered_audio_rms"]["middle"] > 10
     timeline = json.loads(result.timeline_path.read_text(encoding="utf-8"))
     music_plan = timeline["music_plan"]
     assert music_plan["generated"] is True
@@ -217,6 +226,8 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     )
     assert quality_report["selected_scene_count"] == first.clip_count
     assert quality_report["music_mode"] == "library"
+    assert quality_report["rendered_has_video"] is True
+    assert quality_report["rendered_has_audio"] is True
     assert timeline["selection_mode"] == "semantic"
     assert timeline["music_path"].endswith("cinematic theme.wav")
     assert all(clip["semantic_score"] is not None for clip in timeline["clips"])

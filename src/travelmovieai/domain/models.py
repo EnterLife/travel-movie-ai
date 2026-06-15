@@ -208,6 +208,12 @@ class MontageQualityReport(BaseModel):
     music_mode: str | None = None
     music_duration_seconds: float | None = Field(default=None, ge=0)
     music_accent_count: int = Field(default=0, ge=0)
+    rendered_path: Path | None = None
+    rendered_duration_seconds: float | None = Field(default=None, ge=0)
+    rendered_duration_delta_seconds: float | None = None
+    rendered_has_video: bool | None = None
+    rendered_has_audio: bool | None = None
+    rendered_audio_rms: dict[str, float] = Field(default_factory=dict)
     issues: list[MontageQualityIssue] = Field(default_factory=list)
 
 

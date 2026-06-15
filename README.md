@@ -250,10 +250,14 @@ speech recognition, duplicate detection, event grouping, story building, and
 ranked selection.
 
 Semantic mode is intentionally selective. It does not try to use every video in
-the folder and it does not fill the target duration with weak material. Scenes
-below `min_semantic_score` are skipped, and by default no more than two scenes
-are taken from one source video. Use scene overrides when a specific fragment
-must be included or excluded.
+the folder and it does not fill the target duration with weak material.
+`min_semantic_score` is a base quality target, but the actual threshold is
+computed from the score distribution of the current project: it rises for strong
+archives and relaxes for consistently modest material. The `max_scenes_per_source`
+setting is a base diversity guard: by default it keeps one source video from
+dominating a large archive, but the limit automatically relaxes when there are
+only a few long source videos and the movie needs more strong scenes. Use scene
+overrides when a specific fragment must be included or excluded.
 
 ### Generated Lounge Music
 

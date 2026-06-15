@@ -1,5 +1,6 @@
 """Timeline assembly."""
 
+import math
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -166,13 +167,11 @@ def build_selection_report(
     plan: QuickMontagePlan,
     settings: QuickMontageSettings,
 ) -> SceneSelectionReport:
-    selected = {
-        clip.scene_id: clip
-        for clip in plan.clips
-        if clip.scene_id is not None
-    }
+    ranked = rank_scenes(scenes)
+    semantic_threshold = _semantic_score_threshold(ranked, settings)
+    selected = {clip.scene_id: clip for clip in plan.clips if clip.scene_id is not None}
     decisions = []
-    for scene in rank_scenes(scenes):
+    for scene in ranked:
         clip = selected.get(scene.id)
         if clip is not None:
             decisions.append(
@@ -188,7 +187,7 @@ def build_selection_report(
             SceneSelectionDecision(
                 scene_id=scene.id,
                 selected=False,
-                reason=_rejection_reason(scene, settings),
+                reason=_rejection_reason(scene, settings, semantic_threshold),
                 score=float(scene.metadata.get("ranking_score", 0)),
             )
         )
@@ -224,15 +223,13 @@ def _story_candidates(
     ranked: list[Scene],
     settings: QuickMontageSettings,
 ) -> list[Scene]:
-    eligible = [scene for scene in ranked if _eligible(scene, settings)]
-    forced = [
-        scene
-        for scene in eligible
-        if scene.metadata.get("selection_override") == "include"
-    ]
+    semantic_threshold = _semantic_score_threshold(ranked, settings)
+    eligible = [scene for scene in ranked if _eligible(scene, settings, semantic_threshold)]
+    forced = [scene for scene in eligible if scene.metadata.get("selection_override") == "include"]
     selected_ids = {scene.id for scene in forced}
     event_counts: dict[str, int] = {}
     source_counts: dict[str, int] = {}
+    source_limit = _source_scene_limit(eligible, settings)
     ordered = list(forced)
     for scene in forced:
         event_id = str(scene.metadata.get("event_id", scene.id))
@@ -245,7 +242,7 @@ def _story_candidates(
         if (
             scene.id in selected_ids
             or event_counts.get(event_id, 0) > 0
-            or source_counts.get(source_id, 0) >= settings.max_scenes_per_source
+            or source_counts.get(source_id, 0) >= source_limit
         ):
             continue
         ordered.append(scene)
@@ -260,7 +257,7 @@ def _story_candidates(
         source_id = str(scene.asset_id)
         if event_counts.get(event_id, 0) >= settings.max_scenes_per_event:
             continue
-        if source_counts.get(source_id, 0) >= settings.max_scenes_per_source:
+        if source_counts.get(source_id, 0) >= source_limit:
             continue
         ordered.append(scene)
         selected_ids.add(scene.id)
@@ -269,7 +266,63 @@ def _story_candidates(
     return ordered
 
 
-def _eligible(scene: Scene, settings: QuickMontageSettings) -> bool:
+def _source_scene_limit(
+    eligible: list[Scene],
+    settings: QuickMontageSettings,
+) -> int:
+    source_count = len({scene.asset_id for scene in eligible})
+    if source_count <= 0:
+        return settings.max_scenes_per_source
+
+    effective_clip_duration = max(
+        0.5,
+        settings.max_video_clip_seconds - _transition_duration(settings),
+    )
+    estimated_needed_clips = max(
+        1,
+        math.ceil(settings.target_duration_seconds / effective_clip_duration),
+    )
+    adaptive_limit = math.ceil(estimated_needed_clips / source_count)
+    return max(settings.max_scenes_per_source, adaptive_limit)
+
+
+def _estimated_needed_clips(settings: QuickMontageSettings) -> int:
+    effective_clip_duration = max(
+        0.5,
+        settings.max_video_clip_seconds - _transition_duration(settings),
+    )
+    return max(1, math.ceil(settings.target_duration_seconds / effective_clip_duration))
+
+
+def _semantic_score_threshold(
+    ranked: list[Scene],
+    settings: QuickMontageSettings,
+) -> float:
+    scores = [
+        float(score)
+        for scene in ranked
+        if _technical_eligible(scene, settings)
+        and scene.metadata.get("selection_override") != "include"
+        and isinstance((score := scene.metadata.get("ranking_score")), int | float)
+    ]
+    if not scores:
+        return settings.min_semantic_score
+
+    ordered = sorted(scores, reverse=True)
+    estimated_needed = _estimated_needed_clips(settings)
+    pool_size = min(
+        len(ordered),
+        max(estimated_needed, math.ceil(estimated_needed * 1.5)),
+    )
+    distribution_threshold = ordered[pool_size - 1]
+    best_score = ordered[0]
+    relative_floor = best_score - 30
+    if distribution_threshold >= settings.min_semantic_score:
+        return min(78.0, distribution_threshold)
+    return max(38.0, min(settings.min_semantic_score, max(distribution_threshold, relative_floor)))
+
+
+def _technical_eligible(scene: Scene, settings: QuickMontageSettings) -> bool:
     override = str(scene.metadata.get("selection_override", "auto"))
     if override == "exclude":
         return False
@@ -280,15 +333,29 @@ def _eligible(scene: Scene, settings: QuickMontageSettings) -> bool:
     technical_reasons = scene.metadata.get("technical_rejection_reasons", [])
     if settings.reject_technical_failures and technical_reasons:
         return False
-    if scene.quality_score is not None and scene.quality_score < settings.min_quality_score:
-        return False
-    ranking_score = scene.metadata.get("ranking_score")
     return not (
-        isinstance(ranking_score, int | float) and ranking_score < settings.min_semantic_score
+        scene.quality_score is not None and scene.quality_score < settings.min_quality_score
     )
 
 
-def _rejection_reason(scene: Scene, settings: QuickMontageSettings) -> str:
+def _eligible(
+    scene: Scene,
+    settings: QuickMontageSettings,
+    semantic_threshold: float,
+) -> bool:
+    if not _technical_eligible(scene, settings):
+        return False
+    if scene.metadata.get("selection_override") == "include":
+        return True
+    ranking_score = scene.metadata.get("ranking_score")
+    return not (isinstance(ranking_score, int | float) and ranking_score < semantic_threshold)
+
+
+def _rejection_reason(
+    scene: Scene,
+    settings: QuickMontageSettings,
+    semantic_threshold: float,
+) -> str:
     override = str(scene.metadata.get("selection_override", "auto"))
     if override == "exclude":
         return "excluded by user"
@@ -300,8 +367,8 @@ def _rejection_reason(scene: Scene, settings: QuickMontageSettings) -> str:
     if scene.quality_score is not None and scene.quality_score < settings.min_quality_score:
         return f"quality below {settings.min_quality_score:.0f}"
     ranking_score = scene.metadata.get("ranking_score")
-    if isinstance(ranking_score, int | float) and ranking_score < settings.min_semantic_score:
-        return f"semantic score below {settings.min_semantic_score:.0f}"
+    if isinstance(ranking_score, int | float) and ranking_score < semantic_threshold:
+        return f"semantic score below adaptive {semantic_threshold:.0f}"
     return "duration budget or event diversity limit"
 
 

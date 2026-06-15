@@ -57,10 +57,7 @@ def test_duplicate_detection_keeps_stronger_scene(tmp_path: Path) -> None:
 
 def test_story_selection_honors_overrides_and_event_diversity(tmp_path: Path) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
-    assets = [
-        _asset(tmp_path / f"clip-{index}.mp4", created_at)
-        for index in range(4)
-    ]
+    assets = [_asset(tmp_path / f"clip-{index}.mp4", created_at) for index in range(4)]
     first_event = uuid4()
     second_event = uuid4()
     forced = _scene(
@@ -136,15 +133,55 @@ def test_semantic_selection_skips_weak_scenes_even_when_duration_remains(
     assert decisions[weak.id].reason.startswith("semantic score below")
 
 
+def test_semantic_threshold_relaxes_for_modest_but_consistent_material(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [_asset(tmp_path / f"modest-{index}.mp4", created_at) for index in range(3)]
+    scenes = [
+        _scene(asset, uuid4(), score) for asset, score in zip(assets, [45, 43, 41], strict=True)
+    ]
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=6,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(assets, scenes, settings)
+
+    assert len(plan.clips) == 2
+    assert {clip.scene_id for clip in plan.clips}.issubset({scene.id for scene in scenes})
+
+
+def test_semantic_threshold_rises_for_strong_archives(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [_asset(tmp_path / f"scene-{index}.mp4", created_at) for index in range(4)]
+    scenes = [
+        _scene(asset, uuid4(), score) for asset, score in zip(assets, [95, 90, 86, 55], strict=True)
+    ]
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=6,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(assets, scenes, settings)
+    report = build_selection_report(scenes, plan, settings)
+    selected_ids = {clip.scene_id for clip in plan.clips}
+    decisions = {decision.scene_id: decision for decision in report.decisions}
+
+    assert scenes[-1].id not in selected_ids
+    assert decisions[scenes[-1].id].reason.startswith("semantic score below adaptive")
+
+
 def test_semantic_selection_limits_scenes_from_one_source_video(tmp_path: Path) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
     source = _asset(tmp_path / "long-roll.mp4", created_at, duration=30)
-    other = _asset(tmp_path / "other.mp4", created_at)
-    scenes = [
-        _scene(source, uuid4(), 95, start=index * 4)
-        for index in range(4)
-    ]
-    other_scene = _scene(other, uuid4(), 78)
+    others = [_asset(tmp_path / f"other-{index}.mp4", created_at) for index in range(4)]
+    scenes = [_scene(source, uuid4(), 95, start=index * 4) for index in range(4)]
+    other_scenes = [_scene(asset, uuid4(), 78 - index) for index, asset in enumerate(others)]
     settings = QuickMontageSettings(
         semantic_analysis=True,
         target_duration_seconds=15,
@@ -153,11 +190,31 @@ def test_semantic_selection_limits_scenes_from_one_source_video(tmp_path: Path) 
         transition="none",
     )
 
-    plan = build_semantic_montage_plan([source, other], [*scenes, other_scene], settings)
+    plan = build_semantic_montage_plan([source, *others], [*scenes, *other_scenes], settings)
 
     source_clips = [clip for clip in plan.clips if clip.asset_id == source.id]
     assert len(source_clips) == 2
-    assert other_scene.id in {clip.scene_id for clip in plan.clips}
+    assert {scene.id for scene in other_scenes} & {clip.scene_id for clip in plan.clips}
+
+
+def test_semantic_selection_relaxes_source_limit_for_few_long_videos(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "single-long-roll.mp4", created_at, duration=60)
+    scenes = [_scene(source, uuid4(), 95 - index, start=index * 4) for index in range(5)]
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=12,
+        max_video_clip_seconds=3,
+        max_scenes_per_source=2,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], scenes, settings)
+
+    assert len(plan.clips) == 4
+    assert {clip.asset_id for clip in plan.clips} == {source.id}
 
 
 def _pattern(path: Path, offset: int) -> None:

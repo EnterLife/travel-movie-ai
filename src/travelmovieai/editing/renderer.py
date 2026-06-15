@@ -479,21 +479,33 @@ def _build_filter_graph(
     else:
         music_index = clip_count
         fade_out_start = max(0.0, plan.total_duration_seconds - 1.5)
+        duration = plan.total_duration_seconds
         lines.append(
             f"[{music_index}:a]aresample=48000,"
-            f"atrim=0:{plan.total_duration_seconds:.3f},"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            "apad,"
+            f"atrim=0:{duration:.3f},"
             "asetpts=PTS-STARTPTS,"
             f"volume={plan.settings.music_volume:.3f},"
             "afade=t=in:st=0:d=1.5,"
             f"afade=t=out:st={fade_out_start:.3f}:d=1.5[music]"
         )
         lines.append(
-            f"[music][{audio_label}]"
-            "sidechaincompress=threshold=0.04:ratio=8:attack=20:release=500[ducked]"
+            f"[{audio_label}]aresample=48000,"
+            "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+            "apad,"
+            f"atrim=0:{duration:.3f},"
+            "asetpts=PTS-STARTPTS,"
+            "volume=0.55[sourceaudio]"
         )
         lines.append(
-            f"[{audio_label}][ducked]"
-            "amix=inputs=2:duration=first:dropout_transition=2,"
+            "[music][sourceaudio]"
+            "sidechaincompress=threshold=0.08:ratio=2.5:attack=35:release=650[duckedmusic]"
+        )
+        lines.append(
+            "[sourceaudio][duckedmusic]"
+            "amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
+            f"atrim=0:{duration:.3f},"
             "alimiter=limit=0.95[aout]"
         )
     return ";\n".join(lines)

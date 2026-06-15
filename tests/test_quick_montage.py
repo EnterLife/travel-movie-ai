@@ -1,8 +1,11 @@
 import json
+import math
 import shutil
+import struct
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -11,9 +14,12 @@ from travelmovieai.core.config import Settings
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MediaAsset,
+    MontageClip,
+    QuickMontagePlan,
     QuickMontageSettings,
     SceneUnderstanding,
 )
+from travelmovieai.editing.renderer import QuickMontageRenderer
 from travelmovieai.editing.timeline import build_quick_montage_plan
 
 
@@ -200,6 +206,42 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     assert all(clip["semantic_score"] is not None for clip in timeline["clips"])
 
 
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="FFprobe is not installed")
+def test_renderer_keeps_short_music_audible_until_the_end(tmp_path: Path) -> None:
+    photo = tmp_path / "quiet-photo.jpg"
+    music = tmp_path / "short-theme.wav"
+    output = tmp_path / "movie.mp4"
+    _generate_photo(photo)
+    _generate_music(music, duration=0.25)
+    settings = QuickMontageSettings(
+        width=320,
+        height=240,
+        fps=24,
+        transition="none",
+        music_volume=0.5,
+    )
+    clip = MontageClip(
+        asset_id=uuid4(),
+        source_path=photo,
+        relative_path=Path("quiet-photo.jpg"),
+        media_type=MediaType.PHOTO,
+        duration_seconds=2,
+        has_audio=False,
+    )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[clip],
+        total_duration_seconds=2,
+        music_path=music,
+    )
+
+    QuickMontageRenderer().render(plan, output, tmp_path / "render")
+
+    assert _audio_rms(output, start_seconds=1.45, duration_seconds=0.35) > 100
+
+
 def _asset(
     path: Path,
     *,
@@ -271,7 +313,7 @@ def _generate_photo(path: Path) -> None:
     )
 
 
-def _generate_music(path: Path) -> None:
+def _generate_music(path: Path, duration: float = 4) -> None:
     subprocess.run(
         [
             "ffmpeg",
@@ -282,8 +324,40 @@ def _generate_music(path: Path) -> None:
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=220:sample_rate=48000:duration=4",
+            f"sine=frequency=220:sample_rate=48000:duration={duration}",
             str(path),
         ],
         check=True,
     )
+
+
+def _audio_rms(path: Path, *, start_seconds: float, duration_seconds: float) -> float:
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{start_seconds:.3f}",
+            "-t",
+            f"{duration_seconds:.3f}",
+            "-i",
+            str(path),
+            "-vn",
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    sample_count = len(completed.stdout) // 2
+    if sample_count == 0:
+        return 0.0
+    samples = struct.unpack(f"<{sample_count}h", completed.stdout[: sample_count * 2])
+    return math.sqrt(sum(sample * sample for sample in samples) / sample_count)

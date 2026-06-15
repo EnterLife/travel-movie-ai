@@ -13,6 +13,7 @@ htmlcov/
 venv/
 
 # IDE and OS
+.todo
 .idea/
 .vscode/
 .DS_Store

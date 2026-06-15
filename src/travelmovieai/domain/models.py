@@ -142,6 +142,9 @@ class VisualQualityMetrics(BaseModel):
     motion_score: float = Field(default=0, ge=0, le=100)
     camera_shake_score: float = Field(default=0, ge=0, le=100)
     quality_score: float = Field(ge=0, le=100)
+    panel_quality_scores: list[float] = Field(default_factory=list, max_length=12)
+    best_panel_index: int | None = Field(default=None, ge=0)
+    best_panel_position: float | None = Field(default=None, ge=0, le=1)
     rejection_reasons: list[str] = Field(default_factory=list)
     backend: str
 

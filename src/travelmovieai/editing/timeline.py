@@ -119,8 +119,16 @@ def build_semantic_montage_plan(
             continue
 
         source_start = 0.0
+        window_reason = ""
         if asset.media_type is MediaType.VIDEO:
-            source_start = scene.start_seconds + max(0.0, (available - duration) / 2)
+            source_start, window_reason = _best_scene_window(
+                scene,
+                available_seconds=available,
+                duration_seconds=duration,
+            )
+        selection_reason = _selection_reason(scene)
+        if window_reason:
+            selection_reason = f"{selection_reason}; {window_reason}"
         selected.append(
             MontageClip(
                 asset_id=asset.id,
@@ -134,7 +142,7 @@ def build_semantic_montage_plan(
                 caption=scene.caption,
                 semantic_score=float(scene.metadata.get("ranking_score", 50)),
                 event_id=_event_id(scene),
-                selection_reason=_selection_reason(scene),
+                selection_reason=selection_reason,
             )
         )
         effective_duration += duration - (transition if len(selected) > 1 else 0)
@@ -284,6 +292,170 @@ def _source_scene_limit(
     )
     adaptive_limit = math.ceil(estimated_needed_clips / source_count)
     return max(settings.max_scenes_per_source, adaptive_limit)
+
+
+def _best_scene_window(
+    scene: Scene,
+    *,
+    available_seconds: float,
+    duration_seconds: float,
+) -> tuple[float, str]:
+    if available_seconds <= duration_seconds + 0.05:
+        return scene.start_seconds, ""
+
+    candidates: list[tuple[float, float, str]] = []
+    candidates.extend(_explicit_window_candidates(scene, available_seconds, duration_seconds))
+    candidates.extend(_quality_panel_candidates(scene, available_seconds, duration_seconds))
+    if not candidates:
+        middle_start = _clamp_window_start(
+            available_seconds * 0.5 - duration_seconds / 2,
+            available_seconds,
+            duration_seconds,
+        )
+        return scene.start_seconds + middle_start, "center of scene"
+
+    max_start = max(0.0, available_seconds - duration_seconds)
+    best_score, best_start, reason = max(
+        candidates,
+        key=lambda candidate: (
+            candidate[0],
+            -abs((candidate[1] + duration_seconds / 2) / available_seconds - 0.52),
+        ),
+    )
+    if best_score < 20:
+        best_start = max_start / 2
+        reason = "center of scene"
+    return scene.start_seconds + _clamp_window_start(
+        best_start,
+        available_seconds,
+        duration_seconds,
+    ), reason
+
+
+def _explicit_window_candidates(
+    scene: Scene,
+    available_seconds: float,
+    duration_seconds: float,
+) -> list[tuple[float, float, str]]:
+    raw_windows = scene.metadata.get("highlight_windows", scene.metadata.get("candidate_windows"))
+    if not isinstance(raw_windows, list):
+        return []
+
+    candidates: list[tuple[float, float, str]] = []
+    for item in raw_windows:
+        if not isinstance(item, dict):
+            continue
+        start = _window_start_from_metadata(scene, item)
+        end = _window_end_from_metadata(scene, item)
+        if start is None:
+            continue
+        if end is not None and end > start:
+            center = start + (end - start) / 2
+            start = center - duration_seconds / 2
+        score = _float_value(
+            item.get("score"),
+            _float_value(item.get("importance_score"), 75.0),
+        )
+        label = str(item.get("label", "")).strip()
+        reason = "highlight window" if not label else f"highlight window: {label[:80]}"
+        candidates.append(
+            (
+                score,
+                _clamp_window_start(start, available_seconds, duration_seconds),
+                reason,
+            )
+        )
+    return candidates
+
+
+def _quality_panel_candidates(
+    scene: Scene,
+    available_seconds: float,
+    duration_seconds: float,
+) -> list[tuple[float, float, str]]:
+    metrics = scene.metadata.get("quality_metrics", {})
+    if not isinstance(metrics, dict):
+        return []
+    raw_scores = metrics.get("panel_quality_scores", [])
+    if not isinstance(raw_scores, list):
+        return []
+    scores = [_float_value(score) for score in raw_scores if isinstance(score, int | float)]
+    if not scores:
+        return []
+
+    candidates: list[tuple[float, float, str]] = []
+    for index, score in enumerate(scores):
+        position = _panel_position(index, len(scores))
+        start = available_seconds * position - duration_seconds / 2
+        candidates.append(
+            (
+                score,
+                _clamp_window_start(start, available_seconds, duration_seconds),
+                f"best visual window {index + 1}/{len(scores)}",
+            )
+        )
+    return candidates
+
+
+def _window_start_from_metadata(scene: Scene, item: dict[object, object]) -> float | None:
+    start = _first_float(
+        item.get("relative_start_seconds"),
+        item.get("start_offset_seconds"),
+        item.get("start"),
+        item.get("start_seconds"),
+    )
+    if start is None:
+        return None
+    if scene.start_seconds <= start <= scene.end_seconds:
+        return start - scene.start_seconds
+    return max(0.0, start)
+
+
+def _window_end_from_metadata(scene: Scene, item: dict[object, object]) -> float | None:
+    end = _first_float(
+        item.get("relative_end_seconds"),
+        item.get("end_offset_seconds"),
+        item.get("end"),
+        item.get("end_seconds"),
+    )
+    if end is None:
+        return None
+    if scene.start_seconds <= end <= scene.end_seconds:
+        return end - scene.start_seconds
+    return max(0.0, end)
+
+
+def _clamp_window_start(
+    start_seconds: float,
+    available_seconds: float,
+    duration_seconds: float,
+) -> float:
+    return max(0.0, min(start_seconds, max(0.0, available_seconds - duration_seconds)))
+
+
+def _first_float(*values: object) -> float | None:
+    for value in values:
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                continue
+    return None
+
+
+def _float_value(value: object, default: float = 0.0) -> float:
+    parsed = _first_float(value)
+    return parsed if parsed is not None else default
+
+
+def _panel_position(index: int, count: int) -> float:
+    if count == 3:
+        return (0.12, 0.5, 0.88)[index]
+    if count == 1:
+        return 0.5
+    return (index + 0.5) / count
 
 
 def _estimated_needed_clips(settings: QuickMontageSettings) -> int:

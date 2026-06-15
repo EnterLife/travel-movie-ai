@@ -48,6 +48,8 @@ def test_quality_analysis_persists_explainable_metrics(tmp_path: Path) -> None:
     assert 0 <= metrics["noise_score"] <= 100
     assert 0 <= metrics["motion_score"] <= 100
     assert 0 <= metrics["camera_shake_score"] <= 100
+    assert metrics["panel_quality_scores"]
+    assert metrics["best_panel_position"] is not None
     assert isinstance(metrics["rejection_reasons"], list)
 
 

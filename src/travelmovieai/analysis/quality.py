@@ -33,6 +33,7 @@ class VisualQualityAnalyzer:
             return self._analyze_pillow(image_path)
         panels = _split_contact_sheet_cv(image)
         panel_metrics = [_opencv_panel_metrics(cv2, panel) for panel in panels]
+        panel_scores = [_panel_quality_score(*item) for item in panel_metrics]
         brightness = _average(item[0] for item in panel_metrics)
         contrast = _average(item[1] for item in panel_metrics)
         sharpness = _average(item[2] for item in panel_metrics)
@@ -50,6 +51,7 @@ class VisualQualityAnalyzer:
             motion_score,
             camera_shake_score,
             "opencv",
+            panel_scores,
         )
 
     def _analyze_pillow(self, image_path: Path) -> VisualQualityMetrics:
@@ -57,6 +59,7 @@ class VisualQualityAnalyzer:
             rgb = source.convert("RGB")
             panels = _split_contact_sheet_pillow(rgb)
             panel_metrics = [_pillow_panel_metrics(panel) for panel in panels]
+            panel_scores = [_panel_quality_score(*item) for item in panel_metrics]
             brightness = _average(item[0] for item in panel_metrics)
             contrast = _average(item[1] for item in panel_metrics)
             sharpness = _average(item[2] for item in panel_metrics)
@@ -74,6 +77,7 @@ class VisualQualityAnalyzer:
             motion_score,
             0,
             "pillow",
+            panel_scores,
         )
 
 
@@ -101,6 +105,7 @@ class TorchCudaQualityAnalyzer:
             else [tensor]
         )
         static = [self._panel_metrics(panel) for panel in panels]
+        panel_scores = [_panel_quality_score(*item) for item in static]
         brightness = _average(item[0] for item in static)
         contrast = _average(item[1] for item in static)
         sharpness = _average(item[2] for item in static)
@@ -118,6 +123,7 @@ class TorchCudaQualityAnalyzer:
             motion_score,
             0,
             "torch-cuda",
+            panel_scores,
         )
 
     def _panel_metrics(
@@ -246,19 +252,20 @@ def _metrics(
     motion_score: float,
     camera_shake_score: float,
     backend: str,
+    panel_quality_scores: list[float] | None = None,
 ) -> VisualQualityMetrics:
     exposure = _clamp(100 - abs(brightness - 52) * 2.3)
     saturation_quality = _clamp(100 - abs(saturation - 45) * 1.2)
     stability = 100 - camera_shake_score
     noise_quality = 100 - noise_score
-    score = _clamp(
-        sharpness * 0.28
-        + contrast * 0.15
-        + exposure * 0.2
-        + saturation_quality * 0.08
-        + colorfulness * 0.07
-        + stability * 0.14
-        + noise_quality * 0.08
+    score = _quality_score_from_components(
+        sharpness=sharpness,
+        contrast=contrast,
+        exposure=exposure,
+        saturation_quality=saturation_quality,
+        colorfulness=colorfulness,
+        stability=stability,
+        noise_quality=noise_quality,
     )
     rejection_reasons = _rejection_reasons(
         brightness,
@@ -268,6 +275,8 @@ def _metrics(
         camera_shake_score,
         score,
     )
+    panel_scores = panel_quality_scores or []
+    best_index = _best_panel_index(panel_scores)
     return VisualQualityMetrics(
         brightness=brightness,
         contrast=contrast,
@@ -279,9 +288,70 @@ def _metrics(
         motion_score=motion_score,
         camera_shake_score=camera_shake_score,
         quality_score=score,
+        panel_quality_scores=panel_scores,
+        best_panel_index=best_index,
+        best_panel_position=_panel_position(best_index, len(panel_scores)),
         rejection_reasons=rejection_reasons,
         backend=backend,
     )
+
+
+def _panel_quality_score(
+    brightness: float,
+    contrast: float,
+    sharpness: float,
+    saturation: float,
+    colorfulness: float,
+    noise_score: float,
+) -> float:
+    exposure = _clamp(100 - abs(brightness - 52) * 2.3)
+    saturation_quality = _clamp(100 - abs(saturation - 45) * 1.2)
+    return _quality_score_from_components(
+        sharpness=sharpness,
+        contrast=contrast,
+        exposure=exposure,
+        saturation_quality=saturation_quality,
+        colorfulness=colorfulness,
+        stability=85,
+        noise_quality=100 - noise_score,
+    )
+
+
+def _quality_score_from_components(
+    *,
+    sharpness: float,
+    contrast: float,
+    exposure: float,
+    saturation_quality: float,
+    colorfulness: float,
+    stability: float,
+    noise_quality: float,
+) -> float:
+    return _clamp(
+        sharpness * 0.28
+        + contrast * 0.15
+        + exposure * 0.2
+        + saturation_quality * 0.08
+        + colorfulness * 0.07
+        + stability * 0.14
+        + noise_quality * 0.08
+    )
+
+
+def _best_panel_index(scores: list[float]) -> int | None:
+    if not scores:
+        return None
+    return max(range(len(scores)), key=lambda index: scores[index])
+
+
+def _panel_position(index: int | None, count: int) -> float | None:
+    if index is None or count <= 0:
+        return None
+    if count == 3:
+        return (0.12, 0.5, 0.88)[index]
+    if count == 1:
+        return 0.5
+    return (index + 0.5) / count
 
 
 def _opencv_panel_metrics(

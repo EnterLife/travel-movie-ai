@@ -217,6 +217,68 @@ def test_semantic_selection_relaxes_source_limit_for_few_long_videos(
     assert {clip.asset_id for clip in plan.clips} == {source.id}
 
 
+def test_semantic_selection_uses_best_visual_window_inside_long_scene(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "long-scene.mp4", created_at, duration=12)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=12,
+        quality_metrics={
+            "panel_quality_scores": [35, 58, 92],
+            "best_panel_index": 2,
+            "best_panel_position": 0.88,
+        },
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert plan.clips[0].source_start_seconds == 9
+    assert "best visual window 3/3" in plan.clips[0].selection_reason
+
+
+def test_semantic_selection_prefers_explicit_highlight_window(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "highlight.mp4", created_at, duration=14)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=14,
+        quality_metrics={"panel_quality_scores": [95, 40, 35]},
+        highlight_windows=[
+            {
+                "relative_start_seconds": 6,
+                "relative_end_seconds": 9,
+                "score": 99,
+                "label": "best smile",
+            }
+        ],
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert plan.clips[0].source_start_seconds == 6
+    assert "highlight window: best smile" in plan.clips[0].selection_reason
+
+
 def _pattern(path: Path, offset: int) -> None:
     image = Image.new("RGB", (180, 90), "black")
     draw = ImageDraw.Draw(image)
@@ -244,12 +306,13 @@ def _scene(
     event_id: object,
     score: float,
     start: float = 0,
+    duration: float = 3,
     **metadata: object,
 ) -> Scene:
     return Scene(
         asset_id=asset.id,
         start_seconds=start,
-        end_seconds=start + 3,
+        end_seconds=start + duration,
         quality_score=75,
         importance_score=score,
         caption=asset.relative_path.stem,

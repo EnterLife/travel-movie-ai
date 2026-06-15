@@ -259,6 +259,12 @@ dominating a large archive, but the limit automatically relaxes when there are
 only a few long source videos and the movie needs more strong scenes. Use scene
 overrides when a specific fragment must be included or excluded.
 
+For long scenes, semantic montage does not blindly cut the middle of the scene.
+It builds candidate windows inside the scene and prefers explicit highlight
+windows, then the best visual panel from the sampled contact sheet, then a
+neutral center cut. This keeps the final movie focused on the strongest moment
+inside each selected scene.
+
 ### Generated Lounge Music
 
 `AI Auto` and `Generate locally` create a soundtrack entirely on the local

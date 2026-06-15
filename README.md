@@ -271,6 +271,13 @@ analysis can add their own candidate windows to the same contract, allowing the
 timeline builder to choose the best moment inside a long source scene without
 changing the renderer.
 
+Audio Analysis stores scene-level labels such as `speech`, `silence`, `wind`,
+`music`, `crowd`, `water`, and `transport`. It adds audio candidate windows,
+boosts scenes with speech or useful ambience, and penalizes strong wind or
+transport noise during ranking. Story timeline ordering follows storyboard
+sections when available, so selected clips are arranged as opening, journey,
+highlight, and finale before falling back to source chronology.
+
 ### Generated Lounge Music
 
 `AI Auto` and `Generate locally` create a soundtrack entirely on the local
@@ -478,12 +485,12 @@ Media Scan
 | Visual Quality | Measure technical quality with OpenCV/Pillow | Implemented |
 | Vision AI | Generate structured semantic scene understanding | Implemented |
 | Speech | Transcribe scene audio with Faster Whisper | Implemented, optional |
-| Audio Analysis | Classify speech, music, silence, crowds, and ambience | Planned |
+| Audio Analysis | Classify speech, silence, wind, music, crowds, water, transport, and ambience | Implemented |
 | Embeddings | Semantic similarity and archive search | Planned |
 | Duplicate Detection | Group visually similar scenes | Implemented |
 | Scene Captioning | Merge Vision, quality, speech, and event context | Implemented |
 | Event Detection | Group scenes into trip events | Implemented |
-| Story Builder | Build opening, journey, highlights, and finale sections | Basic implementation |
+| Story Builder | Build opening, journey, highlights, finale, and story-aware clip ordering | Basic implementation |
 | Scene Ranking | Explain selection and rejection decisions | Implemented |
 | Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented |
 | Narration and Voice | Generate and synthesize optional voice-over | Planned |
@@ -536,8 +543,9 @@ The final scene score considers:
 - Vision importance;
 - technical quality;
 - emotional and landmark value;
+- audio context, speech likelihood, ambience, and noise penalties;
 - uniqueness and event diversity;
-- speech and future audio importance;
+- speech importance;
 - duplicate and technical penalties;
 - manual include/exclude decisions.
 

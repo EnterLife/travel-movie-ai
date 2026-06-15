@@ -2,6 +2,7 @@
 
 from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.pipeline.base import Stage
+from travelmovieai.pipeline.stages.audio_analysis import AudioAnalysisStage
 from travelmovieai.pipeline.stages.duplicate_detection import DuplicateDetectionStage
 from travelmovieai.pipeline.stages.event_detection import EventDetectionStage
 from travelmovieai.pipeline.stages.frame_sampling import FrameSamplingStage
@@ -24,6 +25,7 @@ def build_default_pipeline() -> list[Stage]:
         QualityAnalysisStage(),
         VisionAnalysisStage(),
         SpeechAnalysisStage(),
+        AudioAnalysisStage(),
         DuplicateDetectionStage(),
         SceneCaptioningStage(),
         EventDetectionStage(),

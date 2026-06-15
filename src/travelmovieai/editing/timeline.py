@@ -152,12 +152,9 @@ def build_semantic_montage_plan(
     if not selected:
         raise MontageError("AI-анализ не нашёл пригодных сцен для монтажа.")
 
+    scenes_by_id = {scene.id: scene for scene in candidates}
     selected.sort(
-        key=lambda clip: (
-            assets_by_id[clip.asset_id].created_at or assets_by_id[clip.asset_id].modified_at,
-            clip.relative_path.as_posix().casefold(),
-            clip.source_start_seconds,
-        )
+        key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id)
     )
     return QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -208,6 +205,38 @@ def build_selection_report(
 def _has_audio(asset: MediaAsset) -> bool:
     streams = asset.probe_metadata.get("streams", [])
     return any(stream.get("codec_type") == "audio" for stream in streams)
+
+
+def _story_timeline_sort_key(
+    clip: MontageClip,
+    scenes_by_id: dict[UUID, Scene],
+    assets_by_id: dict[UUID, MediaAsset],
+) -> tuple[int, int, object, str, float]:
+    scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
+    asset = assets_by_id[clip.asset_id]
+    return (
+        _metadata_int(scene, "story_section_index", 99),
+        _metadata_int(scene, "story_role_order", 99),
+        asset.created_at or asset.modified_at,
+        clip.relative_path.as_posix().casefold(),
+        clip.source_start_seconds,
+    )
+
+
+def _metadata_int(scene: Scene | None, key: str, default: int) -> int:
+    if scene is None:
+        return default
+    value = scene.metadata.get(key)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _timeline_duration(

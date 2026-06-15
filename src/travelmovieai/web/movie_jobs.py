@@ -31,8 +31,9 @@ _SUBTASK_RANGES = {
     "frame_sampling": (12.0, 32.0, "Извлечение кадров"),
     "quality_analysis": (32.0, 45.0, "OpenCV-анализ"),
     "vision_analysis": (45.0, 70.0, "Vision AI"),
-    "speech_analysis": (70.0, 75.0, "Распознавание речи"),
-    "story_builder": (75.0, 82.0, "Сюжет и отбор"),
+    "speech_analysis": (70.0, 74.0, "Распознавание речи"),
+    "audio_analysis": (74.0, 76.0, "Audio Analysis"),
+    "story_builder": (76.0, 82.0, "Сюжет и отбор"),
     "music": (82.0, 84.0, "Музыка"),
     "timeline": (84.0, 85.0, "Timeline"),
     "rendering": (85.0, 99.0, "Рендеринг"),
@@ -402,6 +403,7 @@ def _build_subtasks(settings: QuickMontageSettings) -> list[JobSubtaskProgress]:
         "quality_analysis",
         "vision_analysis",
         "speech_analysis",
+        "audio_analysis",
         "story_builder",
     }
     subtasks = []
@@ -413,6 +415,8 @@ def _build_subtasks(settings: QuickMontageSettings) -> list[JobSubtaskProgress]:
             and not settings.quality_analysis
             or task_id == "speech_analysis"
             and not settings.speech_analysis
+            or task_id == "audio_analysis"
+            and not settings.audio_analysis
         )
         subtasks.append(
             JobSubtaskProgress(
@@ -528,6 +532,7 @@ def _phase_from_message(message: str) -> str:
         (("opencv", "cuda quality", "качества"), "quality_analysis"),
         (("ai-анализ", "ai-кэш", "vision"), "vision_analysis"),
         (("whisper", "реч"), "speech_analysis"),
+        (("audio analysis", "тишин", "шум"), "audio_analysis"),
         (("повтор", "описан", "событи", "сценари", "ai-отбор"), "story_builder"),
         (("музык", "ace-step"), "music"),
         (("timeline",), "timeline"),

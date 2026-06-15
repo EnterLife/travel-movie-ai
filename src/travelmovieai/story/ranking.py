@@ -16,6 +16,7 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
         quality = scene.quality_score if scene.quality_score is not None else 60.0
         event_importance = float(scene.metadata.get("event_importance", base))
         landmark_bonus = min(8.0, len(scene.metadata.get("landmarks", [])) * 4.0)
+        audio_bonus, audio_penalty, audio_reasons = _audio_factors(scene)
         technical_reasons = list(scene.metadata.get("technical_rejection_reasons", []))
         technical_penalty = min(24.0, len(technical_reasons) * 8.0)
         duplicate_penalty = (
@@ -33,8 +34,10 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
                 + event_importance * 0.08
                 + diversity_bonus
                 + landmark_bonus
+                + audio_bonus
                 - technical_penalty
-                - duplicate_penalty,
+                - duplicate_penalty
+                - audio_penalty,
             ),
         )
         reasons = [
@@ -44,6 +47,7 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
         ]
         if landmark_bonus:
             reasons.append("landmark")
+        reasons.extend(audio_reasons)
         if diversity_bonus:
             reasons.append("semantic diversity")
         if technical_reasons:
@@ -62,6 +66,8 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
                             "visual_quality": quality,
                             "event_importance": event_importance,
                             "landmark_bonus": landmark_bonus,
+                            "audio_bonus": audio_bonus,
+                            "audio_penalty": audio_penalty,
                             "diversity_bonus": diversity_bonus,
                             "technical_penalty": technical_penalty,
                             "duplicate_penalty": duplicate_penalty,
@@ -87,3 +93,39 @@ def _semantic_tags(scene: Scene) -> set[str]:
     }
     values.update(str(tag).strip().casefold() for tag in scene.metadata.get("tags", []))
     return {value for value in values if value and value != "unknown"}
+
+
+def _audio_factors(scene: Scene) -> tuple[float, float, list[str]]:
+    features = scene.metadata.get("audio_features", {})
+    if not isinstance(features, dict):
+        return 0.0, 0.0, []
+    label = str(features.get("primary_label", "unknown"))
+    speech = _float_value(features.get("speech_likelihood"))
+    noise = _float_value(features.get("noise_score"))
+    ambience = _float_value(features.get("ambience_score"))
+    bonus = min(7.0, speech * 3.0 + ambience / 100 * 4.0)
+    penalty = 0.0
+    reasons: list[str] = []
+    if speech >= 0.55:
+        reasons.append("speech protected")
+    if label in {"water", "crowd", "music"} or ambience >= 68:
+        reasons.append(f"audio ambience {label}")
+    if label in {"wind", "transport"}:
+        penalty += 6.0
+        reasons.append(f"audio noise {label}")
+    if noise >= 72:
+        penalty += min(8.0, (noise - 72) * 0.28)
+        if not any(reason.startswith("audio noise") for reason in reasons):
+            reasons.append("audio noise")
+    return bonus, min(14.0, penalty), reasons
+
+
+def _float_value(value: object) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0

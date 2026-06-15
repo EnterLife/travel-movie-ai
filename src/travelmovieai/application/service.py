@@ -10,6 +10,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from travelmovieai.analysis.audio import analyze_audio
 from travelmovieai.analysis.duplicates import detect_duplicate_scenes
 from travelmovieai.analysis.quality import analyze_scene_quality
 from travelmovieai.analysis.scenes import RepresentativeFrameExtractor
@@ -61,6 +62,7 @@ from travelmovieai.story.builder import (
 )
 from travelmovieai.story.events import detect_events
 from travelmovieai.story.music import NeuralMusicGenerator, build_music_plan
+from travelmovieai.story.optimizer import apply_story_structure
 
 
 class TravelMovieService:
@@ -331,7 +333,7 @@ class TravelMovieService:
                 ),
                 self.settings.ffmpeg_binary,
                 context.cache_dir / "speech",
-                tracker.range(70, 75),
+                tracker.range(70, 74),
             )
             speech_scenes = speech_report.scenes
             write_json_atomic(
@@ -340,8 +342,23 @@ class TravelMovieService:
             )
         else:
             tracker.emit(74, "Распознавание речи отключено")
+        if settings.audio_analysis:
+            tracker.emit(74, "Audio Analysis: классификация речи, тишины и шумов")
+            audio_report = analyze_audio(
+                speech_scenes,
+                report.assets,
+                self.settings.ffmpeg_binary,
+                tracker.range(74, 76),
+            )
+            speech_scenes = audio_report.scenes
+            write_json_atomic(
+                context.artifacts_dir / "audio_analysis.json",
+                audio_report,
+            )
+        else:
+            tracker.emit(76, "Audio Analysis отключён")
         if settings.duplicate_detection:
-            tracker.emit(75, "Поиск похожих и повторяющихся сцен")
+            tracker.emit(76, "Поиск похожих и повторяющихся сцен")
             duplicate_report, deduplicated_scenes = detect_duplicate_scenes(
                 speech_scenes,
                 settings.duplicate_similarity_threshold,
@@ -370,6 +387,7 @@ class TravelMovieService:
             event_scenes,
             settings.story_style,
         )
+        event_scenes = apply_story_structure(event_scenes, storyboard)
         tracker.emit(81, "Сценарий и порядок сцен сформированы")
         write_json_atomic(context.artifacts_dir / "storyboard.json", storyboard)
         repository = MediaAssetRepository(context.database_path)

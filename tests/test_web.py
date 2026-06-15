@@ -343,7 +343,7 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert job["progress_percent"] == 100
     assert job["phase"] == "completed"
     assert job["resources"]["render_workers"] == 4
-    assert len(job["subtasks"]) == 11
+    assert len(job["subtasks"]) == 12
     assert all(
         task["status"] == "completed" for task in job["subtasks"] if task["id"] != "speech_analysis"
     )

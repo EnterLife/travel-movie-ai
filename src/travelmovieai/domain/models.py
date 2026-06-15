@@ -131,6 +131,42 @@ class SpeechAnalysisReport(BaseModel):
     cached_count: int = 0
 
 
+class AudioSceneAnalysis(BaseModel):
+    scene_id: UUID
+    has_audio: bool
+    primary_label: Literal[
+        "speech",
+        "silence",
+        "wind",
+        "music",
+        "crowd",
+        "water",
+        "transport",
+        "ambient",
+        "unknown",
+    ]
+    labels: list[str] = Field(default_factory=list, max_length=8)
+    rms_dbfs: float | None = None
+    peak_dbfs: float | None = None
+    zero_crossing_rate: float | None = None
+    spectral_centroid_hz: float | None = None
+    low_frequency_ratio: float | None = None
+    high_frequency_ratio: float | None = None
+    dynamic_range_db: float | None = None
+    speech_likelihood: float = Field(default=0, ge=0, le=1)
+    noise_score: float = Field(default=0, ge=0, le=100)
+    ambience_score: float = Field(default=0, ge=0, le=100)
+    candidate_windows: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+
+
+class AudioAnalysisReport(BaseModel):
+    created_at: datetime
+    scenes: list[Scene] = Field(default_factory=list)
+    analyses: list[AudioSceneAnalysis] = Field(default_factory=list)
+    analyzed_count: int = 0
+    skipped_count: int = 0
+
+
 class VisualQualityMetrics(BaseModel):
     brightness: float = Field(ge=0, le=100)
     contrast: float = Field(ge=0, le=100)
@@ -316,6 +352,7 @@ class QuickMontageSettings(BaseModel):
     semantic_analysis: bool = False
     quality_analysis: bool = True
     speech_analysis: bool = False
+    audio_analysis: bool = True
     reject_technical_failures: bool = True
     min_quality_score: float = Field(default=22, ge=0, le=100)
     min_semantic_score: float = Field(default=52, ge=0, le=100)

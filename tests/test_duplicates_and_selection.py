@@ -379,6 +379,40 @@ def test_semantic_selection_uses_best_panel_position_without_panel_scores(
     assert "best visual panel 2" in plan.clips[0].selection_reason
 
 
+def test_semantic_timeline_uses_story_section_order(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    early_file = _asset(tmp_path / "early-highlight.mp4", created_at, duration=6)
+    late_file = _asset(tmp_path / "late-opening.mp4", created_at, duration=6)
+    highlight = _scene(
+        early_file,
+        uuid4(),
+        94,
+        duration=6,
+        story_section_index=2,
+        story_section_role="highlight",
+        story_role_order=2,
+    )
+    opening = _scene(
+        late_file,
+        uuid4(),
+        92,
+        duration=6,
+        story_section_index=0,
+        story_section_role="opening",
+        story_role_order=0,
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=6,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([early_file, late_file], [highlight, opening], settings)
+
+    assert [clip.scene_id for clip in plan.clips] == [opening.id, highlight.id]
+
+
 def _pattern(path: Path, offset: int) -> None:
     image = Image.new("RGB", (180, 90), "black")
     draw = ImageDraw.Draw(image)

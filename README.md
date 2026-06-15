@@ -819,6 +819,9 @@ MVP acceptance criteria:
 - pause and cancel movie jobs;
 - resume after process interruption;
 - persist movie-job history;
+- replace remaining placeholder stages with explicit Scene Ranking, Music
+  Selection, Timeline Builder, and Rendering implementations;
+- add per-stage input/config/model fingerprints for reliable skip/resume;
 - enforce disk-cache limits and cleanup;
 - check free disk space before rendering;
 - add managed SQLite migrations.
@@ -829,15 +832,13 @@ MVP acceptance criteria:
 - GPS and embeddings in event detection;
 - full Whisper segment boundaries;
 - protection against cutting important speech;
-- audio classification for speech, music, silence, crowds, laughter, applause,
-  and ambient sound;
-- beat-aware cuts and preservation of meaningful ambience;
+- beat-aware cuts using the stored music beat grid;
+- preservation of meaningful ambience;
 - continuity rules for movement, light, location, and shot scale.
 
 ### P1: Story and manual editing
 
 - direct local story-model adapter;
-- structured narrative and section duration budgets;
 - multiple movie variants from one analysis;
 - event and scene reordering;
 - editable event titles, summaries, captions, transcripts, and landmarks;
@@ -851,7 +852,7 @@ MVP acceptance criteria:
 - color and exposure normalization;
 - HDR-to-SDR tone mapping;
 - event titles, subtitles, credits, and safe-area validation;
-- BPM analysis, beat grids, and storyboard-aware music;
+- BPM analysis for library/manual tracks and automatic music volume envelopes;
 - Piper or XTTS narration synthesis.
 
 ### P2: Performance

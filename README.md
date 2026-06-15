@@ -274,9 +274,13 @@ changing the renderer.
 Audio Analysis stores scene-level labels such as `speech`, `silence`, `wind`,
 `music`, `crowd`, `water`, and `transport`. It adds audio candidate windows,
 boosts scenes with speech or useful ambience, and penalizes strong wind or
-transport noise during ranking. Story timeline ordering follows storyboard
-sections when available, so selected clips are arranged as opening, journey,
-highlight, and finale before falling back to source chronology.
+transport noise during ranking.
+
+Story Timeline Optimizer follows storyboard sections when available, so selected
+clips are arranged as opening, journey, highlight, and finale before falling
+back to source chronology. It also applies section duration budgets and
+diversity rules: one strong but repetitive location or activity should not fill
+the whole movie when varied alternatives are available.
 
 ### Generated Lounge Music
 
@@ -494,7 +498,7 @@ Media Scan
 | Duplicate Detection | Group visually similar scenes | Implemented |
 | Scene Captioning | Merge Vision, quality, speech, and event context | Implemented |
 | Event Detection | Group scenes into trip events | Implemented |
-| Story Builder | Build opening, journey, highlights, finale, and story-aware clip ordering | Basic implementation |
+| Story Builder | Build opening, journey, highlights, finale, story budgets, and diverse clip ordering | Implemented |
 | Scene Ranking | Explain selection and rejection decisions | Implemented |
 | Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented |
 | Narration and Voice | Generate and synthesize optional voice-over | Planned |
@@ -555,7 +559,10 @@ The final scene score considers:
 
 Every selected or rejected scene should retain an explainable reason. The story
 is built before final editing decisions. Story Builder consumes structured
-metadata and transcripts, not raw media.
+metadata and transcripts, not raw media. The timeline optimizer should preserve
+the story shape with approximate section budgets and avoid adjacent repeats by
+location, activity, shot type, source asset, and semantic tags when alternatives
+exist.
 
 ## Architecture
 

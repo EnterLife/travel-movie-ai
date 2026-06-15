@@ -413,6 +413,145 @@ def test_semantic_timeline_uses_story_section_order(tmp_path: Path) -> None:
     assert [clip.scene_id for clip in plan.clips] == [opening.id, highlight.id]
 
 
+def test_story_timeline_uses_section_duration_budgets(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [
+        _asset(tmp_path / f"section-{index}.mp4", created_at, duration=6)
+        for index in range(7)
+    ]
+    scenes = [
+        _scene(
+            assets[index],
+            uuid4(),
+            99 - index,
+            duration=6,
+            story_section_index=0,
+            story_section_role="opening",
+            story_role_order=0,
+        )
+        for index in range(4)
+    ]
+    scenes.extend(
+        [
+            _scene(
+                assets[4],
+                uuid4(),
+                88,
+                duration=6,
+                story_section_index=1,
+                story_section_role="journey",
+                story_role_order=1,
+            ),
+            _scene(
+                assets[5],
+                uuid4(),
+                96,
+                duration=6,
+                story_section_index=2,
+                story_section_role="highlight",
+                story_role_order=2,
+            ),
+            _scene(
+                assets[6],
+                uuid4(),
+                86,
+                duration=6,
+                story_section_index=3,
+                story_section_role="finale",
+                story_role_order=3,
+            ),
+        ]
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=12,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(assets, scenes, settings)
+    selected_roles = [
+        next(scene for scene in scenes if scene.id == clip.scene_id).metadata["story_section_role"]
+        for clip in plan.clips
+    ]
+
+    assert selected_roles == ["opening", "journey", "highlight", "finale"]
+
+
+def test_story_timeline_avoids_adjacent_similar_scenes_when_possible(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [
+        _asset(tmp_path / f"diverse-{index}.mp4", created_at, duration=6)
+        for index in range(4)
+    ]
+    scenes = [
+        _scene(
+            assets[0],
+            uuid4(),
+            95,
+            duration=6,
+            story_section_index=1,
+            story_section_role="journey",
+            story_role_order=1,
+            location_type="beach",
+            activity="walking",
+            tags=["sea", "walk"],
+        ),
+        _scene(
+            assets[1],
+            uuid4(),
+            94,
+            duration=6,
+            story_section_index=1,
+            story_section_role="journey",
+            story_role_order=1,
+            location_type="beach",
+            activity="walking",
+            tags=["sea", "walk"],
+        ),
+        _scene(
+            assets[2],
+            uuid4(),
+            90,
+            duration=6,
+            story_section_index=1,
+            story_section_role="journey",
+            story_role_order=1,
+            location_type="mountain",
+            activity="hiking",
+            tags=["viewpoint"],
+        ),
+        _scene(
+            assets[3],
+            uuid4(),
+            89,
+            duration=6,
+            story_section_index=1,
+            story_section_role="journey",
+            story_role_order=1,
+            location_type="beach",
+            activity="walking",
+            tags=["sea"],
+        ),
+    ]
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=9,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(assets, scenes, settings)
+    by_id = {scene.id: scene for scene in scenes}
+    first = by_id[plan.clips[0].scene_id]
+    second = by_id[plan.clips[1].scene_id]
+
+    assert first.metadata["location_type"] != second.metadata["location_type"]
+    assert first.metadata["activity"] != second.metadata["activity"]
+
+
 def _pattern(path: Path, offset: int) -> None:
     image = Image.new("RGB", (180, 90), "black")
     draw = ImageDraw.Draw(image)

@@ -16,6 +16,7 @@ from travelmovieai.domain.models import (
     SceneSelectionDecision,
     SceneSelectionReport,
 )
+from travelmovieai.story.optimizer import optimize_story_timeline_candidates
 from travelmovieai.story.ranking import rank_scenes
 
 
@@ -100,7 +101,11 @@ def build_semantic_montage_plan(
     transition = _transition_duration(settings)
 
     ranked = rank_scenes(scenes)
-    candidates = _story_candidates(ranked, settings)
+    candidates = optimize_story_timeline_candidates(
+        _story_candidates(ranked, settings),
+        assets_by_id,
+        settings,
+    )
     for scene in candidates:
         asset = assets_by_id.get(scene.asset_id)
         if asset is None or asset.scan_error:
@@ -211,10 +216,11 @@ def _story_timeline_sort_key(
     clip: MontageClip,
     scenes_by_id: dict[UUID, Scene],
     assets_by_id: dict[UUID, MediaAsset],
-) -> tuple[int, int, object, str, float]:
+) -> tuple[int, int, int, object, str, float]:
     scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
     asset = assets_by_id[clip.asset_id]
     return (
+        _metadata_int(scene, "story_timeline_order", 9999),
         _metadata_int(scene, "story_section_index", 99),
         _metadata_int(scene, "story_role_order", 99),
         asset.created_at or asset.modified_at,
@@ -262,6 +268,12 @@ def _story_candidates(
 ) -> list[Scene]:
     semantic_threshold = _semantic_score_threshold(ranked, settings)
     eligible = [scene for scene in ranked if _eligible(scene, settings, semantic_threshold)]
+    eligible = _include_story_role_representatives(
+        ranked,
+        eligible,
+        settings,
+        semantic_threshold,
+    )
     forced = [scene for scene in eligible if scene.metadata.get("selection_override") == "include"]
     selected_ids = {scene.id for scene in forced}
     event_counts: dict[str, int] = {}
@@ -301,6 +313,59 @@ def _story_candidates(
         event_counts[event_id] = event_counts.get(event_id, 0) + 1
         source_counts[source_id] = source_counts.get(source_id, 0) + 1
     return ordered
+
+
+def _include_story_role_representatives(
+    ranked: list[Scene],
+    eligible: list[Scene],
+    settings: QuickMontageSettings,
+    semantic_threshold: float,
+) -> list[Scene]:
+    explicit_roles = {
+        role
+        for scene in ranked
+        if (role := _explicit_story_role(scene)) is not None
+    }
+    if not explicit_roles:
+        return eligible
+
+    eligible_ids = {scene.id for scene in eligible}
+    eligible_roles = {
+        role
+        for scene in eligible
+        if (role := _explicit_story_role(scene)) is not None
+    }
+    protected = list(eligible)
+    floor = max(38.0, semantic_threshold - 12.0)
+    for role in sorted(explicit_roles - eligible_roles):
+        representative = next(
+            (
+                scene
+                for scene in ranked
+                if scene.id not in eligible_ids
+                and _explicit_story_role(scene) == role
+                and _technical_eligible(scene, settings)
+                and _scene_ranking_score(scene) >= floor
+            ),
+            None,
+        )
+        if representative is None:
+            continue
+        protected.append(representative)
+        eligible_ids.add(representative.id)
+    return protected
+
+
+def _explicit_story_role(scene: Scene) -> str | None:
+    role = str(scene.metadata.get("story_section_role", "")).casefold()
+    return role if role in {"opening", "journey", "highlight", "finale"} else None
+
+
+def _scene_ranking_score(scene: Scene) -> float:
+    score = scene.metadata.get("ranking_score")
+    if isinstance(score, int | float):
+        return float(score)
+    return scene.importance_score if scene.importance_score is not None else 50.0
 
 
 def _source_scene_limit(

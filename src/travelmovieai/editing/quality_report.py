@@ -5,6 +5,7 @@ import math
 import shutil
 import struct
 import subprocess
+import wave
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,6 +59,7 @@ def build_montage_quality_report(
     average_quality_score = _average(
         scene.quality_score for scene in selected_scenes if scene.quality_score is not None
     )
+    music_stats = _music_source_stats(plan)
     issues = _quality_issues(
         plan,
         selected_scenes,
@@ -65,6 +67,7 @@ def build_montage_quality_report(
         dominant_source_ratio=dominant_source_ratio,
         average_semantic_score=average_semantic_score,
         average_quality_score=average_quality_score,
+        music_stats=music_stats,
     )
     event_coverage = (
         len(selected_events) / len(total_events)
@@ -92,6 +95,11 @@ def build_montage_quality_report(
             plan.music_plan.duration_seconds if plan.music_plan is not None else None
         ),
         music_accent_count=len(plan.music_plan.accents) if plan.music_plan else 0,
+        music_cue_section_count=len(plan.music_plan.cue_sections) if plan.music_plan else 0,
+        music_beat_count=len(plan.music_plan.beat_grid) if plan.music_plan else 0,
+        music_loudness_rms=music_stats.get("rms"),
+        music_peak_ratio=music_stats.get("peak_ratio"),
+        music_clipping_ratio=music_stats.get("clipping_ratio"),
         issues=issues,
     )
 
@@ -142,6 +150,7 @@ def _quality_issues(
     dominant_source_ratio: float,
     average_semantic_score: float | None,
     average_quality_score: float | None,
+    music_stats: dict[str, float],
 ) -> list[MontageQualityIssue]:
     issues: list[MontageQualityIssue] = []
     duration_ratio = _duration_ratio(plan)
@@ -220,6 +229,46 @@ def _quality_issues(
                 severity="info",
                 code="few_music_accents",
                 message="Music sync has very few accents for this timeline.",
+            )
+        )
+    if (
+        plan.music_plan is not None
+        and plan.music_plan.mode != "none"
+        and not plan.music_plan.cue_sections
+    ):
+        issues.append(
+            MontageQualityIssue(
+                severity="warning",
+                code="missing_music_cue_sections",
+                message="Music plan does not contain arrangement cue sections.",
+            )
+        )
+    if (
+        plan.music_plan is not None
+        and plan.music_plan.mode != "none"
+        and not plan.music_plan.beat_grid
+    ):
+        issues.append(
+            MontageQualityIssue(
+                severity="info",
+                code="missing_music_beat_grid",
+                message="Music plan does not contain beat grid metadata.",
+            )
+        )
+    if (clipping := music_stats.get("clipping_ratio")) is not None and clipping > 0.002:
+        issues.append(
+            MontageQualityIssue(
+                severity="warning",
+                code="music_source_clipping",
+                message="Music source appears clipped before rendering.",
+            )
+        )
+    if (rms := music_stats.get("rms")) is not None and rms < 80:
+        issues.append(
+            MontageQualityIssue(
+                severity="info",
+                code="quiet_music_source",
+                message="Music source is very quiet before rendering.",
             )
         )
 
@@ -429,6 +478,46 @@ def _audio_rms(
         return 0.0
     samples = struct.unpack(f"<{sample_count}h", completed.stdout[: sample_count * 2])
     return math.sqrt(sum(sample * sample for sample in samples) / sample_count)
+
+
+def _music_source_stats(plan: QuickMontagePlan) -> dict[str, float]:
+    music_plan = plan.music_plan
+    if music_plan is None or music_plan.source_path is None or music_plan.mode == "none":
+        return {}
+    path = music_plan.source_path
+    if path.suffix.casefold() != ".wav" or not path.is_file():
+        return {}
+    try:
+        with wave.open(str(path), "rb") as audio:
+            sample_width = audio.getsampwidth()
+            channels = audio.getnchannels()
+            frame_count = audio.getnframes()
+            if sample_width != 2 or channels <= 0 or frame_count <= 0:
+                return {}
+            total_samples = 0
+            squares = 0
+            peak = 0
+            clipped = 0
+            chunk_frames = max(1, audio.getframerate() * 4)
+            while True:
+                raw = audio.readframes(chunk_frames)
+                sample_count = len(raw) // 2
+                if sample_count <= 0:
+                    break
+                samples = struct.unpack(f"<{sample_count}h", raw[: sample_count * 2])
+                total_samples += sample_count
+                squares += sum(sample * sample for sample in samples)
+                peak = max(peak, max(abs(sample) for sample in samples))
+                clipped += sum(1 for sample in samples if abs(sample) >= 32760)
+    except (OSError, wave.Error):
+        return {}
+    if total_samples <= 0:
+        return {}
+    return {
+        "rms": math.sqrt(squares / total_samples),
+        "peak_ratio": peak / 32767,
+        "clipping_ratio": clipped / total_samples,
+    }
 
 
 def _report_score(issues: list[MontageQualityIssue]) -> float:

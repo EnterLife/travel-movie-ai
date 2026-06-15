@@ -244,6 +244,11 @@ class MontageQualityReport(BaseModel):
     music_mode: str | None = None
     music_duration_seconds: float | None = Field(default=None, ge=0)
     music_accent_count: int = Field(default=0, ge=0)
+    music_cue_section_count: int = Field(default=0, ge=0)
+    music_beat_count: int = Field(default=0, ge=0)
+    music_loudness_rms: float | None = Field(default=None, ge=0)
+    music_peak_ratio: float | None = Field(default=None, ge=0)
+    music_clipping_ratio: float | None = Field(default=None, ge=0, le=1)
     rendered_path: Path | None = None
     rendered_duration_seconds: float | None = Field(default=None, ge=0)
     rendered_duration_delta_seconds: float | None = None
@@ -271,6 +276,14 @@ class MusicCueSection(BaseModel):
     description: str = Field(default="", max_length=300)
 
 
+class MusicBeat(BaseModel):
+    time_seconds: float = Field(ge=0)
+    beat_index: int = Field(ge=0)
+    bar_index: int = Field(ge=0)
+    strength: float = Field(ge=0, le=1)
+    nearest_accent_kind: str | None = Field(default=None, max_length=40)
+
+
 class MusicPlan(BaseModel):
     mode: Literal["none", "manual", "library", "generated"]
     source_path: Path | None = None
@@ -279,6 +292,7 @@ class MusicPlan(BaseModel):
     duration_seconds: float | None = Field(default=None, ge=0)
     accents: list[MusicAccent] = Field(default_factory=list)
     cue_sections: list[MusicCueSection] = Field(default_factory=list)
+    beat_grid: list[MusicBeat] = Field(default_factory=list)
     arrangement_version: str | None = None
     generator: Literal["procedural", "ace-step", "musicgen"] | None = None
     model: str | None = None

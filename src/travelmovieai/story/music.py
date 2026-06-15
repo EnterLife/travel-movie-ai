@@ -18,6 +18,7 @@ from travelmovieai.domain.enums import MediaType, StoryStyle
 from travelmovieai.domain.models import (
     MediaAsset,
     MusicAccent,
+    MusicBeat,
     MusicCueSection,
     MusicPlan,
     QuickMontagePlan,
@@ -127,17 +128,24 @@ def build_music_plan(
     mode = "none" if not settings.music_enabled else settings.music_mode
     if mode == "none":
         return MusicPlan(mode="none", reasoning="Музыка отключена пользователем.")
+    profile, reasoning = choose_music_profile(scenes, settings)
+    bpm = PROFILE_BPM[profile]
+    cue_sections = build_music_cue_sections(montage_plan, accents, bpm)
+    beat_grid = build_music_beat_grid(duration_seconds, bpm, accents)
     if mode == "manual":
         path = _manual_music(settings)
         return MusicPlan(
             mode="manual",
             source_path=path,
+            profile=profile,
+            bpm=bpm,
             duration_seconds=duration_seconds,
             accents=accents,
+            cue_sections=cue_sections,
+            beat_grid=beat_grid,
             reasoning="Использован выбранный пользователем музыкальный файл.",
         )
 
-    profile, reasoning = choose_music_profile(scenes, settings)
     if mode == "library":
         library_path = _select_library_track(assets, settings, bundled_music_dir)
         if library_path is None:
@@ -146,8 +154,11 @@ def build_music_plan(
             mode="library",
             source_path=library_path,
             profile=profile,
+            bpm=bpm,
             duration_seconds=duration_seconds,
             accents=accents,
+            cue_sections=cue_sections,
+            beat_grid=beat_grid,
             reasoning=reasoning + " Выбран трек из локальной библиотеки.",
         )
 
@@ -157,13 +168,14 @@ def build_music_plan(
             mode="manual",
             source_path=path,
             profile=profile,
+            bpm=bpm,
             duration_seconds=duration_seconds,
             accents=accents,
+            cue_sections=cue_sections,
+            beat_grid=beat_grid,
             reasoning=reasoning + " Использован явно указанный файл.",
         )
 
-    bpm = PROFILE_BPM[profile]
-    cue_sections = build_music_cue_sections(montage_plan, accents, bpm)
     target_generator = (
         neural_generator.name
         if settings.music_engine in {"auto", "ace-step"} and neural_generator is not None
@@ -251,6 +263,7 @@ def build_music_plan(
         duration_seconds=duration_seconds,
         accents=accents,
         cue_sections=cue_sections,
+        beat_grid=beat_grid,
         arrangement_version=ARRANGEMENT_VERSION,
         generator=generator_name,
         model=model_name,
@@ -335,6 +348,36 @@ def build_music_cue_sections(
             description="Continuous soft travel underscore.",
         )
     ]
+
+
+def build_music_beat_grid(
+    duration_seconds: float,
+    bpm: int,
+    accents: list[MusicAccent],
+) -> list[MusicBeat]:
+    """Create a compact beat grid for future beat-aware editing decisions."""
+
+    if duration_seconds <= 0 or bpm <= 0:
+        return []
+    beat_seconds = 60 / bpm
+    beat_count = min(4096, math.ceil(duration_seconds / beat_seconds))
+    grid: list[MusicBeat] = []
+    for beat_index in range(beat_count):
+        time_seconds = min(duration_seconds, beat_index * beat_seconds)
+        nearest = _nearest_accent(time_seconds, accents)
+        beat_in_bar = beat_index % 4
+        base_strength = 0.72 if beat_in_bar == 0 else 0.42 if beat_in_bar == 2 else 0.24
+        accent_strength = nearest.strength * 0.45 if nearest is not None else 0.0
+        grid.append(
+            MusicBeat(
+                time_seconds=time_seconds,
+                beat_index=beat_index,
+                bar_index=beat_index // 4,
+                strength=min(1.0, base_strength + accent_strength),
+                nearest_accent_kind=nearest.kind if nearest is not None else None,
+            )
+        )
+    return grid
 
 
 def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
@@ -871,6 +914,16 @@ def _merge_nearby_accents(accents: list[MusicAccent]) -> list[MusicAccent]:
         else:
             merged.append(cue)
     return merged
+
+
+def _nearest_accent(
+    time_seconds: float,
+    accents: list[MusicAccent],
+) -> MusicAccent | None:
+    if not accents:
+        return None
+    nearest = min(accents, key=lambda accent: abs(accent.time_seconds - time_seconds))
+    return nearest if abs(nearest.time_seconds - time_seconds) <= 0.18 else None
 
 
 def _clip_starts(plan: QuickMontagePlan) -> list[float]:

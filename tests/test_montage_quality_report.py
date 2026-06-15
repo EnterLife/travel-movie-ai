@@ -1,3 +1,4 @@
+import wave
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -5,6 +6,9 @@ from uuid import uuid4
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MontageClip,
+    MusicBeat,
+    MusicCueSection,
+    MusicPlan,
     QuickMontagePlan,
     QuickMontageSettings,
     Scene,
@@ -70,3 +74,59 @@ def test_montage_quality_report_flags_timeline_risks(tmp_path: Path) -> None:
     assert "music_disabled" in codes
     assert "selected_dark_scene" in codes
     assert "selected_blurred_scene" in codes
+
+
+def test_montage_quality_report_records_music_quality_metadata(
+    tmp_path: Path,
+) -> None:
+    music = tmp_path / "music.wav"
+    with wave.open(str(music), "wb") as audio:
+        audio.setnchannels(2)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes((b"\x10\x27\x10\x27") * 8000)
+    settings = QuickMontageSettings(target_duration_seconds=5, transition="none")
+    clip = MontageClip(
+        asset_id=uuid4(),
+        source_path=tmp_path / "clip.mp4",
+        relative_path=Path("clip.mp4"),
+        media_type=MediaType.VIDEO,
+        duration_seconds=4,
+    )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[clip],
+        total_duration_seconds=4,
+        music_plan=MusicPlan(
+            mode="generated",
+            source_path=music,
+            duration_seconds=4,
+            cue_sections=[
+                MusicCueSection(
+                    role="journey",
+                    start_seconds=0,
+                    end_seconds=5,
+                    bpm=76,
+                    intensity=0.45,
+                )
+            ],
+            beat_grid=[
+                MusicBeat(
+                    time_seconds=0,
+                    beat_index=0,
+                    bar_index=0,
+                    strength=0.72,
+                )
+            ],
+        ),
+    )
+
+    report = build_montage_quality_report(plan, [])
+
+    assert report.music_cue_section_count == 1
+    assert report.music_beat_count == 1
+    assert report.music_loudness_rms is not None
+    assert report.music_loudness_rms > 0
+    assert report.music_peak_ratio is not None
+    assert report.music_clipping_ratio == 0

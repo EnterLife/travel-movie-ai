@@ -338,8 +338,8 @@ accent points. It places musical structure at:
 - the center of high-scoring Vision AI scenes;
 - the opening and final moments.
 
-The cue sections, timestamps, strengths, BPM, intensity, arrangement version,
-generator, model identifier, and fallback status are stored in
+The cue sections, beat grid, timestamps, strengths, BPM, intensity, arrangement
+version, generator, model identifier, and fallback status are stored in
 `artifacts/music_plan.json`. Local music models receive both the prompt and the
 cue sheet. The procedural fallback also follows the sections, varying melody
 energy across intro, journey, highlight, and finale parts instead of producing a
@@ -677,11 +677,13 @@ read-only.
 `montage_quality_report.json` is a pre-render quality gate for the planned
 movie. It records duration coverage, event and source diversity, average
 semantic and visual quality, selected window types, music coverage, and
-actionable issues such as a short timeline, repeated source dominance, disabled
-music, or selected dark/blurred scenes. After rendering, the same report is
-enriched with FFprobe/FFmpeg checks for the actual MP4: rendered duration,
-video/audio stream presence, plan-vs-render duration delta, and sampled audio
-RMS near the beginning, middle, and end of the movie.
+music diagnostics such as cue section count, beat grid size, WAV loudness,
+peak level, and clipping ratio. It reports actionable issues such as a short
+timeline, repeated source dominance, disabled music, missing music cue metadata,
+quiet/clipped source music, or selected dark/blurred scenes. After rendering,
+the same report is enriched with FFprobe/FFmpeg checks for the actual MP4:
+rendered duration, video/audio stream presence, plan-vs-render duration delta,
+and sampled audio RMS near the beginning, middle, and end of the movie.
 
 ## Cache and Reproducibility
 

@@ -22,6 +22,7 @@ from travelmovieai.domain.models import (
 from travelmovieai.story.music import (
     apply_music_accents,
     build_music_accents,
+    build_music_beat_grid,
     build_music_cue_sections,
     build_music_plan,
     choose_music_profile,
@@ -117,6 +118,8 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
     assert plan.arrangement_version == "adaptive-lounge-v3"
     assert plan.cue_sections
     assert plan.cue_sections[0].bpm == 76
+    assert plan.beat_grid
+    assert plan.beat_grid[0].bar_index == 0
     with wave.open(str(output), "rb") as soundtrack:
         assert soundtrack.getnchannels() == 2
         assert soundtrack.getnframes() / soundtrack.getframerate() == 8
@@ -245,6 +248,7 @@ def test_music_cue_sheet_follows_timeline_and_scene_importance(
 
     accents = build_music_accents(plan)
     sections = build_music_cue_sections(plan, accents, bpm=76)
+    beat_grid = build_music_beat_grid(plan.total_duration_seconds, 76, accents)
 
     assert accents[0].kind == "intro"
     assert any(accent.kind == "event_change" and accent.time_seconds == 3.5 for accent in accents)
@@ -260,6 +264,9 @@ def test_music_cue_sheet_follows_timeline_and_scene_importance(
     assert sections[-1].role == "finale"
     assert all(section.bpm == 76 for section in sections)
     assert any(section.role == "highlight" for section in sections)
+    assert beat_grid
+    assert beat_grid[0].strength > beat_grid[1].strength
+    assert any(beat.nearest_accent_kind == "intro" for beat in beat_grid[:2])
 
 
 def test_highlight_cue_creates_audible_accent(tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ from travelmovieai.domain.enums import MediaType, StoryStyle
 from travelmovieai.domain.models import (
     MediaAsset,
     MusicAccent,
+    MusicCueSection,
     MusicPlan,
     QuickMontagePlan,
     QuickMontageSettings,
@@ -41,6 +42,7 @@ class NeuralMusicGenerator(Protocol):
         output_path: Path,
         *,
         prompt: str,
+        cue_sheet: list[MusicCueSection],
         duration_seconds: float,
         bpm: int,
         seed: int,
@@ -161,6 +163,7 @@ def build_music_plan(
         )
 
     bpm = PROFILE_BPM[profile]
+    cue_sections = build_music_cue_sections(montage_plan, accents, bpm)
     target_generator = (
         neural_generator.name
         if settings.music_engine in {"auto", "ace-step"} and neural_generator is not None
@@ -172,6 +175,7 @@ def build_music_plan(
         profile=profile,
         bpm=bpm,
         accents=accents,
+        cue_sections=cue_sections,
         generator=target_generator,
         model=target_model,
     )
@@ -201,7 +205,8 @@ def build_music_plan(
             try:
                 neural_generator.generate(
                     generated_path,
-                    prompt=_music_generation_prompt(profile, bpm, accents),
+                    prompt=_music_generation_prompt(profile, bpm, accents, cue_sections),
+                    cue_sheet=cue_sections,
                     duration_seconds=duration_seconds,
                     bpm=bpm,
                     seed=_music_seed(montage_plan, profile),
@@ -233,6 +238,7 @@ def build_music_plan(
             profile=profile,
             bpm=bpm,
             accents=accents,
+            cue_sections=cue_sections,
         )
         if progress:
             progress(1, 1, "Адаптивная музыка создана")
@@ -244,6 +250,7 @@ def build_music_plan(
         bpm=bpm,
         duration_seconds=duration_seconds,
         accents=accents,
+        cue_sections=cue_sections,
         arrangement_version=ARRANGEMENT_VERSION,
         generator=generator_name,
         model=model_name,
@@ -257,6 +264,79 @@ def build_music_plan(
     )
 
 
+def build_music_cue_sections(
+    plan: QuickMontagePlan,
+    accents: list[MusicAccent],
+    bpm: int,
+) -> list[MusicCueSection]:
+    """Build arrangement sections from the final movie timeline."""
+
+    duration = plan.total_duration_seconds
+    if duration <= 0:
+        return []
+    if not plan.clips:
+        return [
+            MusicCueSection(
+                role="intro",
+                start_seconds=0,
+                end_seconds=duration,
+                bpm=bpm,
+                intensity=0.35,
+                accent_count=len(accents),
+                description="Single quiet bed for a short movie.",
+            )
+        ]
+
+    transition = _effective_transition(plan)
+    starts = _clip_starts(plan)
+    highlight_times = {
+        round(accent.time_seconds, 2)
+        for accent in accents
+        if accent.kind == "highlight"
+    }
+    boundaries = {0.0, duration}
+    for start in starts[1:]:
+        if 1.0 < start < duration - 1.0:
+            boundaries.add(round(start, 3))
+    for time_seconds in highlight_times:
+        if 1.0 < time_seconds < duration - 1.0:
+            boundaries.add(round(max(0.0, time_seconds - transition), 3))
+
+    ordered = sorted(boundaries)
+    sections: list[MusicCueSection] = []
+    for index, (start, end) in enumerate(zip(ordered, ordered[1:], strict=False)):
+        if end - start < 0.35:
+            continue
+        role = _cue_section_role(index, start, end, duration, accents)
+        section_accents = [
+            accent for accent in accents if start <= accent.time_seconds < end
+        ]
+        intensity = _cue_section_intensity(role, section_accents)
+        sections.append(
+            MusicCueSection(
+                role=role,
+                start_seconds=start,
+                end_seconds=end,
+                bpm=bpm,
+                intensity=intensity,
+                accent_count=len(section_accents),
+                description=_cue_section_description(role, section_accents),
+            )
+        )
+
+    return sections or [
+        MusicCueSection(
+            role="journey",
+            start_seconds=0,
+            end_seconds=duration,
+            bpm=bpm,
+            intensity=0.45,
+            accent_count=len(accents),
+            description="Continuous soft travel underscore.",
+        )
+    ]
+
+
 def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
     """Build a deterministic cue sheet from clip timing and semantic importance."""
 
@@ -264,12 +344,7 @@ def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
         return []
     accents = _edge_accents(plan.total_duration_seconds)
     transition = _effective_transition(plan)
-    clip_starts: list[float] = []
-    elapsed = 0.0
-    for index, clip in enumerate(plan.clips):
-        clip_starts.append(elapsed)
-        if index < len(plan.clips) - 1:
-            elapsed += clip.duration_seconds - transition
+    clip_starts = _clip_starts(plan)
 
     scored = [clip.semantic_score for clip in plan.clips if clip.semantic_score is not None]
     highlight_threshold = max(70.0, _percentile(scored, 0.75)) if scored else 101.0
@@ -428,6 +503,7 @@ def _music_generation_prompt(
     profile: MusicProfile,
     bpm: int,
     accents: list[MusicAccent],
+    cue_sections: list[MusicCueSection],
 ) -> str:
     profile_text = {
         "calm": "soft calm ambient lounge",
@@ -438,6 +514,7 @@ def _music_generation_prompt(
     }[profile]
     highlights = sum(cue.kind == "highlight" for cue in accents)
     events = sum(cue.kind == "event_change" for cue in accents)
+    section_plan = _cue_sheet_prompt(cue_sections)
     return (
         f"Instrumental {profile_text}, {bpm} BPM, one coherent recurring melody, "
         "quiet background underscore, warm electric piano, clean muted guitar, "
@@ -445,7 +522,8 @@ def _music_generation_prompt(
         "sparse arrangement, low dynamic range, no dramatic build-ups, no loud hits, "
         "no aggressive percussion, elegant professional production, no vocals, "
         f"gradual narrative development, {events} section changes and "
-        f"{highlights} very restrained musical highlights, gentle resolved ending."
+        f"{highlights} very restrained musical highlights, gentle resolved ending. "
+        f"Arrangement cue sheet: {section_plan}"
     )[:500]
 
 
@@ -469,6 +547,7 @@ def _music_cache_key(
     profile: MusicProfile,
     bpm: int,
     accents: list[MusicAccent],
+    cue_sections: list[MusicCueSection],
     generator: str,
     model: str | None,
 ) -> str:
@@ -489,6 +568,7 @@ def _music_cache_key(
             for clip in plan.clips
         ],
         "accents": [accent.model_dump(mode="json") for accent in accents],
+        "cue_sections": [section.model_dump(mode="json") for section in cue_sections],
     }
     serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -532,6 +612,7 @@ def generate_ambient_soundtrack(
     profile: MusicProfile,
     bpm: int,
     accents: list[MusicAccent] | None = None,
+    cue_sections: list[MusicCueSection] | None = None,
     sample_rate: int = 44100,
 ) -> None:
     """Generate one adaptive composition for the complete movie timeline."""
@@ -547,6 +628,7 @@ def generate_ambient_soundtrack(
     rng = random.Random(f"travelmovieai:{profile}:{duration_seconds:.3f}")
     melody = _build_melody(chords, duration_seconds, step_seconds, rng)
     cue_sheet = accents or _edge_accents(duration_seconds)
+    sections = cue_sections or _default_cue_sections(duration_seconds, bpm)
     chord_table = np.asarray(chords, dtype=np.float64)
 
     with wave.open(str(output_path), "wb") as soundtrack:
@@ -603,15 +685,16 @@ def generate_ambient_soundtrack(
             brush = _brush_array(time, beat_seconds, sample_rate)
             hat = _hat_array(time, beat_seconds, sample_rate)
             accent, energy = _accent_layers(time, cue_sheet)
+            section_energy, section_lead = _section_layers(time, sections)
             arc = 0.78 + 0.16 * np.sin(np.pi * np.minimum(1.0, time / max(duration_seconds, 0.001)))
             rhythm_level = (
                 0.32 if profile == "calm" else 0.72 if profile == "energetic" else 0.48
             )
-            dynamics = arc + energy
+            dynamics = (arc + energy) * section_energy
             left = (
                 pad * 0.22 * chord_fade
                 + bass * 0.11
-                + lead * 0.075
+                + lead * 0.075 * section_lead
                 + kick * 0.05 * rhythm_level
                 + brush * 0.022 * rhythm_level
                 + hat * 0.009 * rhythm_level
@@ -619,7 +702,7 @@ def generate_ambient_soundtrack(
             right = (
                 pad * 0.22 * chord_fade
                 + bass * 0.11
-                + lead * 0.065
+                + lead * 0.065 * section_lead
                 + kick * 0.05 * rhythm_level
                 + brush * 0.027 * rhythm_level
                 - hat * 0.007 * rhythm_level
@@ -788,6 +871,119 @@ def _merge_nearby_accents(accents: list[MusicAccent]) -> list[MusicAccent]:
         else:
             merged.append(cue)
     return merged
+
+
+def _clip_starts(plan: QuickMontagePlan) -> list[float]:
+    transition = _effective_transition(plan)
+    starts: list[float] = []
+    elapsed = 0.0
+    for index, clip in enumerate(plan.clips):
+        starts.append(elapsed)
+        if index < len(plan.clips) - 1:
+            elapsed += clip.duration_seconds - transition
+    return starts
+
+
+def _cue_section_role(
+    index: int,
+    start: float,
+    end: float,
+    duration: float,
+    accents: list[MusicAccent],
+) -> Literal["intro", "journey", "highlight", "finale"]:
+    midpoint = (start + end) / 2
+    if index == 0 or midpoint <= duration * 0.14:
+        return "intro"
+    if end >= duration * 0.88:
+        return "finale"
+    if any(accent.kind == "highlight" and start <= accent.time_seconds < end for accent in accents):
+        return "highlight"
+    return "journey"
+
+
+def _cue_section_intensity(
+    role: Literal["intro", "journey", "highlight", "finale"],
+    accents: list[MusicAccent],
+) -> float:
+    base = {
+        "intro": 0.3,
+        "journey": 0.45,
+        "highlight": 0.58,
+        "finale": 0.5,
+    }[role]
+    accent_boost = min(0.18, sum(accent.strength for accent in accents) * 0.12)
+    return min(0.72, base + accent_boost)
+
+
+def _cue_section_description(
+    role: Literal["intro", "journey", "highlight", "finale"],
+    accents: list[MusicAccent],
+) -> str:
+    descriptions = {
+        "intro": "Soft opening with a clear recurring motif.",
+        "journey": "Gentle travel groove with subtle theme variation.",
+        "highlight": "Slightly richer melody for an important visual moment.",
+        "finale": "Warm resolved ending without a loud hit.",
+    }
+    if accents:
+        return f"{descriptions[role]} {len(accents)} restrained cue(s)."
+    return descriptions[role]
+
+
+def _cue_sheet_prompt(sections: list[MusicCueSection]) -> str:
+    if not sections:
+        return "single soft section"
+    parts = [
+        (
+            f"{section.role} {section.start_seconds:.1f}-{section.end_seconds:.1f}s "
+            f"intensity {section.intensity:.2f}"
+        )
+        for section in sections[:8]
+    ]
+    if len(sections) > 8:
+        parts.append(f"{len(sections) - 8} more soft sections")
+    return "; ".join(parts)
+
+
+def _default_cue_sections(duration_seconds: float, bpm: int) -> list[MusicCueSection]:
+    return [
+        MusicCueSection(
+            role="journey",
+            start_seconds=0,
+            end_seconds=duration_seconds,
+            bpm=bpm,
+            intensity=0.45,
+            accent_count=0,
+            description="Continuous soft travel underscore.",
+        )
+    ]
+
+
+def _section_layers(
+    time: FloatArray,
+    sections: list[MusicCueSection],
+) -> tuple[FloatArray, FloatArray]:
+    energy = np.ones_like(time)
+    lead = np.ones_like(time)
+    for section in sections:
+        active = (time >= section.start_seconds) & (time < section.end_seconds)
+        if not np.any(active):
+            continue
+        section_length = max(0.001, section.end_seconds - section.start_seconds)
+        local = (time[active] - section.start_seconds) / section_length
+        fade = np.minimum(1.0, np.minimum(local / 0.18, (1 - local) / 0.18))
+        fade = np.maximum(0.0, fade)
+        target_energy = 0.82 + section.intensity * 0.42
+        target_lead = 0.72 + section.intensity * 0.72
+        if section.role == "intro":
+            target_lead *= 0.82
+        elif section.role == "highlight":
+            target_lead *= 1.1
+        elif section.role == "finale":
+            target_energy *= 0.95
+        energy[active] = energy[active] * (1 - fade) + target_energy * fade
+        lead[active] = lead[active] * (1 - fade) + target_lead * fade
+    return energy, lead
 
 
 def _manual_music(settings: QuickMontageSettings) -> Path:

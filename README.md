@@ -325,17 +325,21 @@ and dramatic build-ups.
 `Synchronize with editing` is enabled by default. The application first builds
 the final clip timeline and then requests one composition for its exact
 duration. If the model returns a shorter WAV, TravelMovieAI extends it to the
-full timeline instead of filling the remainder with silence. A cue sheet places
-restrained musical accents at:
+full timeline instead of filling the remainder with silence. A cue sheet is a
+first-class contract with arrangement sections, BPM, intensity, and restrained
+accent points. It places musical structure at:
 
 - transitions between clips;
 - changes between detected trip events;
 - the center of high-scoring Vision AI scenes;
 - the opening and final moments.
 
-The cue sheet, timestamps, strengths, and arrangement version are stored in
-`artifacts/music_plan.json`, together with the generator, model identifier, and
-fallback status. Rebuilding the same timeline uses a deterministic seed, while
+The cue sections, timestamps, strengths, BPM, intensity, arrangement version,
+generator, model identifier, and fallback status are stored in
+`artifacts/music_plan.json`. Local music models receive both the prompt and the
+cue sheet. The procedural fallback also follows the sections, varying melody
+energy across intro, journey, highlight, and finale parts instead of producing a
+flat loop. Rebuilding the same timeline uses a deterministic seed, while
 changing clip order, duration, or selected highlights reshapes the composition
 to match the new movie.
 

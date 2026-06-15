@@ -261,6 +261,16 @@ class MusicAccent(BaseModel):
     label: str = Field(default="", max_length=300)
 
 
+class MusicCueSection(BaseModel):
+    role: Literal["intro", "journey", "highlight", "finale"]
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(ge=0)
+    bpm: int = Field(ge=40, le=180)
+    intensity: float = Field(ge=0, le=1)
+    accent_count: int = Field(default=0, ge=0)
+    description: str = Field(default="", max_length=300)
+
+
 class MusicPlan(BaseModel):
     mode: Literal["none", "manual", "library", "generated"]
     source_path: Path | None = None
@@ -268,6 +278,7 @@ class MusicPlan(BaseModel):
     bpm: int | None = Field(default=None, ge=40, le=180)
     duration_seconds: float | None = Field(default=None, ge=0)
     accents: list[MusicAccent] = Field(default_factory=list)
+    cue_sections: list[MusicCueSection] = Field(default_factory=list)
     arrangement_version: str | None = None
     generator: Literal["procedural", "ace-step", "musicgen"] | None = None
     model: str | None = None

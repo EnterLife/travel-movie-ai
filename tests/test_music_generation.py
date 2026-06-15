@@ -25,6 +25,7 @@ class FakeMusicGenerator:
         output_path: Path,
         *,
         prompt: str,
+        cue_sheet: object,
         duration_seconds: float,
         bpm: int,
         seed: int,
@@ -33,6 +34,7 @@ class FakeMusicGenerator:
         self.calls += 1
         assert "no vocals" in prompt
         assert "low dynamic range" in prompt
+        assert cue_sheet
         assert bpm == 76
         assert seed >= 0
         with wave.open(str(output_path), "wb") as audio:
@@ -48,6 +50,7 @@ class FailingMusicGenerator(FakeMusicGenerator):
         output_path: Path,
         *,
         prompt: str,
+        cue_sheet: object,
         duration_seconds: float,
         bpm: int,
         seed: int,

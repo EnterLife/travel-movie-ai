@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from travelmovieai.core.exceptions import MusicGenerationError
+from travelmovieai.domain.models import MusicCueSection
 
 LOCAL_MUSIC_MODELS = ("ACE-Step/acestep-v15-turbo",)
 ACE_STEP_REPOSITORY = "https://github.com/ACE-Step/ACE-Step-1.5.git"
@@ -58,6 +59,7 @@ class AceStepMusicGenerator:
         output_path: Path,
         *,
         prompt: str,
+        cue_sheet: list[MusicCueSection],
         duration_seconds: float,
         bpm: int,
         seed: int,
@@ -81,7 +83,7 @@ class AceStepMusicGenerator:
             generation_duration = min(600.0, max(10.0, duration_seconds))
             config_path.write_text(
                 self._configuration(
-                    prompt=prompt,
+                    prompt=_prompt_with_cue_sheet(prompt, cue_sheet),
                     duration_seconds=generation_duration,
                     bpm=bpm,
                     seed=seed,
@@ -310,3 +312,18 @@ def _toml_string(value: str | Path) -> str:
 
 def _toml_bool(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _prompt_with_cue_sheet(prompt: str, cue_sheet: list[MusicCueSection]) -> str:
+    if not cue_sheet:
+        return prompt
+    cues = "; ".join(
+        (
+            f"{section.role} {section.start_seconds:.1f}-{section.end_seconds:.1f}s "
+            f"intensity {section.intensity:.2f}"
+        )
+        for section in cue_sheet[:8]
+    )
+    if len(cue_sheet) > 8:
+        cues = f"{cues}; {len(cue_sheet) - 8} additional gentle sections"
+    return f"{prompt} Cue sheet: {cues}"[:700]

@@ -249,6 +249,12 @@ adds scene detection, frame sampling, quality and Vision analysis, optional
 speech recognition, duplicate detection, event grouping, story building, and
 ranked selection.
 
+Semantic mode is intentionally selective. It does not try to use every video in
+the folder and it does not fill the target duration with weak material. Scenes
+below `min_semantic_score` are skipped, and by default no more than two scenes
+are taken from one source video. Use scene overrides when a specific fragment
+must be included or excluded.
+
 ### Generated Lounge Music
 
 `AI Auto` and `Generate locally` create a soundtrack entirely on the local

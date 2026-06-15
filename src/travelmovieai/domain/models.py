@@ -277,8 +277,10 @@ class QuickMontageSettings(BaseModel):
     speech_analysis: bool = False
     reject_technical_failures: bool = True
     min_quality_score: float = Field(default=22, ge=0, le=100)
+    min_semantic_score: float = Field(default=52, ge=0, le=100)
     duplicate_detection: bool = True
     duplicate_similarity_threshold: float = Field(default=0.92, ge=0.5, le=1)
+    max_scenes_per_source: int = Field(default=2, ge=1, le=20)
     max_scenes_per_event: int = Field(default=4, ge=1, le=20)
     story_style: StoryStyle = StoryStyle.CINEMATIC
     vision_provider: Literal["local", "qwen", "florence"] = "local"

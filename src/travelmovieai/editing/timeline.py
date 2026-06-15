@@ -232,25 +232,40 @@ def _story_candidates(
     ]
     selected_ids = {scene.id for scene in forced}
     event_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
     ordered = list(forced)
+    for scene in forced:
+        event_id = str(scene.metadata.get("event_id", scene.id))
+        event_counts[event_id] = event_counts.get(event_id, 0) + 1
+        source_counts[str(scene.asset_id)] = source_counts.get(str(scene.asset_id), 0) + 1
 
     for scene in eligible:
         event_id = str(scene.metadata.get("event_id", scene.id))
-        if scene.id in selected_ids or event_counts.get(event_id, 0) > 0:
+        source_id = str(scene.asset_id)
+        if (
+            scene.id in selected_ids
+            or event_counts.get(event_id, 0) > 0
+            or source_counts.get(source_id, 0) >= settings.max_scenes_per_source
+        ):
             continue
         ordered.append(scene)
         selected_ids.add(scene.id)
         event_counts[event_id] = 1
+        source_counts[source_id] = source_counts.get(source_id, 0) + 1
 
     for scene in eligible:
         if scene.id in selected_ids:
             continue
         event_id = str(scene.metadata.get("event_id", scene.id))
+        source_id = str(scene.asset_id)
         if event_counts.get(event_id, 0) >= settings.max_scenes_per_event:
+            continue
+        if source_counts.get(source_id, 0) >= settings.max_scenes_per_source:
             continue
         ordered.append(scene)
         selected_ids.add(scene.id)
         event_counts[event_id] = event_counts.get(event_id, 0) + 1
+        source_counts[source_id] = source_counts.get(source_id, 0) + 1
     return ordered
 
 
@@ -265,7 +280,12 @@ def _eligible(scene: Scene, settings: QuickMontageSettings) -> bool:
     technical_reasons = scene.metadata.get("technical_rejection_reasons", [])
     if settings.reject_technical_failures and technical_reasons:
         return False
-    return scene.quality_score is None or scene.quality_score >= settings.min_quality_score
+    if scene.quality_score is not None and scene.quality_score < settings.min_quality_score:
+        return False
+    ranking_score = scene.metadata.get("ranking_score")
+    return not (
+        isinstance(ranking_score, int | float) and ranking_score < settings.min_semantic_score
+    )
 
 
 def _rejection_reason(scene: Scene, settings: QuickMontageSettings) -> str:
@@ -279,6 +299,9 @@ def _rejection_reason(scene: Scene, settings: QuickMontageSettings) -> str:
         return f"technical rejection: {', '.join(technical)}"
     if scene.quality_score is not None and scene.quality_score < settings.min_quality_score:
         return f"quality below {settings.min_quality_score:.0f}"
+    ranking_score = scene.metadata.get("ranking_score")
+    if isinstance(ranking_score, int | float) and ranking_score < settings.min_semantic_score:
+        return f"semantic score below {settings.min_semantic_score:.0f}"
     return "duration budget or event diversity limit"
 
 

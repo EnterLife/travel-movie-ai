@@ -111,6 +111,55 @@ def test_story_selection_honors_overrides_and_event_diversity(tmp_path: Path) ->
     assert decisions[duplicate.id].reason.startswith("near duplicate")
 
 
+def test_semantic_selection_skips_weak_scenes_even_when_duration_remains(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    strong_asset = _asset(tmp_path / "strong.mp4", created_at)
+    weak_asset = _asset(tmp_path / "weak.mp4", created_at)
+    strong = _scene(strong_asset, uuid4(), 90)
+    weak = _scene(weak_asset, uuid4(), 22)
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=8,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([strong_asset, weak_asset], [strong, weak], settings)
+    report = build_selection_report([strong, weak], plan, settings)
+    selected_ids = {clip.scene_id for clip in plan.clips}
+    decisions = {decision.scene_id: decision for decision in report.decisions}
+
+    assert strong.id in selected_ids
+    assert weak.id not in selected_ids
+    assert decisions[weak.id].reason.startswith("semantic score below")
+
+
+def test_semantic_selection_limits_scenes_from_one_source_video(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "long-roll.mp4", created_at, duration=30)
+    other = _asset(tmp_path / "other.mp4", created_at)
+    scenes = [
+        _scene(source, uuid4(), 95, start=index * 4)
+        for index in range(4)
+    ]
+    other_scene = _scene(other, uuid4(), 78)
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=15,
+        max_video_clip_seconds=3,
+        max_scenes_per_source=2,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source, other], [*scenes, other_scene], settings)
+
+    source_clips = [clip for clip in plan.clips if clip.asset_id == source.id]
+    assert len(source_clips) == 2
+    assert other_scene.id in {clip.scene_id for clip in plan.clips}
+
+
 def _pattern(path: Path, offset: int) -> None:
     image = Image.new("RGB", (180, 90), "black")
     draw = ImageDraw.Draw(image)
@@ -119,7 +168,7 @@ def _pattern(path: Path, offset: int) -> None:
     image.save(path)
 
 
-def _asset(path: Path, created_at: datetime) -> MediaAsset:
+def _asset(path: Path, created_at: datetime, duration: float = 4) -> MediaAsset:
     return MediaAsset(
         path=path,
         relative_path=Path(path.name),
@@ -129,7 +178,7 @@ def _asset(path: Path, created_at: datetime) -> MediaAsset:
         modified_at=created_at,
         modified_ns=1,
         created_at=created_at,
-        duration_seconds=4,
+        duration_seconds=duration,
     )
 
 
@@ -137,12 +186,13 @@ def _scene(
     asset: MediaAsset,
     event_id: object,
     score: float,
+    start: float = 0,
     **metadata: object,
 ) -> Scene:
     return Scene(
         asset_id=asset.id,
-        start_seconds=0,
-        end_seconds=3,
+        start_seconds=start,
+        end_seconds=start + 3,
         quality_score=75,
         importance_score=score,
         caption=asset.relative_path.stem,

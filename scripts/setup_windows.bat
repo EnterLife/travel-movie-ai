@@ -106,6 +106,7 @@ echo Start the application with:
 echo   scripts\run_web.bat
 echo.
 endlocal
+pause
 exit /b 0
 
 :music_ai_only
@@ -120,6 +121,7 @@ if errorlevel 1 goto :error
 echo.
 echo ACE-Step music runtime setup completed successfully.
 endlocal
+pause
 exit /b 0
 
 :ensure_music_ai
@@ -283,6 +285,7 @@ echo --runtime-only skips pytest, Ruff, mypy, and other development tools.
 echo --skip-music-ai skips the ACE-Step runtime.
 echo --music-ai-only repairs or installs only the isolated ACE-Step runtime.
 endlocal
+pause
 exit /b 0
 
 :error
@@ -291,4 +294,5 @@ echo TravelMovieAI setup failed.
 echo Review the message above, then run scripts\setup_windows.bat again.
 echo.
 endlocal
+pause
 exit /b 1

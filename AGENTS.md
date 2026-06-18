@@ -97,7 +97,7 @@ The canonical stage order is defined by `PipelineStage` and registered in
 
 Do not reorder stages or change artifact contracts casually. When a stage
 contract changes, update its domain model, serialization, downstream consumers,
-  tests, and the README architecture documentation together.
+tests, and the README architecture documentation together.
 
 Each stage should:
 
@@ -164,6 +164,27 @@ Do not modify generated/runtime folders unless the task explicitly requires it:
 - `models/`
 - `workspace/`
 - `output/`
+
+## AI Coding Quality Rules
+
+- Before changing code, identify the smallest relevant contract: public API,
+  pipeline stage contract, artifact schema, CLI behavior, persisted format, or
+  cache key.
+- For every behavior change, add or update tests that prove the expected success
+  path and at least one meaningful failure, boundary, or invalid-input path.
+- When fixing a bug, add a regression test that would fail before the fix and
+  pass after it.
+- When adding validation, test both accepted valid input and rejected invalid
+  input.
+- Do not add tests that only assert implementation details. Prefer observable
+  behavior, returned models, persisted artifacts, raised exceptions, CLI output,
+  or provider calls.
+- Keep tests deterministic. They must not require internet access, real user
+  media, downloaded models, GPU hardware, or heavyweight optional dependencies
+  unless explicitly marked.
+- Avoid over-mocking the unit under test. Mock process boundaries, model
+  providers, external binaries, and slow I/O, but keep pure transformation logic
+  real.
 
 ## Media And Process Rules
 
@@ -277,17 +298,24 @@ ffprobe -version
 - Add unit tests for domain validation, scoring, cache decisions, and pure
   transformations.
 - Add contract tests for stage order, artifact schemas, and provider adapters.
+- For new behavior, cover the positive path and at least one negative, boundary,
+  or regression case that proves the behavior cannot be bypassed trivially.
 - Use fake providers for Whisper, vision, embeddings, LLM, and voice synthesis.
 - Mock process boundaries in ordinary unit tests.
+- If a test uses a fake provider, assert the important inputs or call contract,
+  not only that a result exists.
 - Use tiny generated media for FFmpeg integration tests and mark model-heavy or
   slow tests explicitly.
 - Do not require internet access, GPU hardware, or model downloads for
   the default test suite.
-- Test interrupted and repeated execution when adding caching or persistence.
+- Test interrupted execution, repeated execution, and cache invalidation when
+  adding caching, persistence, or restartable artifacts.
 - Test paths containing spaces and Unicode when changing media discovery or
   external process invocation.
 - Verify both success and actionable failure messages for missing binaries,
   unavailable providers, corrupt media, and invalid model responses.
+- Review new tests for false positives. Make sure they would fail if the
+  implementation were removed, bypassed, or replaced with a trivial constant.
 
 Run the smallest relevant checks during development, then run the full fast
 suite before finishing. If model-heavy or end-to-end rendering checks were not
@@ -330,6 +358,12 @@ Examples:
 ## Before Finishing Work
 
 - Review all changed files and the working tree.
+- For non-trivial changes, perform a fresh review pass as if seeing the diff for
+  the first time.
+- Check whether new tests prove the requested behavior rather than the current
+  implementation details.
+- Look for missing negative cases, cache invalidation mistakes, path handling
+  bugs, optional dependency imports, privacy leaks, and broad exception handling.
 - Run the smallest relevant checks that cover the change.
 - Run the fast test suite when feasible.
 - Mention checks that passed.

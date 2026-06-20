@@ -276,6 +276,12 @@ Audio Analysis stores scene-level labels such as `speech`, `silence`, `wind`,
 boosts scenes with speech or useful ambience, and penalizes strong wind or
 transport noise during ranking.
 
+When music sync is enabled and the selected music plan contains a beat grid, the
+final timeline softly nudges neighboring clip durations so scene changes can land
+on strong beats or music accents. The adjustment keeps the same selected scenes,
+stays inside the available source scene window, and preserves the planned movie
+duration where possible.
+
 Story Timeline Optimizer follows storyboard sections when available, so selected
 clips are arranged as opening, journey, highlight, and finale before falling
 back to source chronology. It also applies section duration budgets and
@@ -686,8 +692,8 @@ semantic and visual quality, selected window types, music coverage, and
 music diagnostics such as cue section count, beat grid size, WAV loudness,
 peak level, and clipping ratio. It reports actionable issues such as a short
 timeline, repeated source dominance, disabled music, missing music cue metadata,
-quiet/clipped source music, or selected dark/blurred scenes. After rendering,
-the same report is enriched with FFprobe/FFmpeg checks for the actual MP4:
+unsynced music cuts, quiet/clipped source music, or selected dark/blurred scenes.
+After rendering, the same report is enriched with FFprobe/FFmpeg checks for the actual MP4:
 rendered duration, video/audio stream presence, plan-vs-render duration delta,
 and sampled audio RMS near the beginning, middle, and end of the movie.
 

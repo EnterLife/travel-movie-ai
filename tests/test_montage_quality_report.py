@@ -130,3 +130,36 @@ def test_montage_quality_report_records_music_quality_metadata(
     assert report.music_loudness_rms > 0
     assert report.music_peak_ratio is not None
     assert report.music_clipping_ratio == 0
+
+
+def test_montage_quality_report_flags_unsynced_music_cuts(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(target_duration_seconds=9, transition="none")
+    clips = [
+        MontageClip(
+            asset_id=uuid4(),
+            source_path=tmp_path / f"clip-{index}.mp4",
+            relative_path=Path(f"clip-{index}.mp4"),
+            media_type=MediaType.VIDEO,
+            duration_seconds=duration,
+            selection_reason="vision 80",
+        )
+        for index, duration in enumerate([3.2, 3.0, 2.8])
+    ]
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=clips,
+        total_duration_seconds=9,
+        music_plan=MusicPlan(
+            mode="generated",
+            duration_seconds=9,
+            beat_grid=[
+                MusicBeat(time_seconds=3.0, beat_index=4, bar_index=1, strength=0.9),
+                MusicBeat(time_seconds=6.0, beat_index=8, bar_index=2, strength=0.9),
+            ],
+        ),
+    )
+
+    report = build_montage_quality_report(plan, [])
+
+    assert "unsynced_music_cuts" in {issue.code for issue in report.issues}

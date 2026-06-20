@@ -40,6 +40,7 @@ from travelmovieai.editing.quality_report import (
 )
 from travelmovieai.editing.renderer import QuickMontageRenderer
 from travelmovieai.editing.timeline import (
+    apply_music_directing,
     build_quick_montage_plan,
     build_selection_report,
     build_semantic_montage_plan,
@@ -176,6 +177,7 @@ class TravelMovieService:
                     "music_path": music_plan.source_path,
                 }
             )
+            plan = apply_music_directing(plan)
             quality_report = build_montage_quality_report(plan, [])
             write_json_atomic(quality_report_path, quality_report)
             tracker.emit(80, "Быстрый монтажный план сформирован")
@@ -424,6 +426,7 @@ class TravelMovieService:
                 "music_path": music_plan.source_path,
             }
         )
+        final_plan = apply_music_directing(final_plan, event_scenes)
         montage_quality_report = build_montage_quality_report(final_plan, event_scenes)
         write_json_atomic(
             context.artifacts_dir / "montage_quality_report.json",

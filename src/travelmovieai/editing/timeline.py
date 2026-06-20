@@ -158,9 +158,7 @@ def build_semantic_montage_plan(
         raise MontageError("AI-анализ не нашёл пригодных сцен для монтажа.")
 
     scenes_by_id = {scene.id: scene for scene in candidates}
-    selected.sort(
-        key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id)
-    )
+    selected.sort(key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id))
     return QuickMontagePlan(
         created_at=datetime.now(UTC),
         settings=settings,
@@ -204,6 +202,70 @@ def build_selection_report(
     return SceneSelectionReport(
         created_at=datetime.now(UTC),
         decisions=decisions,
+    )
+
+
+def apply_music_directing(
+    plan: QuickMontagePlan,
+    scenes: list[Scene] | None = None,
+) -> QuickMontagePlan:
+    """Nudge clip boundaries toward strong music beats without changing selection."""
+
+    music_plan = plan.music_plan
+    if (
+        music_plan is None
+        or not plan.settings.music_sync
+        or len(plan.clips) < 2
+        or not music_plan.beat_grid
+    ):
+        return plan
+
+    clips = list(plan.clips)
+    scenes_by_id = {scene.id: scene for scene in scenes or []}
+    beat_times = _sync_beat_times(plan)
+    if not beat_times:
+        return plan
+
+    transition = _transition_duration(plan.settings)
+    minimum_duration = max(1.0, transition / 0.45 + 0.05) if transition else 1.0
+    changed = False
+    for index in range(1, len(clips)):
+        starts = _clip_starts(clips, plan.settings)
+        boundary = starts[index]
+        target = _nearest_sync_beat(boundary, beat_times)
+        if target is None:
+            continue
+        delta = target - boundary
+        if abs(delta) < 0.04:
+            continue
+        adjusted_delta = _bounded_boundary_delta(
+            delta,
+            previous=clips[index - 1],
+            current=clips[index],
+            scenes_by_id=scenes_by_id,
+            settings=plan.settings,
+            minimum_duration=minimum_duration,
+        )
+        if abs(adjusted_delta) < 0.04:
+            continue
+        clips[index - 1] = _clip_with_duration(
+            clips[index - 1],
+            clips[index - 1].duration_seconds + adjusted_delta,
+        )
+        clips[index] = _clip_with_duration(
+            clips[index],
+            clips[index].duration_seconds - adjusted_delta,
+            reason="music beat start",
+        )
+        changed = True
+
+    if not changed:
+        return plan
+    return plan.model_copy(
+        update={
+            "clips": clips,
+            "total_duration_seconds": _timeline_duration(clips, plan.settings),
+        }
     )
 
 
@@ -260,6 +322,102 @@ def _transition_duration(settings: QuickMontageSettings) -> float:
     if settings.transition == "none":
         return 0.0
     return settings.transition_duration_seconds
+
+
+def _clip_starts(
+    clips: list[MontageClip],
+    settings: QuickMontageSettings,
+) -> list[float]:
+    transition = _transition_duration(settings)
+    if clips:
+        transition = min(transition, min(clip.duration_seconds for clip in clips) * 0.45)
+    starts: list[float] = []
+    elapsed = 0.0
+    for index, clip in enumerate(clips):
+        starts.append(elapsed)
+        if index < len(clips) - 1:
+            elapsed += clip.duration_seconds - transition
+    return starts
+
+
+def _sync_beat_times(plan: QuickMontagePlan) -> list[float]:
+    music_plan = plan.music_plan
+    if music_plan is None:
+        return []
+    timeline_end_guard = max(0.0, plan.total_duration_seconds - 0.25)
+    return [
+        beat.time_seconds
+        for beat in music_plan.beat_grid
+        if 0.25 <= beat.time_seconds <= timeline_end_guard
+        and (
+            beat.strength >= 0.68
+            or beat.nearest_accent_kind in {"scene_change", "event_change", "highlight"}
+        )
+    ]
+
+
+def _nearest_sync_beat(boundary_seconds: float, beat_times: list[float]) -> float | None:
+    search_radius = 0.34
+    nearby = [
+        beat_time for beat_time in beat_times if abs(beat_time - boundary_seconds) <= search_radius
+    ]
+    if not nearby:
+        return None
+    return min(nearby, key=lambda beat_time: abs(beat_time - boundary_seconds))
+
+
+def _bounded_boundary_delta(
+    delta: float,
+    *,
+    previous: MontageClip,
+    current: MontageClip,
+    scenes_by_id: dict[UUID, Scene],
+    settings: QuickMontageSettings,
+    minimum_duration: float,
+) -> float:
+    previous_max = _clip_max_duration(previous, scenes_by_id, settings)
+    current_max = _clip_max_duration(current, scenes_by_id, settings)
+    if delta > 0:
+        limit = min(
+            previous_max - previous.duration_seconds,
+            current.duration_seconds - minimum_duration,
+        )
+        return max(0.0, min(delta, limit))
+    limit = min(
+        previous.duration_seconds - minimum_duration,
+        current_max - current.duration_seconds,
+    )
+    return min(0.0, max(delta, -limit))
+
+
+def _clip_max_duration(
+    clip: MontageClip,
+    scenes_by_id: dict[UUID, Scene],
+    settings: QuickMontageSettings,
+) -> float:
+    if clip.media_type is MediaType.PHOTO:
+        return settings.photo_duration_seconds
+    scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
+    if scene is None:
+        return clip.duration_seconds
+    available_after_start = max(0.0, scene.end_seconds - clip.source_start_seconds)
+    return max(
+        clip.duration_seconds,
+        min(settings.max_video_clip_seconds, available_after_start),
+    )
+
+
+def _clip_with_duration(
+    clip: MontageClip,
+    duration_seconds: float,
+    *,
+    reason: str | None = None,
+) -> MontageClip:
+    update: dict[str, object] = {"duration_seconds": round(duration_seconds, 3)}
+    if reason and reason not in clip.selection_reason:
+        separator = "; " if clip.selection_reason else ""
+        update["selection_reason"] = f"{clip.selection_reason}{separator}{reason}"
+    return clip.model_copy(update=update)
 
 
 def _story_candidates(
@@ -321,19 +479,13 @@ def _include_story_role_representatives(
     settings: QuickMontageSettings,
     semantic_threshold: float,
 ) -> list[Scene]:
-    explicit_roles = {
-        role
-        for scene in ranked
-        if (role := _explicit_story_role(scene)) is not None
-    }
+    explicit_roles = {role for scene in ranked if (role := _explicit_story_role(scene)) is not None}
     if not explicit_roles:
         return eligible
 
     eligible_ids = {scene.id for scene in eligible}
     eligible_roles = {
-        role
-        for scene in eligible
-        if (role := _explicit_story_role(scene)) is not None
+        role for scene in eligible if (role := _explicit_story_role(scene)) is not None
     }
     protected = list(eligible)
     floor = max(38.0, semantic_threshold - 12.0)
@@ -537,9 +689,7 @@ def _quality_metric_window_candidates(
         else:
             reason_label = label or source
             reason = (
-                "visual candidate"
-                if not reason_label
-                else f"visual candidate: {reason_label[:80]}"
+                "visual candidate" if not reason_label else f"visual candidate: {reason_label[:80]}"
             )
         candidates.append(
             (
@@ -562,11 +712,7 @@ def _best_panel_position_candidate(
     start = available_seconds * max(0.0, min(1.0, position)) - duration_seconds / 2
     score = _float_value(metrics.get("quality_score"), 60.0)
     index = _first_float(metrics.get("best_panel_index"))
-    label = (
-        "best visual panel"
-        if index is None
-        else f"best visual panel {int(index) + 1}"
-    )
+    label = "best visual panel" if index is None else f"best visual panel {int(index) + 1}"
     return [
         (
             score,

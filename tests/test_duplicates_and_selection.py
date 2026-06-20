@@ -6,8 +6,17 @@ from PIL import Image, ImageDraw
 
 from travelmovieai.analysis.duplicates import detect_duplicate_scenes
 from travelmovieai.domain.enums import MediaType
-from travelmovieai.domain.models import MediaAsset, QuickMontageSettings, Scene
+from travelmovieai.domain.models import (
+    MediaAsset,
+    MontageClip,
+    MusicBeat,
+    MusicPlan,
+    QuickMontagePlan,
+    QuickMontageSettings,
+    Scene,
+)
 from travelmovieai.editing.timeline import (
+    apply_music_directing,
     build_selection_report,
     build_semantic_montage_plan,
 )
@@ -416,8 +425,7 @@ def test_semantic_timeline_uses_story_section_order(tmp_path: Path) -> None:
 def test_story_timeline_uses_section_duration_budgets(tmp_path: Path) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
     assets = [
-        _asset(tmp_path / f"section-{index}.mp4", created_at, duration=6)
-        for index in range(7)
+        _asset(tmp_path / f"section-{index}.mp4", created_at, duration=6) for index in range(7)
     ]
     scenes = [
         _scene(
@@ -483,8 +491,7 @@ def test_story_timeline_avoids_adjacent_similar_scenes_when_possible(
 ) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
     assets = [
-        _asset(tmp_path / f"diverse-{index}.mp4", created_at, duration=6)
-        for index in range(4)
+        _asset(tmp_path / f"diverse-{index}.mp4", created_at, duration=6) for index in range(4)
     ]
     scenes = [
         _scene(
@@ -550,6 +557,56 @@ def test_story_timeline_avoids_adjacent_similar_scenes_when_possible(
 
     assert first.metadata["location_type"] != second.metadata["location_type"]
     assert first.metadata["activity"] != second.metadata["activity"]
+
+
+def test_music_directing_moves_cut_to_strong_beat_without_changing_total_duration(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [_asset(tmp_path / f"beat-{index}.mp4", created_at, duration=8) for index in range(3)]
+    scenes = [_scene(asset, uuid4(), 90 - index, duration=8) for index, asset in enumerate(assets)]
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=9.2,
+        max_video_clip_seconds=4,
+        transition="none",
+    )
+    clips = [
+        MontageClip(
+            asset_id=asset.id,
+            scene_id=scene.id,
+            source_path=asset.path,
+            relative_path=asset.relative_path,
+            media_type=MediaType.VIDEO,
+            duration_seconds=duration,
+            semantic_score=90,
+            selection_reason="vision 90",
+        )
+        for asset, scene, duration in zip(assets, scenes, [3.2, 3.0, 3.0], strict=True)
+    ]
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=clips,
+        total_duration_seconds=9.2,
+        music_plan=MusicPlan(
+            mode="generated",
+            bpm=80,
+            duration_seconds=9.2,
+            beat_grid=[
+                MusicBeat(time_seconds=3.0, beat_index=4, bar_index=1, strength=0.9),
+                MusicBeat(time_seconds=6.2, beat_index=8, bar_index=2, strength=0.3),
+            ],
+        ),
+        selection_mode="semantic",
+    )
+
+    directed = apply_music_directing(plan, scenes)
+
+    assert directed.total_duration_seconds == plan.total_duration_seconds
+    assert directed.clips[0].duration_seconds == 3.0
+    assert directed.clips[1].duration_seconds == 3.2
+    assert "music beat start" in directed.clips[1].selection_reason
 
 
 def _pattern(path: Path, offset: int) -> None:

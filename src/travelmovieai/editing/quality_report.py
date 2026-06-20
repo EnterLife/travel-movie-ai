@@ -38,16 +38,8 @@ def build_montage_quality_report(
         for clip in plan.clips
         if clip.scene_id is not None and clip.scene_id in scenes_by_id
     ]
-    selected_events = {
-        clip.event_id
-        for clip in plan.clips
-        if clip.event_id is not None
-    }
-    total_events = {
-        _event_id(scene)
-        for scene in scenes
-        if _event_id(scene) is not None
-    }
+    selected_events = {clip.event_id for clip in plan.clips if clip.event_id is not None}
+    total_events = {_event_id(scene) for scene in scenes if _event_id(scene) is not None}
     source_counts = _source_counts(plan.clips)
     source_count = len(source_counts)
     dominant_source_ratio = (
@@ -72,7 +64,9 @@ def build_montage_quality_report(
     event_coverage = (
         len(selected_events) / len(total_events)
         if total_events
-        else 1.0 if selected_events or not scenes else 0.0
+        else 1.0
+        if selected_events or not scenes
+        else 0.0
     )
     return MontageQualityReport(
         created_at=datetime.now(UTC),
@@ -255,6 +249,15 @@ def _quality_issues(
                 message="Music plan does not contain beat grid metadata.",
             )
         )
+    beat_alignment_ratio = _beat_alignment_ratio(plan)
+    if beat_alignment_ratio is not None and beat_alignment_ratio < 0.5:
+        issues.append(
+            MontageQualityIssue(
+                severity="warning",
+                code="unsynced_music_cuts",
+                message="Most scene cuts are not aligned to strong music beats.",
+            )
+        )
     if (clipping := music_stats.get("clipping_ratio")) is not None and clipping > 0.002:
         issues.append(
             MontageQualityIssue(
@@ -334,8 +337,7 @@ def _render_issues(
                 severity="warning",
                 code="render_duration_mismatch",
                 message=(
-                    "Rendered duration differs from the planned timeline by "
-                    f"{delta:.2f} seconds."
+                    f"Rendered duration differs from the planned timeline by {delta:.2f} seconds."
                 ),
             )
         )
@@ -562,6 +564,47 @@ def _window_selection(clips: list[MontageClip]) -> dict[str, int]:
         else:
             counts["other"] += 1
     return counts
+
+
+def _beat_alignment_ratio(plan: QuickMontagePlan) -> float | None:
+    music_plan = plan.music_plan
+    if (
+        music_plan is None
+        or not plan.settings.music_sync
+        or len(plan.clips) < 3
+        or not music_plan.beat_grid
+    ):
+        return None
+    strong_beats = [
+        beat.time_seconds
+        for beat in music_plan.beat_grid
+        if beat.strength >= 0.68
+        or beat.nearest_accent_kind in {"scene_change", "event_change", "highlight"}
+    ]
+    if not strong_beats:
+        return None
+    starts = _clip_starts(plan)[1:]
+    if not starts:
+        return None
+    aligned = sum(
+        1 for start in starts if min(abs(start - beat_time) for beat_time in strong_beats) <= 0.1
+    )
+    return aligned / len(starts)
+
+
+def _clip_starts(plan: QuickMontagePlan) -> list[float]:
+    transition = (
+        0.0 if plan.settings.transition == "none" else plan.settings.transition_duration_seconds
+    )
+    if plan.clips:
+        transition = min(transition, min(clip.duration_seconds for clip in plan.clips) * 0.45)
+    starts: list[float] = []
+    elapsed = 0.0
+    for index, clip in enumerate(plan.clips):
+        starts.append(elapsed)
+        if index < len(plan.clips) - 1:
+            elapsed += clip.duration_seconds - transition
+    return starts
 
 
 def _event_id(scene: Scene) -> str | None:

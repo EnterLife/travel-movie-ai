@@ -115,7 +115,7 @@ def build_semantic_montage_plan(
             if asset.media_type is MediaType.PHOTO
             else scene.end_seconds - scene.start_seconds
         )
-        duration = min(available, settings.max_video_clip_seconds)
+        duration = _directed_clip_duration(scene, available, settings)
         remaining = settings.target_duration_seconds - effective_duration
         if selected:
             remaining += transition
@@ -159,6 +159,7 @@ def build_semantic_montage_plan(
 
     scenes_by_id = {scene.id: scene for scene in candidates}
     selected.sort(key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id))
+    selected = _apply_transition_policy(selected, scenes_by_id, settings)
     return QuickMontagePlan(
         created_at=datetime.now(UTC),
         settings=settings,
@@ -420,6 +421,69 @@ def _clip_with_duration(
     return clip.model_copy(update=update)
 
 
+def _directed_clip_duration(
+    scene: Scene,
+    available_seconds: float,
+    settings: QuickMontageSettings,
+) -> float:
+    duration = min(available_seconds, settings.max_video_clip_seconds)
+    if settings.target_duration_seconds < 20:
+        return duration
+    role = _explicit_story_role(scene) or "journey"
+    factor = {
+        "opening": 1.08,
+        "journey": 1.0,
+        "highlight": 0.86,
+        "finale": 1.15,
+    }.get(role, 1.0)
+    return min(available_seconds, settings.max_video_clip_seconds, max(1.0, duration * factor))
+
+
+def _apply_transition_policy(
+    clips: list[MontageClip],
+    scenes_by_id: dict[UUID, Scene],
+    settings: QuickMontageSettings,
+) -> list[MontageClip]:
+    if settings.transition == "none":
+        return clips
+    updated: list[MontageClip] = []
+    previous_scene: Scene | None = None
+    for index, clip in enumerate(clips):
+        scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
+        transition = (
+            None
+            if index == 0
+            else _transition_for_scene_change(
+                previous_scene,
+                scene,
+                clip,
+                settings,
+            )
+        )
+        updated.append(clip.model_copy(update={"transition": transition}))
+        previous_scene = scene
+    return updated
+
+
+def _transition_for_scene_change(
+    previous_scene: Scene | None,
+    scene: Scene | None,
+    clip: MontageClip,
+    settings: QuickMontageSettings,
+) -> str:
+    if previous_scene is None or scene is None:
+        return settings.transition
+    if clip.event_id is not None and clip.event_id != _event_id(previous_scene):
+        return "dissolve"
+    role = _explicit_story_role(scene)
+    if role in {"opening", "finale"}:
+        return "fade"
+    activity = str(scene.metadata.get("activity", "")).casefold()
+    if activity in {"walking", "hiking", "transport", "driving"}:
+        return "slideright"
+    return settings.transition
+
+
 def _story_candidates(
     ranked: list[Scene],
     settings: QuickMontageSettings,
@@ -550,6 +614,7 @@ def _best_scene_window(
         return scene.start_seconds, ""
 
     candidates: list[tuple[float, float, str]] = []
+    candidates.extend(_speech_segment_candidates(scene, available_seconds, duration_seconds))
     candidates.extend(_explicit_window_candidates(scene, available_seconds, duration_seconds))
     candidates.extend(_quality_panel_candidates(scene, available_seconds, duration_seconds))
     if not candidates:
@@ -564,7 +629,12 @@ def _best_scene_window(
     best_score, best_start, reason = max(
         candidates,
         key=lambda candidate: (
-            candidate[0],
+            _director_window_score(
+                scene,
+                base_score=candidate[0],
+                window_start_seconds=candidate[1],
+                duration_seconds=duration_seconds,
+            ),
             -abs((candidate[1] + duration_seconds / 2) / available_seconds - 0.52),
         ),
     )
@@ -583,11 +653,17 @@ def _explicit_window_candidates(
     available_seconds: float,
     duration_seconds: float,
 ) -> list[tuple[float, float, str]]:
-    raw_windows = scene.metadata.get("highlight_windows", scene.metadata.get("candidate_windows"))
-    if not isinstance(raw_windows, list):
+    raw_windows: list[object] = []
+    highlights = scene.metadata.get("highlight_windows", [])
+    candidates = scene.metadata.get("candidate_windows", [])
+    if isinstance(highlights, list):
+        raw_windows.extend(highlights)
+    if isinstance(candidates, list):
+        raw_windows.extend(candidates)
+    if not raw_windows:
         return []
 
-    candidates: list[tuple[float, float, str]] = []
+    resolved: list[tuple[float, float, str]] = []
     for item in raw_windows:
         if not isinstance(item, dict):
             continue
@@ -606,15 +682,126 @@ def _explicit_window_candidates(
             _float_value(item.get("importance_score"), 75.0),
         )
         label = str(item.get("label", "")).strip()
-        reason = "highlight window" if not label else f"highlight window: {label[:80]}"
-        candidates.append(
+        source = str(item.get("source", "")).strip()
+        reason = _candidate_reason(source, label)
+        resolved.append(
             (
                 score,
                 _clamp_window_start(start, available_seconds, duration_seconds),
                 reason,
             )
         )
+    return resolved
+
+
+def _speech_segment_candidates(
+    scene: Scene,
+    available_seconds: float,
+    duration_seconds: float,
+) -> list[tuple[float, float, str]]:
+    candidates: list[tuple[float, float, str]] = []
+    for segment in _speech_segments(scene):
+        segment_start = _first_float(segment.get("start_seconds"), segment.get("start"))
+        segment_end = _first_float(segment.get("end_seconds"), segment.get("end"))
+        if segment_start is None or segment_end is None or segment_end <= segment_start:
+            continue
+        segment_start = max(0.0, segment_start)
+        segment_end = min(available_seconds, segment_end)
+        center = (segment_start + segment_end) / 2
+        padding = min(0.35, max(0.0, (duration_seconds - (segment_end - segment_start)) / 2))
+        start = center - duration_seconds / 2
+        if segment_end - segment_start < duration_seconds:
+            start = min(start, max(0.0, segment_start - padding))
+        confidence = _float_value(segment.get("confidence"), 0.78)
+        text = str(segment.get("text", "")).strip()
+        label = text[:80] if text else "spoken moment"
+        candidates.append(
+            (
+                min(96.0, 74.0 + confidence * 18.0),
+                _clamp_window_start(start, available_seconds, duration_seconds),
+                f"speech-safe window: {label}",
+            )
+        )
     return candidates
+
+
+def _candidate_reason(source: str, label: str) -> str:
+    if source == "audio_analysis":
+        return "audio candidate" if not label else f"audio candidate: {label[:80]}"
+    if source in {"speech", "speech_analysis"}:
+        return "speech-safe window" if not label else f"speech-safe window: {label[:80]}"
+    if source == "visual_quality":
+        return "visual candidate" if not label else f"visual candidate: {label[:80]}"
+    return "highlight window" if not label else f"highlight window: {label[:80]}"
+
+
+def _director_window_score(
+    scene: Scene,
+    *,
+    base_score: float,
+    window_start_seconds: float,
+    duration_seconds: float,
+) -> float:
+    reason_bonus = 0.0
+    speech_segments = _speech_segments(scene)
+    window_end = window_start_seconds + duration_seconds
+    if speech_segments:
+        reason_bonus += _speech_window_bonus(speech_segments, window_start_seconds, window_end)
+        reason_bonus -= _speech_boundary_penalty(
+            speech_segments,
+            window_start_seconds,
+            window_end,
+        )
+    audio_features = scene.metadata.get("audio_features", {})
+    if isinstance(audio_features, dict):
+        ambience = _float_value(audio_features.get("ambience_score"), 0.0)
+        noise = _float_value(audio_features.get("noise_score"), 0.0)
+        reason_bonus += min(6.0, ambience / 100 * 6.0)
+        reason_bonus -= max(0.0, noise - 70.0) * 0.22
+    return base_score + reason_bonus
+
+
+def _speech_segments(scene: Scene) -> list[dict[object, object]]:
+    raw = scene.metadata.get("speech_segments", [])
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _speech_window_bonus(
+    segments: list[dict[object, object]],
+    window_start_seconds: float,
+    window_end_seconds: float,
+) -> float:
+    bonus = 0.0
+    for segment in segments:
+        start = _first_float(segment.get("start_seconds"), segment.get("start"))
+        end = _first_float(segment.get("end_seconds"), segment.get("end"))
+        if start is None or end is None or end <= start:
+            continue
+        if window_start_seconds <= start + 0.12 and window_end_seconds >= end - 0.12:
+            bonus += 5.0
+    return min(14.0, bonus)
+
+
+def _speech_boundary_penalty(
+    segments: list[dict[object, object]],
+    window_start_seconds: float,
+    window_end_seconds: float,
+) -> float:
+    penalty = 0.0
+    for segment in segments:
+        start = _first_float(segment.get("start_seconds"), segment.get("start"))
+        end = _first_float(segment.get("end_seconds"), segment.get("end"))
+        if start is None or end is None or end <= start:
+            continue
+        protected_start = start + 0.16
+        protected_end = end - 0.16
+        if protected_start < window_start_seconds < protected_end:
+            penalty += 38.0
+        if protected_start < window_end_seconds < protected_end:
+            penalty += 38.0
+    return penalty
 
 
 def _quality_panel_candidates(

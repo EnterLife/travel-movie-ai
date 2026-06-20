@@ -276,6 +276,11 @@ Audio Analysis stores scene-level labels such as `speech`, `silence`, `wind`,
 boosts scenes with speech or useful ambience, and penalizes strong wind or
 transport noise during ranking.
 
+Speech Analysis stores Whisper segment boundaries in scene metadata when the
+provider returns them. Semantic timeline planning uses those boundaries as
+speech-safe candidate windows and penalizes source windows whose start or end
+would cut through a spoken phrase.
+
 When music sync is enabled and the selected music plan contains a beat grid, the
 final timeline softly nudges neighboring clip durations so scene changes can land
 on strong beats or music accents. The adjustment keeps the same selected scenes,
@@ -285,8 +290,14 @@ duration where possible.
 Story Timeline Optimizer follows storyboard sections when available, so selected
 clips are arranged as opening, journey, highlight, and finale before falling
 back to source chronology. It also applies section duration budgets and
-diversity rules: one strong but repetitive location or activity should not fill
-the whole movie when varied alternatives are available.
+story-aware pacing for longer movies, using slightly shorter highlight clips
+while keeping the configured maximum clip duration. The optimizer avoids adjacent
+repeats across location, activity, shot type, shot scale, camera motion,
+movement direction, lighting, tags, and large brightness jumps. Semantic
+timeline clips can also carry a per-cut transition policy so the renderer can use
+contextual fades, dissolves, or motion-oriented transitions instead of one
+transition style for every scene change. One strong but repetitive location or
+activity should not fill the whole movie when varied alternatives are available.
 
 ### Generated Lounge Music
 
@@ -692,10 +703,12 @@ semantic and visual quality, selected window types, music coverage, and
 music diagnostics such as cue section count, beat grid size, WAV loudness,
 peak level, and clipping ratio. It reports actionable issues such as a short
 timeline, repeated source dominance, disabled music, missing music cue metadata,
-unsynced music cuts, quiet/clipped source music, or selected dark/blurred scenes.
-After rendering, the same report is enriched with FFprobe/FFmpeg checks for the actual MP4:
-rendered duration, video/audio stream presence, plan-vs-render duration delta,
-and sampled audio RMS near the beginning, middle, and end of the movie.
+unsynced music cuts, speech boundary cuts, excessive center cuts, quiet/clipped
+source music, or selected dark/blurred scenes.
+After rendering, the same report is enriched with FFprobe/FFmpeg checks for the
+actual MP4: rendered duration, video/audio stream presence, plan-vs-render
+duration delta, sampled audio RMS, and sampled video luma near the beginning,
+middle, and end of the movie.
 
 ## Cache and Reproducibility
 
@@ -842,11 +855,8 @@ MVP acceptance criteria:
 
 - semantic duplicates with embeddings and FAISS;
 - GPS and embeddings in event detection;
-- full Whisper segment boundaries;
-- protection against cutting important speech;
-- beat-aware cuts using the stored music beat grid;
-- preservation of meaningful ambience;
-- continuity rules for movement, light, location, and shot scale.
+- richer shot-scale and camera-motion extraction from Vision AI;
+- timeline version comparison in the web UI.
 
 ### P1: Story and manual editing
 

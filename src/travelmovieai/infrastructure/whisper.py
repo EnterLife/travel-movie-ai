@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from travelmovieai.core.exceptions import DependencyUnavailableError, PipelineStageError
-from travelmovieai.domain.models import SpeechTranscript
+from travelmovieai.domain.models import SpeechSegment, SpeechTranscript
 
 
 class FasterWhisperProvider:
@@ -46,6 +46,16 @@ class FasterWhisperProvider:
             text=text,
             language=getattr(info, "language", None),
             confidence=confidence,
+            segments=[
+                SpeechSegment(
+                    start_seconds=max(0.0, float(getattr(segment, "start", 0.0))),
+                    end_seconds=max(0.0, float(getattr(segment, "end", 0.0))),
+                    text=segment.text.strip(),
+                    confidence=_segment_confidence(segment),
+                )
+                for segment in resolved_segments
+                if segment.text.strip()
+            ],
         )
 
     def _ensure_loaded(self) -> Any:
@@ -55,8 +65,7 @@ class FasterWhisperProvider:
             module = importlib.import_module("faster_whisper")
         except ImportError as error:
             raise DependencyUnavailableError(
-                "Для распознавания речи установите python -m pip install -e "
-                "\".[speech]\"."
+                'Для распознавания речи установите python -m pip install -e ".[speech]".'
             ) from error
         device = "cuda" if self.device in {"auto", "cuda"} else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
@@ -81,3 +90,10 @@ class FasterWhisperProvider:
                 f"Не удалось загрузить Faster Whisper модель '{self.model}'."
             ) from error
         return self._loaded_model
+
+
+def _segment_confidence(segment: object) -> float | None:
+    value = getattr(segment, "avg_logprob", None)
+    if value is None:
+        return None
+    return min(1.0, max(0.0, math.exp(float(value))))

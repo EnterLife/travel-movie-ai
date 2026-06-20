@@ -112,6 +112,12 @@ def enrich_montage_quality_report_with_render(
         has_audio=probe["has_audio"],
         ffmpeg_binary=ffmpeg_binary,
     )
+    video_luma = _rendered_video_luma(
+        output_path,
+        duration_seconds=probe["duration"],
+        has_video=probe["has_video"],
+        ffmpeg_binary=ffmpeg_binary,
+    )
     issues = [
         *report.issues,
         *_render_issues(
@@ -120,6 +126,7 @@ def enrich_montage_quality_report_with_render(
             has_video=probe["has_video"],
             has_audio=probe["has_audio"],
             audio_rms=audio_rms,
+            video_luma=video_luma,
         ),
     ]
     return report.model_copy(
@@ -131,6 +138,7 @@ def enrich_montage_quality_report_with_render(
             "rendered_has_video": probe["has_video"],
             "rendered_has_audio": probe["has_audio"],
             "rendered_audio_rms": audio_rms,
+            "rendered_video_luma": video_luma,
             "issues": issues,
         }
     )
@@ -194,6 +202,20 @@ def _quality_issues(
                 message="Selected scenes have a low average visual quality score.",
             )
         )
+    window_selection = _window_selection(plan.clips)
+    if plan.selection_mode == "semantic" and len(plan.clips) >= 4:
+        center_ratio = window_selection.get("center", 0) / len(plan.clips)
+        if center_ratio > 0.55:
+            issues.append(
+                MontageQualityIssue(
+                    severity="info",
+                    code="excessive_center_cuts",
+                    message=(
+                        "Many selected clips fall back to center cuts instead of "
+                        "explicit highlights."
+                    ),
+                )
+            )
     if plan.music_plan is None or plan.music_plan.mode == "none":
         issues.append(
             MontageQualityIssue(
@@ -302,6 +324,7 @@ def _quality_issues(
                     clip_index=index,
                 )
             )
+    issues.extend(_speech_cut_issues(plan, selected_scenes))
     return issues
 
 
@@ -312,6 +335,7 @@ def _render_issues(
     has_video: bool,
     has_audio: bool,
     audio_rms: dict[str, float],
+    video_luma: dict[str, float],
 ) -> list[MontageQualityIssue]:
     issues: list[MontageQualityIssue] = []
     if not has_video:
@@ -367,6 +391,23 @@ def _render_issues(
                 message="Rendered audio RMS could not be measured.",
             )
         )
+    if has_video and video_luma:
+        if any(value < 3 for value in video_luma.values()):
+            issues.append(
+                MontageQualityIssue(
+                    severity="warning",
+                    code="render_black_video_sample",
+                    message="Rendered movie contains a sampled frame that is nearly black.",
+                )
+            )
+        if max(video_luma.values()) - min(video_luma.values()) > 65:
+            issues.append(
+                MontageQualityIssue(
+                    severity="info",
+                    code="render_exposure_jump",
+                    message="Rendered movie has a large exposure jump across sampled sections.",
+                )
+            )
     return issues
 
 
@@ -482,6 +523,71 @@ def _audio_rms(
     return math.sqrt(sum(sample * sample for sample in samples) / sample_count)
 
 
+def _rendered_video_luma(
+    output_path: Path,
+    *,
+    duration_seconds: object,
+    has_video: object,
+    ffmpeg_binary: str,
+) -> dict[str, float]:
+    if not has_video or not isinstance(duration_seconds, int | float) or duration_seconds <= 0:
+        return {}
+    starts = {
+        "start": min(0.05, max(0.0, duration_seconds / 10)),
+        "middle": max(0.0, duration_seconds * 0.5),
+        "end": max(0.0, duration_seconds - 0.08),
+    }
+    values: dict[str, float] = {}
+    for label, start in starts.items():
+        luma = _video_luma(
+            output_path,
+            start_seconds=start,
+            ffmpeg_binary=ffmpeg_binary,
+        )
+        if luma is not None:
+            values[label] = luma
+    return values
+
+
+def _video_luma(
+    output_path: Path,
+    *,
+    start_seconds: float,
+    ffmpeg_binary: str,
+) -> float | None:
+    resolved = shutil.which(ffmpeg_binary) or ffmpeg_binary
+    width = 16
+    height = 16
+    try:
+        completed = subprocess.run(
+            [
+                resolved,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{start_seconds:.3f}",
+                "-i",
+                str(output_path),
+                "-frames:v",
+                "1",
+                "-vf",
+                f"scale={width}:{height},format=gray",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    expected = width * height
+    if completed.returncode != 0 or len(completed.stdout) < expected:
+        return None
+    return sum(completed.stdout[:expected]) / expected / 255 * 100
+
+
 def _music_source_stats(plan: QuickMontagePlan) -> dict[str, float]:
     music_plan = plan.music_plan
     if music_plan is None or music_plan.source_path is None or music_plan.mode == "none":
@@ -564,6 +670,57 @@ def _window_selection(clips: list[MontageClip]) -> dict[str, int]:
         else:
             counts["other"] += 1
     return counts
+
+
+def _speech_cut_issues(
+    plan: QuickMontagePlan,
+    selected_scenes: list[Scene],
+) -> list[MontageQualityIssue]:
+    scenes_by_id = {scene.id: scene for scene in selected_scenes}
+    issues: list[MontageQualityIssue] = []
+    for index, clip in enumerate(plan.clips):
+        if clip.scene_id is None:
+            continue
+        scene = scenes_by_id.get(clip.scene_id)
+        if scene is None:
+            continue
+        relative_start = max(0.0, clip.source_start_seconds - scene.start_seconds)
+        relative_end = relative_start + clip.duration_seconds
+        if _cuts_speech_segment(scene, relative_start, relative_end):
+            issues.append(
+                MontageQualityIssue(
+                    severity="warning",
+                    code="speech_boundary_cut",
+                    message="A selected clip starts or ends inside a speech segment.",
+                    scene_id=scene.id,
+                    clip_index=index,
+                )
+            )
+    return issues
+
+
+def _cuts_speech_segment(
+    scene: Scene,
+    relative_start_seconds: float,
+    relative_end_seconds: float,
+) -> bool:
+    segments = scene.metadata.get("speech_segments", [])
+    if not isinstance(segments, list):
+        return False
+    for item in segments:
+        if not isinstance(item, dict):
+            continue
+        start = _float_value(item.get("start_seconds"))
+        end = _float_value(item.get("end_seconds"))
+        if start is None or end is None or end <= start:
+            continue
+        protected_start = start + 0.16
+        protected_end = end - 0.16
+        if protected_start < relative_start_seconds < protected_end:
+            return True
+        if protected_start < relative_end_seconds < protected_end:
+            return True
+    return False
 
 
 def _beat_alignment_ratio(plan: QuickMontagePlan) -> float | None:

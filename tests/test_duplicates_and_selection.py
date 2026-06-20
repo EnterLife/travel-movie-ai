@@ -359,6 +359,46 @@ def test_semantic_selection_accepts_top_level_relative_candidate_window(
     assert "highlight window: future multimodal peak" in plan.clips[0].selection_reason
 
 
+def test_semantic_selection_prefers_speech_safe_window_over_cutting_phrase(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "speech-moment.mp4", created_at, duration=10)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=10,
+        candidate_windows=[
+            {
+                "relative_position": 0.45,
+                "score": 98,
+                "source": "visual_quality",
+                "label": "sharp but mid sentence",
+            }
+        ],
+        speech_segments=[
+            {
+                "start_seconds": 2.0,
+                "end_seconds": 4.0,
+                "text": "Look at this view.",
+                "confidence": 0.9,
+            }
+        ],
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert round(plan.clips[0].source_start_seconds, 2) == 1.5
+    assert "speech-safe window: Look at this view." in plan.clips[0].selection_reason
+
+
 def test_semantic_selection_uses_best_panel_position_without_panel_scores(
     tmp_path: Path,
 ) -> None:
@@ -557,6 +597,90 @@ def test_story_timeline_avoids_adjacent_similar_scenes_when_possible(
 
     assert first.metadata["location_type"] != second.metadata["location_type"]
     assert first.metadata["activity"] != second.metadata["activity"]
+
+
+def test_story_pacing_shortens_highlights_in_longer_movies(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [
+        _asset(tmp_path / f"pacing-{index}.mp4", created_at, duration=10) for index in range(2)
+    ]
+    journey = _scene(
+        assets[0],
+        uuid4(),
+        88,
+        duration=10,
+        story_section_role="journey",
+        story_role_order=1,
+    )
+    highlight = _scene(
+        assets[1],
+        uuid4(),
+        98,
+        duration=10,
+        story_section_role="highlight",
+        story_role_order=2,
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=24,
+        max_video_clip_seconds=6,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(assets, [journey, highlight], settings)
+    durations = {clip.scene_id: clip.duration_seconds for clip in plan.clips}
+
+    assert durations[highlight.id] < durations[journey.id]
+
+
+def test_semantic_timeline_assigns_contextual_transitions(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [
+        _asset(tmp_path / f"transition-{index}.mp4", created_at, duration=8) for index in range(3)
+    ]
+    first_event = uuid4()
+    second_event = uuid4()
+    opening = _scene(
+        assets[0],
+        first_event,
+        92,
+        duration=8,
+        story_section_role="opening",
+        story_role_order=0,
+        activity="viewing",
+    )
+    journey = _scene(
+        assets[1],
+        first_event,
+        90,
+        duration=8,
+        story_section_role="journey",
+        story_role_order=1,
+        activity="walking",
+    )
+    finale = _scene(
+        assets[2],
+        second_event,
+        91,
+        duration=8,
+        story_section_role="finale",
+        story_role_order=3,
+        activity="viewing",
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=18,
+        max_video_clip_seconds=5,
+        transition="fade",
+        transition_duration_seconds=0.4,
+    )
+
+    plan = build_semantic_montage_plan(assets, [opening, journey, finale], settings)
+    transitions = {clip.scene_id: clip.transition for clip in plan.clips}
+
+    assert transitions[opening.id] is None
+    assert transitions[journey.id] == "slideright"
+    assert transitions[finale.id] == "dissolve"
 
 
 def test_music_directing_moves_cut_to_strong_beat_without_changing_total_duration(

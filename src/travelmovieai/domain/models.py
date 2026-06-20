@@ -116,10 +116,18 @@ class VisionAnalysisReport(BaseModel):
     cached_count: int = 0
 
 
+class SpeechSegment(BaseModel):
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(ge=0)
+    text: str = Field(default="", max_length=1000)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class SpeechTranscript(BaseModel):
     text: str
     language: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    segments: list[SpeechSegment] = Field(default_factory=list, max_length=200)
 
 
 class SpeechAnalysisReport(BaseModel):
@@ -255,6 +263,7 @@ class MontageQualityReport(BaseModel):
     rendered_has_video: bool | None = None
     rendered_has_audio: bool | None = None
     rendered_audio_rms: dict[str, float] = Field(default_factory=dict)
+    rendered_video_luma: dict[str, float] = Field(default_factory=dict)
     issues: list[MontageQualityIssue] = Field(default_factory=list)
 
 
@@ -425,6 +434,7 @@ class MontageClip(BaseModel):
     semantic_score: float | None = Field(default=None, ge=0, le=100)
     event_id: UUID | None = None
     selection_reason: str = ""
+    transition: Literal["fade", "dissolve", "wipeleft", "slideright"] | None = None
 
 
 class QuickMontagePlan(BaseModel):

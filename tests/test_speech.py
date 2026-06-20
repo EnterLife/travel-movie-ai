@@ -6,7 +6,7 @@ import pytest
 from travelmovieai.analysis import speech
 from travelmovieai.analysis.speech import analyze_speech
 from travelmovieai.domain.enums import MediaType
-from travelmovieai.domain.models import MediaAsset, Scene, SpeechTranscript
+from travelmovieai.domain.models import MediaAsset, Scene, SpeechSegment, SpeechTranscript
 
 
 class FakeSpeechProvider:
@@ -23,6 +23,14 @@ class FakeSpeechProvider:
             text="Welcome to the city.",
             language="en",
             confidence=0.91,
+            segments=[
+                SpeechSegment(
+                    start_seconds=0.4,
+                    end_seconds=1.6,
+                    text="Welcome to the city.",
+                    confidence=0.91,
+                )
+            ],
         )
 
 
@@ -71,5 +79,6 @@ def test_speech_analysis_transcribes_and_reuses_cache(
 
     assert first.scenes[0].transcript == "Welcome to the city."
     assert first.scenes[0].metadata["speech_language"] == "en"
+    assert first.scenes[0].metadata["speech_segments"][0]["start_seconds"] == 0.4
     assert provider.calls == 1
     assert second.cached_count == 1

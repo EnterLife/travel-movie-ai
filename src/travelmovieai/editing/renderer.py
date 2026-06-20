@@ -454,9 +454,10 @@ def _build_filter_graph(
         next_audio = f"a{index}mix"
         if transition_duration > 0:
             offset = max(0.0, elapsed - transition_duration)
+            transition_name = plan.clips[index].transition or plan.settings.transition
             lines.append(
                 f"[{video_label}][v{index}base]"
-                f"xfade=transition={plan.settings.transition}:"
+                f"xfade=transition={transition_name}:"
                 f"duration={transition_duration:.3f}:offset={offset:.3f}"
                 f"[{next_video}]"
             )

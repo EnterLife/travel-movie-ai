@@ -70,6 +70,9 @@ def analyze_speech(
                         "speech_model": provider.model,
                         "speech_language": transcript.language,
                         "speech_confidence": transcript.confidence,
+                        "speech_segments": [
+                            segment.model_dump(mode="json") for segment in transcript.segments
+                        ],
                     },
                 }
             )
@@ -131,9 +134,7 @@ def _extract_scene_audio(
     try:
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "unknown FFmpeg error"
-            raise PipelineStageError(
-                f"Не удалось извлечь речь из {source_path.name}: {detail}"
-            )
+            raise PipelineStageError(f"Не удалось извлечь речь из {source_path.name}: {detail}")
         os.replace(temporary, output_path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -147,7 +148,7 @@ def _speech_cache_key(scene: Scene, asset: MediaAsset, model: str) -> str:
         "start": scene.start_seconds,
         "end": scene.end_seconds,
         "model": model,
-        "version": 1,
+        "version": 2,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -155,6 +156,5 @@ def _speech_cache_key(scene: Scene, asset: MediaAsset, model: str) -> str:
 
 def _has_audio(asset: MediaAsset) -> bool:
     return any(
-        stream.get("codec_type") == "audio"
-        for stream in asset.probe_metadata.get("streams", [])
+        stream.get("codec_type") == "audio" for stream in asset.probe_metadata.get("streams", [])
     )

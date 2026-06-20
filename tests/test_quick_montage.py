@@ -19,7 +19,7 @@ from travelmovieai.domain.models import (
     QuickMontageSettings,
     SceneUnderstanding,
 )
-from travelmovieai.editing.renderer import QuickMontageRenderer
+from travelmovieai.editing.renderer import QuickMontageRenderer, _build_filter_graph
 from travelmovieai.editing.timeline import build_quick_montage_plan
 
 
@@ -91,6 +91,36 @@ def test_quick_montage_plan_orders_assets_and_respects_duration(tmp_path: Path) 
     assert plan.clips[-1].duration_seconds == 3
 
 
+def test_renderer_filter_graph_uses_clip_transition_policy(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(transition="fade", transition_duration_seconds=0.4)
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "first.mp4",
+                relative_path=Path("first.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+            ),
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "second.mp4",
+                relative_path=Path("second.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+                transition="slideright",
+            ),
+        ],
+        total_duration_seconds=5.6,
+    )
+
+    graph = _build_filter_graph(plan, transition_duration=0.4)
+
+    assert "xfade=transition=slideright:duration=0.400" in graph
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
 def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     media = tmp_path / "Моя поездка"
@@ -120,14 +150,10 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     assert result.clip_count == 2
     assert result.timeline_path.is_file()
     quality_report = json.loads(
-        (workspace / "artifacts" / "montage_quality_report.json").read_text(
-            encoding="utf-8"
-        )
+        (workspace / "artifacts" / "montage_quality_report.json").read_text(encoding="utf-8")
     )
     assert quality_report["clip_count"] == result.clip_count
-    assert quality_report["planned_duration_seconds"] == pytest.approx(
-        result.duration_seconds
-    )
+    assert quality_report["planned_duration_seconds"] == pytest.approx(result.duration_seconds)
     assert quality_report["rendered_path"] == str(result.output_path)
     assert quality_report["rendered_has_video"] is True
     assert quality_report["rendered_has_audio"] is True
@@ -137,6 +163,7 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     )
     assert set(quality_report["rendered_audio_rms"]) == {"start", "middle", "end"}
     assert quality_report["rendered_audio_rms"]["middle"] > 10
+    assert set(quality_report["rendered_video_luma"]) == {"start", "middle", "end"}
     timeline = json.loads(result.timeline_path.read_text(encoding="utf-8"))
     music_plan = timeline["music_plan"]
     assert music_plan["generated"] is True
@@ -220,9 +247,7 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     assert (workspace / "artifacts" / "events.json").is_file()
     assert (workspace / "artifacts" / "scene_descriptions.json").is_file()
     quality_report = json.loads(
-        (workspace / "artifacts" / "montage_quality_report.json").read_text(
-            encoding="utf-8"
-        )
+        (workspace / "artifacts" / "montage_quality_report.json").read_text(encoding="utf-8")
     )
     assert quality_report["selected_scene_count"] == first.clip_count
     assert quality_report["music_mode"] == "library"

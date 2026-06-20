@@ -236,10 +236,7 @@ def _estimated_timeline_duration(
     if not scenes:
         return 0.0
     transition = 0.0 if settings.transition == "none" else settings.transition_duration_seconds
-    durations = [
-        _estimated_scene_duration(scene, assets_by_id, settings)
-        for scene in scenes
-    ]
+    durations = [_estimated_scene_duration(scene, assets_by_id, settings) for scene in scenes]
     if durations:
         transition = min(transition, min(durations) * 0.45)
     return max(0.0, sum(durations) - max(0, len(durations) - 1) * transition)
@@ -269,12 +266,35 @@ def _pair_penalty(scene: Scene, other: Scene, *, adjacent: bool) -> float:
     other_activity = _metadata_text(other, "activity")
     shot_type = _metadata_text(scene, "shot_type")
     other_shot_type = _metadata_text(other, "shot_type")
+    shot_scale = _metadata_text(scene, "shot_scale")
+    other_shot_scale = _metadata_text(other, "shot_scale")
+    camera_motion = _metadata_text(scene, "camera_motion")
+    other_camera_motion = _metadata_text(other, "camera_motion")
+    movement_direction = _metadata_text(scene, "movement_direction")
+    other_movement_direction = _metadata_text(other, "movement_direction")
+    lighting = _metadata_text(scene, "lighting")
+    other_lighting = _metadata_text(other, "lighting")
     if location and location == other_location:
         penalty += 7 * multiplier
     if activity and activity == other_activity:
         penalty += 6 * multiplier
     if shot_type and shot_type == other_shot_type:
         penalty += 6 * multiplier
+    if shot_scale and shot_scale == other_shot_scale:
+        penalty += 5 * multiplier
+    if camera_motion and camera_motion == other_camera_motion:
+        penalty += 4 * multiplier
+    if movement_direction and movement_direction == other_movement_direction:
+        penalty += 4 * multiplier
+    if lighting and lighting == other_lighting:
+        penalty += 3 * multiplier
+    brightness = _quality_metric(scene, "brightness")
+    other_brightness = _quality_metric(other, "brightness")
+    if brightness is not None and other_brightness is not None:
+        if abs(brightness - other_brightness) < 8:
+            penalty += 3 * multiplier
+        elif abs(brightness - other_brightness) > 42:
+            penalty += 5 * multiplier
     shared_tags = _metadata_tags(scene) & _metadata_tags(other)
     if shared_tags:
         penalty += min(8, len(shared_tags) * 2) * multiplier
@@ -293,11 +313,30 @@ def _metadata_tags(scene: Scene) -> set[str]:
     return {str(tag).casefold().strip() for tag in tags if str(tag).strip()}
 
 
+def _quality_metric(scene: Scene, key: str) -> float | None:
+    metrics = scene.metadata.get("quality_metrics", {})
+    if not isinstance(metrics, dict):
+        return None
+    value = metrics.get(key)
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _diversity_signature(scene: Scene) -> dict[str, object]:
     return {
         "asset_id": str(scene.asset_id),
         "location_type": _metadata_text(scene, "location_type"),
         "activity": _metadata_text(scene, "activity"),
         "shot_type": _metadata_text(scene, "shot_type"),
+        "shot_scale": _metadata_text(scene, "shot_scale"),
+        "camera_motion": _metadata_text(scene, "camera_motion"),
+        "movement_direction": _metadata_text(scene, "movement_direction"),
+        "lighting": _metadata_text(scene, "lighting"),
         "tags": sorted(_metadata_tags(scene)),
     }

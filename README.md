@@ -341,11 +341,15 @@ accent points. It places musical structure at:
 The cue sections, beat grid, timestamps, strengths, BPM, intensity, arrangement
 version, generator, model identifier, and fallback status are stored in
 `artifacts/music_plan.json`. Local music models receive both the prompt and the
-cue sheet. The procedural fallback also follows the sections, varying melody
-energy across intro, journey, highlight, and finale parts instead of producing a
-flat loop. Rebuilding the same timeline uses a deterministic seed, while
-changing clip order, duration, or selected highlights reshapes the composition
-to match the new movie.
+cue sheet. The prompt asks for a clean instrumental travel underscore with a
+recurring motif, no vocals or lyrics, polished production, and mastering
+headroom so the rendered movie can duck music under source audio without
+clipped peaks. The procedural fallback also follows the sections, varying
+melody energy, stereo width, electric-piano tones, muted-guitar pulses, and
+restrained accent layers across intro, journey, highlight, and finale parts
+instead of producing a flat loop. Rebuilding the same timeline uses a
+deterministic seed, while changing clip order, duration, or selected highlights
+reshapes the composition to match the new movie.
 
 ## CLI
 

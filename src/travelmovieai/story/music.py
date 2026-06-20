@@ -30,7 +30,7 @@ type MusicProfile = Literal["calm", "lounge", "cinematic", "warm", "energetic"]
 type FloatArray = NDArray[np.float64]
 type NeuralGeneratorName = Literal["ace-step", "musicgen"]
 type MusicGeneratorName = Literal["procedural", "ace-step", "musicgen"]
-ARRANGEMENT_VERSION = "adaptive-lounge-v3"
+ARRANGEMENT_VERSION = "adaptive-lounge-v4"
 MusicProgress = Callable[[int, int, str], None]
 
 
@@ -559,15 +559,18 @@ def _music_generation_prompt(
     events = sum(cue.kind == "event_change" for cue in accents)
     section_plan = _cue_sheet_prompt(cue_sections)
     return (
-        f"Instrumental {profile_text}, {bpm} BPM, one coherent recurring melody, "
-        "quiet background underscore, warm electric piano, clean muted guitar, "
-        "soft round bass, very light brushed percussion, subtle atmospheric pads, "
-        "sparse arrangement, low dynamic range, no dramatic build-ups, no loud hits, "
+        f"Instrumental {profile_text}, {bpm} BPM, hi-fi travel film underscore, "
+        "one coherent recurring melody in a consistent key, warm electric piano, "
+        "clean muted guitar, soft round bass, very light brushed percussion, "
+        "subtle atmospheric pads, sparse arrangement with natural variation, "
+        "polished mix, mastered with headroom, no distortion, no clipping, "
+        "low dynamic range for dialogue ducking, no dramatic build-ups, no loud hits, "
         "no aggressive percussion, elegant professional production, no vocals, "
+        "no lyrics, no speech, no lead singer, "
         f"gradual narrative development, {events} section changes and "
         f"{highlights} very restrained musical highlights, gentle resolved ending. "
         f"Arrangement cue sheet: {section_plan}"
-    )[:500]
+    )[:700]
 
 
 def _music_seed(plan: QuickMontagePlan, profile: MusicProfile) -> int:
@@ -693,11 +696,14 @@ def generate_ambient_soundtrack(
                 0.7,
             )
             pad = np.zeros_like(time)
+            keys = np.zeros_like(time)
             for voice in range(chord_table.shape[1]):
                 frequency = frequencies[:, voice]
-                pad += np.sin(2 * np.pi * frequency * time + voice * 0.21)
-                pad += 0.22 * np.sin(2 * np.pi * frequency * 2 * time)
-            pad /= chord_table.shape[1] * 1.22
+                detuned = frequency * (1 + (voice - 1.5) * 0.0015)
+                pad += _warm_tone(detuned, time, phase=voice * 0.21)
+                keys += _electric_piano_tone(frequency * 2, time, phase=voice * 0.17)
+            pad = np.tanh(pad / chord_table.shape[1] * 0.82)
+            keys = np.tanh(keys / chord_table.shape[1] * 0.95) * chord_fade
 
             beat_position = np.mod(time, beat_seconds)
             bass_envelope = np.exp(-4.2 * beat_position / beat_seconds)
@@ -719,10 +725,13 @@ def generate_ambient_soundtrack(
                 0.2,
             )
             melody_frequency = np.take(melody, step_indices)
-            lead = (
-                np.sin(2 * np.pi * melody_frequency * time)
-                + 0.16 * np.sin(2 * np.pi * melody_frequency * 2 * time)
-            ) * melody_envelope
+            lead = _electric_piano_tone(melody_frequency, time, phase=0.11) * melody_envelope
+            guitar = _muted_guitar_array(
+                time,
+                melody_frequency,
+                step_seconds,
+                sample_rate,
+            )
 
             kick = _kick_array(time, beat_seconds)
             brush = _brush_array(time, beat_seconds, sample_rate)
@@ -734,18 +743,23 @@ def generate_ambient_soundtrack(
                 0.32 if profile == "calm" else 0.72 if profile == "energetic" else 0.48
             )
             dynamics = (arc + energy) * section_energy
+            width = 0.035 * np.sin(2 * np.pi * time / 7.0)
             left = (
-                pad * 0.22 * chord_fade
-                + bass * 0.11
-                + lead * 0.075 * section_lead
+                pad * (0.18 + width) * chord_fade
+                + keys * 0.105
+                + bass * 0.095
+                + lead * 0.07 * section_lead
+                + guitar * 0.038 * section_lead
                 + kick * 0.05 * rhythm_level
                 + brush * 0.022 * rhythm_level
                 + hat * 0.009 * rhythm_level
             ) * dynamics + accent * 0.055
             right = (
-                pad * 0.22 * chord_fade
-                + bass * 0.11
-                + lead * 0.065 * section_lead
+                pad * (0.18 - width) * chord_fade
+                + keys * 0.095
+                + bass * 0.095
+                + lead * 0.06 * section_lead
+                + guitar * 0.045 * section_lead
                 + kick * 0.05 * rhythm_level
                 + brush * 0.027 * rhythm_level
                 - hat * 0.007 * rhythm_level
@@ -758,7 +772,7 @@ def generate_ambient_soundtrack(
                 )
             )
             stereo = np.column_stack((left, right)) * np.maximum(0.0, fade[:, None])
-            pcm = (np.tanh(stereo * 1.35) * 32767).astype("<i2")
+            pcm = _master_to_pcm(stereo)
             soundtrack.writeframesraw(pcm.tobytes())
 
 
@@ -797,6 +811,60 @@ def _soft_envelope_array(
         (duration - position) / max(release_seconds, 0.001),
     )
     return cast(FloatArray, np.maximum(0.0, attack * release))
+
+
+def _warm_tone(
+    frequency: FloatArray,
+    time: FloatArray,
+    *,
+    phase: float,
+) -> FloatArray:
+    base = 2 * np.pi * frequency * time + phase
+    tone = (
+        np.sin(base)
+        + 0.28 * np.sin(base * 2 + 0.2)
+        + 0.08 * np.sin(base * 3 + 0.5)
+    )
+    return cast(FloatArray, np.tanh(tone * 0.82))
+
+
+def _electric_piano_tone(
+    frequency: FloatArray,
+    time: FloatArray,
+    *,
+    phase: float,
+) -> FloatArray:
+    base = 2 * np.pi * frequency * time + phase
+    tone = (
+        np.sin(base)
+        + 0.22 * np.sin(base * 2 + 0.6)
+        + 0.1 * np.sin(base * 3 + 1.1)
+    )
+    return cast(FloatArray, np.tanh(tone * 0.78))
+
+
+def _muted_guitar_array(
+    time: FloatArray,
+    frequency: FloatArray,
+    step_seconds: float,
+    sample_rate: int,
+) -> FloatArray:
+    position = np.mod(time, step_seconds)
+    step = (time / step_seconds).astype(np.int64)
+    active = np.isin(step % 8, (1, 4, 6))
+    envelope = _soft_envelope_array(position, step_seconds, 0.012, step_seconds * 0.42)
+    sample = (time * sample_rate).astype(np.int64)
+    pick_noise = np.sin((sample * 5.3987 + 17.13) * 24634.6345) * 0.08
+    tone = _warm_tone(frequency * 1.005, time, phase=0.37)
+    return cast(FloatArray, (tone + pick_noise) * envelope * active)
+
+
+def _master_to_pcm(stereo: NDArray[np.float64]) -> NDArray[np.int16]:
+    limited = np.tanh(stereo * 1.18)
+    peak = float(np.max(np.abs(limited))) if limited.size else 0.0
+    if peak > 0.96:
+        limited *= 0.96 / peak
+    return (limited * 30000).astype("<i2")
 
 
 def _kick_array(time: FloatArray, beat_seconds: float) -> FloatArray:

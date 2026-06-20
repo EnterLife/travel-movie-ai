@@ -33,7 +33,10 @@ class FakeMusicGenerator:
     ) -> None:
         self.calls += 1
         assert "no vocals" in prompt
+        assert "no lyrics" in prompt
         assert "low dynamic range" in prompt
+        assert "mastered with headroom" in prompt
+        assert "no clipping" in prompt
         assert cue_sheet
         assert bpm == 76
         assert seed >= 0
@@ -86,6 +89,8 @@ def test_ace_step_configuration_enables_low_vram_offload(tmp_path: Path) -> None
     assert 'config_path = "acestep-v15-turbo"' in config
     assert "instrumental = true" in config
     assert "thinking = false" in config
+    assert "inference_steps = 16" in config
+    assert "guidance_scale = 1.35" in config
     assert "offload_to_cpu = true" in config
     assert "offload_dit_to_cpu = true" in config
 

@@ -115,7 +115,7 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
     assert plan.source_path == output
     assert plan.generated is True
     assert plan.duration_seconds == 8
-    assert plan.arrangement_version == "adaptive-lounge-v3"
+    assert plan.arrangement_version == "adaptive-lounge-v4"
     assert plan.cue_sections
     assert plan.cue_sections[0].bpm == 76
     assert plan.beat_grid
@@ -150,6 +150,39 @@ def test_lounge_music_is_melodic_stereo_and_deterministic(tmp_path: Path) -> Non
     left = frames[0::4] + frames[1::4]
     right = frames[2::4] + frames[3::4]
     assert left != right
+
+
+def test_generated_music_keeps_master_headroom(tmp_path: Path) -> None:
+    output = tmp_path / "mastered.wav"
+
+    generate_ambient_soundtrack(
+        output,
+        duration_seconds=4,
+        profile="lounge",
+        bpm=76,
+        accents=[
+            MusicAccent(
+                time_seconds=1.8,
+                kind="highlight",
+                strength=0.9,
+                label="Peak visual moment",
+            )
+        ],
+    )
+
+    with wave.open(str(output), "rb") as soundtrack:
+        samples = np.frombuffer(
+            soundtrack.readframes(soundtrack.getnframes()),
+            dtype="<i2",
+        )
+
+    peak = int(np.max(np.abs(samples)))
+    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+    clipped = int(np.count_nonzero(np.abs(samples) >= 32760))
+
+    assert peak <= 30000
+    assert rms > 100
+    assert clipped == 0
 
 
 def test_short_model_music_is_repeated_across_full_timeline(tmp_path: Path) -> None:

@@ -196,8 +196,8 @@ class AceStepMusicGenerator:
                 "use_cot_caption = false",
                 "use_cot_lyrics = false",
                 "use_cot_language = false",
-                "inference_steps = 8",
-                "guidance_scale = 1.0",
+                "inference_steps = 16",
+                "guidance_scale = 1.35",
                 f"seed = {seed}",
                 "batch_size = 1",
                 "use_random_seed = false",
@@ -326,4 +326,4 @@ def _prompt_with_cue_sheet(prompt: str, cue_sheet: list[MusicCueSection]) -> str
     )
     if len(cue_sheet) > 8:
         cues = f"{cues}; {len(cue_sheet) - 8} additional gentle sections"
-    return f"{prompt} Cue sheet: {cues}"[:700]
+    return f"{prompt} Cue sheet: {cues}"[:900]

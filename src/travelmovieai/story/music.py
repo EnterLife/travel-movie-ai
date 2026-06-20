@@ -30,7 +30,7 @@ type MusicProfile = Literal["calm", "lounge", "cinematic", "warm", "energetic"]
 type FloatArray = NDArray[np.float64]
 type NeuralGeneratorName = Literal["ace-step", "musicgen"]
 type MusicGeneratorName = Literal["procedural", "ace-step", "musicgen"]
-ARRANGEMENT_VERSION = "adaptive-lounge-v4"
+ARRANGEMENT_VERSION = "adaptive-lounge-v5"
 MusicProgress = Callable[[int, int, str], None]
 
 
@@ -435,33 +435,11 @@ def choose_music_profile(
     brightness = _average(metrics, "brightness", 50)
     saturation = _average(metrics, "saturation", 45)
     sharpness = _average(metrics, "sharpness", 50)
-    emotions = {str(scene.metadata.get("emotion", "")).casefold() for scene in scenes}
-    locations = {str(scene.metadata.get("location_type", "")).casefold() for scene in scenes}
-    activities = {str(scene.metadata.get("activity", "")).casefold() for scene in scenes}
-
-    if {"adventurous", "exciting", "energetic"} & emotions:
-        profile: MusicProfile = "lounge"
-    elif {"romantic", "joyful", "emotional"} & emotions or (
-        brightness > 62 and saturation > 52
-    ):
-        profile = "warm"
-    elif brightness < 38:
-        profile = "calm"
-    elif (
-        {"relaxing"} & emotions
-        or {"beach", "sea", "city", "hotel", "restaurant", "park"} & locations
-        or {"walking", "dining", "relaxing", "sightseeing"} & activities
-    ):
-        profile = "lounge"
-    else:
-        profile = (
-            "warm"
-            if settings.story_style in {StoryStyle.FAMILY, StoryStyle.ROMANTIC}
-            else "lounge"
-        )
+    profile: MusicProfile = "calm"
     return (
         profile,
-        "AI-профиль выбран по стилю фильма, эмоциям сцен и OpenCV-метрикам "
+        "AI-профиль по умолчанию выбран как очень спокойная низкая музыка; "
+        "яркие и энергичные профили доступны только при явном выборе. OpenCV-метрики "
         f"(яркость {brightness:.0f}, насыщенность {saturation:.0f}, "
         f"резкость {sharpness:.0f}).",
     )
@@ -549,11 +527,11 @@ def _music_generation_prompt(
     cue_sections: list[MusicCueSection],
 ) -> str:
     profile_text = {
-        "calm": "soft calm ambient lounge",
-        "lounge": "soft melodic modern lounge",
-        "cinematic": "restrained cinematic travel ambience",
-        "warm": "soft warm optimistic lounge",
-        "energetic": "light upbeat travel lounge",
+        "calm": "very calm low-register ambient travel music",
+        "lounge": "soft low-register melodic lounge",
+        "cinematic": "restrained low-register cinematic travel ambience",
+        "warm": "soft low-register warm optimistic lounge",
+        "energetic": "light but still smooth low-register travel lounge",
     }[profile]
     highlights = sum(cue.kind == "highlight" for cue in accents)
     events = sum(cue.kind == "event_change" for cue in accents)
@@ -561,8 +539,10 @@ def _music_generation_prompt(
     return (
         f"Instrumental {profile_text}, {bpm} BPM, hi-fi travel film underscore, "
         "one coherent recurring melody in a consistent key, warm electric piano, "
-        "clean muted guitar, soft round bass, very light brushed percussion, "
-        "subtle atmospheric pads, sparse arrangement with natural variation, "
+        "clean muted guitar, deep soft round bass, very light brushed percussion, "
+        "subtle dark atmospheric pads, sparse arrangement with natural variation, "
+        "low notes, mellow midrange melody, no high-pitched sounds, no bright bells, "
+        "no plucks, no sharp synths, no piercing leads, no cymbal shimmer, "
         "polished mix, mastered with headroom, no distortion, no clipping, "
         "low dynamic range for dialogue ducking, no dramatic build-ups, no loud hits, "
         "no aggressive percussion, elegant professional production, no vocals, "
@@ -749,20 +729,20 @@ def generate_ambient_soundtrack(
                 + keys * 0.105
                 + bass * 0.095
                 + lead * 0.07 * section_lead
-                + guitar * 0.038 * section_lead
+                + guitar * 0.028 * section_lead
                 + kick * 0.05 * rhythm_level
-                + brush * 0.022 * rhythm_level
-                + hat * 0.009 * rhythm_level
+                + brush * 0.008 * rhythm_level
+                + hat * 0.0008 * rhythm_level
             ) * dynamics + accent * 0.055
             right = (
                 pad * (0.18 - width) * chord_fade
                 + keys * 0.095
                 + bass * 0.095
                 + lead * 0.06 * section_lead
-                + guitar * 0.045 * section_lead
+                + guitar * 0.032 * section_lead
                 + kick * 0.05 * rhythm_level
-                + brush * 0.027 * rhythm_level
-                - hat * 0.007 * rhythm_level
+                + brush * 0.01 * rhythm_level
+                - hat * 0.0006 * rhythm_level
             ) * dynamics + accent * 0.05
             fade = np.minimum.reduce(
                 (
@@ -772,6 +752,8 @@ def generate_ambient_soundtrack(
                 )
             )
             stereo = np.column_stack((left, right)) * np.maximum(0.0, fade[:, None])
+            if profile == "calm":
+                stereo = _mellow_lowpass(stereo)
             pcm = _master_to_pcm(stereo)
             soundtrack.writeframesraw(pcm.tobytes())
 
@@ -784,10 +766,10 @@ def _build_melody(
 ) -> list[float]:
     step_count = max(1, math.ceil(duration_seconds / step_seconds))
     melody = []
-    previous = chords[0][-1] * 2
+    previous = chords[0][-1] * 1.5
     for step in range(step_count):
         chord = chords[(step // 8) % len(chords)]
-        candidates = [frequency * 2 for frequency in chord[1:]]
+        candidates = [frequency * 1.5 for frequency in chord[1:]]
         if step % 4 in {1, 3} and rng.random() < 0.55:
             candidates.append(previous)
         next_frequency = min(
@@ -854,7 +836,7 @@ def _muted_guitar_array(
     active = np.isin(step % 8, (1, 4, 6))
     envelope = _soft_envelope_array(position, step_seconds, 0.012, step_seconds * 0.42)
     sample = (time * sample_rate).astype(np.int64)
-    pick_noise = np.sin((sample * 5.3987 + 17.13) * 24634.6345) * 0.08
+    pick_noise = np.sin((sample * 5.3987 + 17.13) * 24634.6345) * 0.025
     tone = _warm_tone(frequency * 1.005, time, phase=0.37)
     return cast(FloatArray, (tone + pick_noise) * envelope * active)
 
@@ -865,6 +847,16 @@ def _master_to_pcm(stereo: NDArray[np.float64]) -> NDArray[np.int16]:
     if peak > 0.96:
         limited *= 0.96 / peak
     return (limited * 30000).astype("<i2")
+
+
+def _mellow_lowpass(stereo: NDArray[np.float64]) -> NDArray[np.float64]:
+    if stereo.shape[0] < 41:
+        return stereo
+    kernel = np.hanning(41)
+    kernel /= np.sum(kernel)
+    left = np.convolve(stereo[:, 0], kernel, mode="same")
+    right = np.convolve(stereo[:, 1], kernel, mode="same")
+    return np.column_stack((left, right))
 
 
 def _kick_array(time: FloatArray, beat_seconds: float) -> FloatArray:
@@ -893,11 +885,12 @@ def _hat_array(
     beat_seconds: float,
     sample_rate: int,
 ) -> FloatArray:
-    position = np.mod(time, beat_seconds / 2)
-    envelope = np.exp(-30 * position / beat_seconds)
+    position = np.mod(time, beat_seconds)
+    envelope = np.exp(-18 * position / beat_seconds)
     sample = (time * sample_rate).astype(np.int64)
-    noise = np.sin((sample * 4.1414 + 31.7) * 15731.743)
-    return cast(FloatArray, noise * envelope)
+    noise = np.sin((sample * 4.1414 + 31.7) * 15731.743) * 0.25
+    tone = np.sin(2 * np.pi * 440 * position) * 0.75
+    return cast(FloatArray, (tone + noise) * envelope)
 
 
 def _accent_layers(
@@ -907,11 +900,11 @@ def _accent_layers(
     accent_layer = np.zeros_like(time)
     energy = np.zeros_like(time)
     frequencies = {
-        "intro": 523.25,
-        "scene_change": 659.25,
-        "event_change": 783.99,
-        "highlight": 1046.50,
-        "finale": 523.25,
+        "intro": 164.81,
+        "scene_change": 196.00,
+        "event_change": 246.94,
+        "highlight": 329.63,
+        "finale": 164.81,
     }
     for cue in accents:
         if cue.time_seconds < time[0] - 3 or cue.time_seconds > time[-1] + 3:

@@ -110,14 +110,14 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
         montage_plan,
     )
 
-    assert profile == "lounge"
+    assert profile == "calm"
     assert plan.mode == "generated"
     assert plan.source_path == output
     assert plan.generated is True
     assert plan.duration_seconds == 8
-    assert plan.arrangement_version == "adaptive-lounge-v4"
+    assert plan.arrangement_version == "adaptive-lounge-v5"
     assert plan.cue_sections
-    assert plan.cue_sections[0].bpm == 76
+    assert plan.cue_sections[0].bpm == 60
     assert plan.beat_grid
     assert plan.beat_grid[0].bar_index == 0
     with wave.open(str(output), "rb") as soundtrack:
@@ -185,6 +185,41 @@ def test_generated_music_keeps_master_headroom(tmp_path: Path) -> None:
     assert clipped == 0
 
 
+def test_default_generated_music_keeps_high_frequencies_restrained(tmp_path: Path) -> None:
+    output = tmp_path / "low-register.wav"
+
+    generate_ambient_soundtrack(
+        output,
+        duration_seconds=4,
+        profile="calm",
+        bpm=60,
+        accents=[
+            MusicAccent(
+                time_seconds=1.8,
+                kind="highlight",
+                strength=0.9,
+                label="Peak visual moment",
+            )
+        ],
+    )
+
+    with wave.open(str(output), "rb") as soundtrack:
+        sample_rate = soundtrack.getframerate()
+        samples = np.frombuffer(
+            soundtrack.readframes(soundtrack.getnframes()),
+            dtype="<i2",
+        ).reshape(-1, 2)
+
+    mono = samples.astype(np.float64).mean(axis=1)
+    spectrum = np.abs(np.fft.rfft(mono))
+    frequencies = np.fft.rfftfreq(len(mono), d=1 / sample_rate)
+    low_mid_energy = float(np.sum(spectrum[(frequencies >= 45) & (frequencies <= 700)]))
+    high_energy = float(np.sum(spectrum[frequencies > 2500]))
+
+    assert low_mid_energy > 0
+    assert high_energy / low_mid_energy < 0.08
+
+
 def test_short_model_music_is_repeated_across_full_timeline(tmp_path: Path) -> None:
     output = tmp_path / "short-model.wav"
     sample_rate = 8000
@@ -210,7 +245,7 @@ def test_short_model_music_is_repeated_across_full_timeline(tmp_path: Path) -> N
     assert float(np.sqrt(np.mean(ending.astype(np.float64) ** 2))) > 100
 
 
-def test_auto_music_selects_lounge_for_relaxing_travel_scene() -> None:
+def test_auto_music_selects_calm_default_for_relaxing_travel_scene() -> None:
     scene = Scene(
         asset_id="b04173c0-6122-40e8-b12c-1101942f64d7",
         start_seconds=0,
@@ -225,7 +260,7 @@ def test_auto_music_selects_lounge_for_relaxing_travel_scene() -> None:
 
     profile, _ = choose_music_profile([scene], settings)
 
-    assert profile == "lounge"
+    assert profile == "calm"
 
 
 def test_music_cue_sheet_follows_timeline_and_scene_importance(

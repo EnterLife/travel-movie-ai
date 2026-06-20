@@ -34,6 +34,8 @@ class FakeMusicGenerator:
         self.calls += 1
         assert "no vocals" in prompt
         assert "no lyrics" in prompt
+        assert "no high-pitched sounds" in prompt
+        assert "no bright bells" in prompt
         assert "low dynamic range" in prompt
         assert "mastered with headroom" in prompt
         assert "no clipping" in prompt

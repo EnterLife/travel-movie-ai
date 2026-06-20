@@ -321,10 +321,11 @@ ACE-Step is prepared together with the application:
 .\scripts\setup_windows.bat
 ```
 
-With `Determine from video`, TravelMovieAI now favors quiet lounge, calm, or
-warm background music. Energetic and cinematic profiles remain available as
-explicit choices, but automatic music avoids loud hits, aggressive percussion,
-and dramatic build-ups.
+With `Very calm default`, TravelMovieAI now favors very quiet, low-register,
+melodic background music by default. Lounge, warm, energetic, and cinematic
+profiles remain available as explicit choices, but automatic music avoids high
+notes, bright bells, sharp synths, cymbal shimmer, loud hits, aggressive
+percussion, and dramatic build-ups.
 
 `Synchronize with editing` is enabled by default. The application first builds
 the final clip timeline and then requests one composition for its exact
@@ -341,13 +342,14 @@ accent points. It places musical structure at:
 The cue sections, beat grid, timestamps, strengths, BPM, intensity, arrangement
 version, generator, model identifier, and fallback status are stored in
 `artifacts/music_plan.json`. Local music models receive both the prompt and the
-cue sheet. The prompt asks for a clean instrumental travel underscore with a
-recurring motif, no vocals or lyrics, polished production, and mastering
-headroom so the rendered movie can duck music under source audio without
-clipped peaks. The procedural fallback also follows the sections, varying
-melody energy, stereo width, electric-piano tones, muted-guitar pulses, and
-restrained accent layers across intro, journey, highlight, and finale parts
-instead of producing a flat loop. Rebuilding the same timeline uses a
+cue sheet. The prompt asks for a clean low-register instrumental travel
+underscore with a recurring motif, mellow midrange melody, no vocals or lyrics,
+no high-pitched sounds, polished production, and mastering headroom so the
+rendered movie can duck music under source audio without clipped peaks. The
+procedural fallback also follows the sections, varying melody energy, stereo
+width, electric-piano tones, muted-guitar pulses, and restrained low accent
+layers across intro, journey, highlight, and finale parts instead of producing
+a flat loop. Rebuilding the same timeline uses a
 deterministic seed, while changing clip order, duration, or selected highlights
 reshapes the composition to match the new movie.
 

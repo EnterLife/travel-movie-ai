@@ -7,6 +7,7 @@ from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
 from travelmovieai.story.builder import build_storyboard
+from travelmovieai.story.optimizer import apply_story_structure
 
 
 class StoryBuilderStage(Stage):
@@ -20,11 +21,13 @@ class StoryBuilderStage(Stage):
             repository.list_scenes(),
             context.style,
         )
+        scenes = apply_story_structure(repository.list_scenes(), storyboard)
+        repository.synchronize_scenes(scenes)
         artifact = context.artifacts_dir / "storyboard.json"
         write_json_atomic(artifact, storyboard)
         return StageResult(
             stage=self.name,
             skipped=not storyboard.sections,
-            artifacts=[artifact],
+            artifacts=[context.database_path, artifact],
             message=f"Story builder created {len(storyboard.sections)} section(s).",
         )

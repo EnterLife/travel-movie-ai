@@ -10,9 +10,11 @@ from travelmovieai.pipeline.stages.media_scan import MediaScanStage
 from travelmovieai.pipeline.stages.placeholders import PlaceholderStage
 from travelmovieai.pipeline.stages.quality_analysis import QualityAnalysisStage
 from travelmovieai.pipeline.stages.scene_detection import SceneDetectionStage
+from travelmovieai.pipeline.stages.scene_ranking import SceneRankingStage
 from travelmovieai.pipeline.stages.speech_analysis import SpeechAnalysisStage
 from travelmovieai.pipeline.stages.story_builder import SceneCaptioningStage
 from travelmovieai.pipeline.stages.storyboard import StoryBuilderStage
+from travelmovieai.pipeline.stages.timeline_builder import TimelineBuilderStage
 from travelmovieai.pipeline.stages.vision_analysis import VisionAnalysisStage
 
 
@@ -30,9 +32,8 @@ def build_default_pipeline() -> list[Stage]:
         SceneCaptioningStage(),
         EventDetectionStage(),
         StoryBuilderStage(),
+        SceneRankingStage(),
+        TimelineBuilderStage(),
     ]
     stages_by_name = {stage.name: stage for stage in implemented}
-    return [
-        stages_by_name.get(stage, PlaceholderStage(stage))
-        for stage in PipelineStage
-    ]
+    return [stages_by_name.get(stage, PlaceholderStage(stage)) for stage in PipelineStage]

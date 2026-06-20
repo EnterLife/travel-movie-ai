@@ -412,7 +412,8 @@ Story styles: `cinematic`, `documentary`, `family`, `vlog`, `adventure`, and
 `romantic`.
 
 The `storyboard`, `render`, and `report` commands expose pipeline entry points.
-Some later pipeline stages still contain placeholder behavior.
+Some later canonical pipeline stages still contain placeholder behavior, even
+where the quick montage flow already has equivalent application-level logic.
 
 ## Configuration
 
@@ -523,10 +524,10 @@ Media Scan
 | Event Detection | Group scenes into trip events | Implemented |
 | Story Builder | Build opening, journey, highlights, finale, story budgets, and diverse clip ordering | Implemented |
 | Scene Ranking | Explain selection and rejection decisions | Implemented |
-| Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented |
+| Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented in quick montage; pipeline placeholder |
 | Narration and Voice | Generate and synthesize optional voice-over | Planned |
 | Timeline Builder | Produce a declarative edit plan | Implemented |
-| Rendering | Render, atomically replace, and validate the MP4 | Implemented |
+| Rendering | Render, atomically replace, and validate the MP4 | Implemented in quick montage; pipeline placeholder |
 
 Stage contract changes must update domain models, serialization, downstream
 consumers, tests, and this README together.
@@ -844,8 +845,8 @@ MVP acceptance criteria:
 - pause and cancel movie jobs;
 - resume after process interruption;
 - persist movie-job history;
-- replace remaining placeholder stages with explicit Scene Ranking, Music
-  Selection, Timeline Builder, and Rendering implementations;
+- replace remaining placeholder stages with explicit Music Selection and
+  Rendering implementations;
 - add per-stage input/config/model fingerprints for reliable skip/resume;
 - enforce disk-cache limits and cleanup;
 - check free disk space before rendering;

@@ -412,8 +412,8 @@ Story styles: `cinematic`, `documentary`, `family`, `vlog`, `adventure`, and
 `romantic`.
 
 The `storyboard`, `render`, and `report` commands expose pipeline entry points.
-Some later canonical pipeline stages still contain placeholder behavior, even
-where the quick montage flow already has equivalent application-level logic.
+Some optional AI stages still contain placeholder behavior until narration,
+voice synthesis, and embeddings are promoted into the canonical pipeline.
 
 ## Configuration
 
@@ -524,10 +524,10 @@ Media Scan
 | Event Detection | Group scenes into trip events | Implemented |
 | Story Builder | Build opening, journey, highlights, finale, story budgets, and diverse clip ordering | Implemented |
 | Scene Ranking | Explain selection and rejection decisions | Implemented |
-| Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented in quick montage; pipeline placeholder |
+| Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented |
 | Narration and Voice | Generate and synthesize optional voice-over | Planned |
 | Timeline Builder | Produce a declarative edit plan | Implemented |
-| Rendering | Render, atomically replace, and validate the MP4 | Implemented in quick montage; pipeline placeholder |
+| Rendering | Render, atomically replace, and validate the MP4 | Implemented |
 
 Stage contract changes must update domain models, serialization, downstream
 consumers, tests, and this README together.
@@ -673,16 +673,25 @@ workspace/<project>/
     |-- analysis.json
     |-- scenes.json
     |-- frame_sampling.json
+    |-- frame_sampling.cache.json
     |-- quality_analysis.json
+    |-- quality_analysis.cache.json
     |-- vision_analysis.json
+    |-- vision_analysis.cache.json
     |-- speech_analysis.json
+    |-- speech_analysis.cache.json
+    |-- audio_analysis.json
+    |-- audio_analysis.cache.json
     |-- duplicates.json
     |-- scene_descriptions.json
     |-- events.json
     |-- storyboard.json
     |-- selection_decisions.json
+    |-- quick_timeline.cache.json
     |-- music_plan.json
+    |-- music_plan.cache.json
     |-- montage_quality_report.json
+    |-- rendering.cache.json
     |-- quick_timeline.json
     |-- preview.mp4
     `-- final.mp4
@@ -716,6 +725,19 @@ middle, and end of the movie.
 Media metadata is reused when path, size, and `modified_ns` match. Scene,
 Vision, and speech cache keys include the relevant source metadata, time
 boundaries, model, style, and prompt/schema version.
+
+Frame Sampling, Quality Analysis, Vision Analysis, Speech Analysis, Audio
+Analysis, Timeline Builder, Music Selection, and Rendering write typed sidecar
+cache manifests with input fingerprints, configuration fingerprints, artifact
+schema versions, and output paths. A rerun skips these stages only when the
+manifest matches current inputs and all required artifacts still exist and
+validate. Frame and quality fingerprints include source media and scene
+boundaries, while ignoring later semantic metadata. Vision, speech, and audio
+fingerprints include only the inputs those stages consume. Timeline fingerprints
+include ranked scenes and media assets. Music fingerprints include the timeline
+without embedded music, scene metadata, media assets, and local soundtrack file
+metadata. Rendering fingerprints include the final timeline, output path,
+FFmpeg/FFprobe settings, and worker configuration.
 
 Manual scene decisions do not invalidate Vision analysis. A full project reset
 can be performed by deleting only the workspace after carefully verifying its
@@ -845,9 +867,10 @@ MVP acceptance criteria:
 - pause and cancel movie jobs;
 - resume after process interruption;
 - persist movie-job history;
-- replace remaining placeholder stages with explicit Music Selection and
-  Rendering implementations;
-- add per-stage input/config/model fingerprints for reliable skip/resume;
+- replace remaining placeholder stages with explicit Embeddings, Narration,
+  and Voice Synthesis implementations;
+- extend per-stage input/config/model fingerprints to the remaining lightweight
+  and optional AI stages;
 - enforce disk-cache limits and cleanup;
 - check free disk space before rendering;
 - add managed SQLite migrations.

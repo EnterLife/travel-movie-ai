@@ -465,3 +465,12 @@ class StageResult(BaseModel):
     skipped: bool = False
     artifacts: list[Path] = Field(default_factory=list)
     message: str = ""
+
+
+class StageCacheManifest(BaseModel):
+    stage: PipelineStage
+    artifact_schema_version: str
+    input_fingerprint: str = Field(min_length=64, max_length=64)
+    config_fingerprint: str = Field(min_length=64, max_length=64)
+    created_at: datetime
+    artifacts: list[Path] = Field(default_factory=list)

@@ -611,6 +611,22 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
     def fake_detect_resource_profile(*args: object, **kwargs: object) -> object:
         return type("Profile", (), {"render_workers": 1, "ffmpeg_threads": 1})()
 
+    class FakeFFprobeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def probe(self, path: Path) -> object:
+            return type(
+                "Probe",
+                (),
+                {
+                    "duration_seconds": 3.0,
+                    "metadata": {
+                        "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                    },
+                },
+            )()
+
     def fake_enrich(
         report: MontageQualityReport,
         output_path: Path,
@@ -628,6 +644,7 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
     monkeypatch.setattr(rendering, "QuickMontageRenderer", FakeRenderer)
     monkeypatch.setattr(rendering, "detect_resource_profile", fake_detect_resource_profile)
     monkeypatch.setattr(rendering, "enrich_montage_quality_report_with_render", fake_enrich)
+    monkeypatch.setattr(rendering, "FFprobeClient", FakeFFprobeClient)
 
     first = RenderingStage().run(context)
     second = RenderingStage().run(context)
@@ -636,6 +653,73 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
     assert second.skipped is True
     assert calls == 1
     assert (context.artifacts_dir / "rendering.cache.json").is_file()
+
+
+def test_rendering_stage_rerenders_when_cached_movie_fails_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "clip.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    plan = _timeline_plan(asset, scene)
+    (context.artifacts_dir / "quick_timeline.json").write_text(
+        plan.model_dump_json(),
+        encoding="utf-8",
+    )
+    calls = 0
+
+    class FakeRenderer:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def render(
+            self,
+            montage_plan: QuickMontagePlan,
+            output_path: Path,
+            work_dir: Path,
+        ) -> str:
+            nonlocal calls
+            calls += 1
+            output_path.write_bytes(b"fake mp4")
+            return "fake-encoder"
+
+    class FailingFFprobeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def probe(self, path: Path) -> object:
+            raise rendering.TravelMovieError("cached movie is corrupt")
+
+    def fake_detect_resource_profile(*args: object, **kwargs: object) -> object:
+        return type("Profile", (), {"render_workers": 1, "ffmpeg_threads": 1})()
+
+    def fake_enrich(
+        report: MontageQualityReport,
+        output_path: Path,
+        **kwargs: object,
+    ) -> MontageQualityReport:
+        return report.model_copy(
+            update={
+                "rendered_path": output_path,
+                "rendered_duration_seconds": report.planned_duration_seconds,
+                "rendered_has_video": True,
+                "rendered_has_audio": True,
+            }
+        )
+
+    monkeypatch.setattr(rendering, "QuickMontageRenderer", FakeRenderer)
+    monkeypatch.setattr(rendering, "detect_resource_profile", fake_detect_resource_profile)
+    monkeypatch.setattr(rendering, "enrich_montage_quality_report_with_render", fake_enrich)
+    monkeypatch.setattr(rendering, "FFprobeClient", FailingFFprobeClient)
+
+    first = RenderingStage().run(context)
+    second = RenderingStage().run(context)
+
+    assert first.skipped is False
+    assert second.skipped is False
+    assert calls == 2
 
 
 def test_rendering_stage_skips_empty_timeline(tmp_path: Path) -> None:

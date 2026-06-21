@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.core.exceptions import MontageError
+from travelmovieai.core.exceptions import MontageError, TravelMovieError
 from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.models import MontageQualityReport, QuickMontagePlan, StageResult
 from travelmovieai.editing.quality_report import (
@@ -20,6 +20,7 @@ from travelmovieai.infrastructure.artifacts import (
     write_stage_cache_manifest,
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.infrastructure.ffmpeg import FFprobeClient
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
@@ -73,7 +74,11 @@ class RenderingStage(Stage):
             input_fingerprint=input_fingerprint,
             config_fingerprint=config_fingerprint,
             artifacts=[output_path, quality_artifact],
-        ) and _cached_render_artifacts_valid(quality_artifact, output_path):
+        ) and _cached_render_artifacts_valid(
+            quality_artifact,
+            output_path,
+            context.settings.ffprobe_binary,
+        ):
             return StageResult(
                 stage=self.name,
                 skipped=True,
@@ -119,16 +124,38 @@ class RenderingStage(Stage):
         )
 
 
-def _cached_render_artifacts_valid(quality_artifact: Path, output_path: Path) -> bool:
+def _cached_render_artifacts_valid(
+    quality_artifact: Path,
+    output_path: Path,
+    ffprobe_binary: str,
+) -> bool:
     try:
         report = MontageQualityReport.model_validate_json(
             quality_artifact.read_text(encoding="utf-8")
         )
     except (OSError, ValidationError):
         return False
-    return (
-        output_path.is_file()
-        and report.rendered_path == output_path
-        and report.rendered_has_video is True
-        and report.rendered_has_audio is True
+    if (
+        not output_path.is_file()
+        or report.rendered_path != output_path
+        or report.rendered_has_video is not True
+        or report.rendered_has_audio is not True
+    ):
+        return False
+    try:
+        probe = FFprobeClient(ffprobe_binary).probe(output_path)
+    except TravelMovieError:
+        return False
+    stream_types = {
+        stream.get("codec_type")
+        for stream in probe.metadata.get("streams", [])
+        if isinstance(stream, dict)
+    }
+    if "video" not in stream_types or "audio" not in stream_types:
+        return False
+    if probe.duration_seconds is None or probe.duration_seconds <= 0:
+        return False
+    return not (
+        report.rendered_duration_seconds is not None
+        and abs(probe.duration_seconds - report.rendered_duration_seconds) > 0.5
     )

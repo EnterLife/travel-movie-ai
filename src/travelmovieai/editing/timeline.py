@@ -616,6 +616,8 @@ def _best_scene_window(
     candidates: list[tuple[float, float, str]] = []
     candidates.extend(_speech_segment_candidates(scene, available_seconds, duration_seconds))
     candidates.extend(_explicit_window_candidates(scene, available_seconds, duration_seconds))
+    if not candidates:
+        candidates.extend(_people_window_candidates(scene, available_seconds, duration_seconds))
     candidates.extend(_quality_panel_candidates(scene, available_seconds, duration_seconds))
     if not candidates:
         middle_start = _clamp_window_start(
@@ -723,6 +725,45 @@ def _speech_segment_candidates(
             )
         )
     return candidates
+
+
+def _people_window_candidates(
+    scene: Scene,
+    available_seconds: float,
+    duration_seconds: float,
+) -> list[tuple[float, float, str]]:
+    if not _has_people(scene):
+        return []
+    middle_start = _clamp_window_start(
+        available_seconds * 0.5 - duration_seconds / 2,
+        available_seconds,
+        duration_seconds,
+    )
+    people_score = _float_value(
+        _vision_score_factors(scene).get("people"),
+        86.0,
+    )
+    return [
+        (
+            min(96.0, max(88.0, people_score + 8.0)),
+            middle_start,
+            "people-safe center",
+        )
+    ]
+
+
+def _has_people(scene: Scene) -> bool:
+    people_count = _float_value(scene.metadata.get("people_count"))
+    groups = scene.metadata.get("people_groups", [])
+    return people_count > 0 or (
+        isinstance(groups, list)
+        and any(str(group).strip().casefold() not in {"", "none"} for group in groups)
+    )
+
+
+def _vision_score_factors(scene: Scene) -> dict[object, object]:
+    factors = scene.metadata.get("vision_score_factors", {})
+    return factors if isinstance(factors, dict) else {}
 
 
 def _candidate_reason(source: str, label: str) -> str:

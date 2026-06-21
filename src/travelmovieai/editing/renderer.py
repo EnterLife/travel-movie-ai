@@ -159,6 +159,9 @@ class QuickMontageRenderer:
             ]
         else:
             audio_input = "0:a:0" if clip.has_audio else "1:a:0"
+            seek_start = _seek_start_seconds(clip.source_start_seconds)
+            trim_start = clip.source_start_seconds - seek_start
+            decode_duration = _decimal(clip.duration_seconds + trim_start + 0.25)
             command = [
                 self.ffmpeg_binary,
                 "-hide_banner",
@@ -168,9 +171,9 @@ class QuickMontageRenderer:
                 "-filter_threads",
                 str(self.ffmpeg_threads),
                 "-ss",
-                _decimal(clip.source_start_seconds),
+                _decimal(seek_start),
                 "-t",
-                duration,
+                decode_duration,
                 "-i",
                 str(clip.source_path),
             ]
@@ -188,8 +191,11 @@ class QuickMontageRenderer:
             command.extend(
                 [
                     "-filter_complex",
-                    f"[0:v:0]{video_filter}[v];"
-                    f"[{audio_input}]aresample=48000,"
+                    f"[0:v:0]trim=start={_decimal(trim_start)}:duration={duration},"
+                    f"setpts=PTS-STARTPTS,{video_filter}[v];"
+                    f"[{audio_input}]"
+                    f"{_audio_trim_filter(clip.has_audio, trim_start, duration)}"
+                    "aresample=48000,"
                     f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
                     f"apad,atrim=0:{duration},asetpts=PTS-STARTPTS[a]",
                     "-map",
@@ -423,6 +429,16 @@ class QuickMontageRenderer:
 
 def _decimal(value: float) -> str:
     return f"{value:.3f}"
+
+
+def _seek_start_seconds(source_start_seconds: float) -> float:
+    return max(0.0, source_start_seconds - 1.0)
+
+
+def _audio_trim_filter(has_audio: bool, trim_start: float, duration: str) -> str:
+    if has_audio:
+        return f"atrim=start={_decimal(trim_start)}:duration={duration},asetpts=PTS-STARTPTS,"
+    return f"atrim=0:{duration},asetpts=PTS-STARTPTS,"
 
 
 def _concat_path(path: Path) -> str:

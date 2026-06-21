@@ -23,7 +23,7 @@ from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "rendering-v1"
+ARTIFACT_SCHEMA_VERSION = "rendering-v2"
 
 
 class RenderingStage(Stage):

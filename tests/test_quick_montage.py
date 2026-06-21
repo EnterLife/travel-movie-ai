@@ -121,6 +121,40 @@ def test_renderer_filter_graph_uses_clip_transition_policy(tmp_path: Path) -> No
     assert "xfade=transition=slideright:duration=0.400" in graph
 
 
+def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> None:
+    captured: list[list[str]] = []
+
+    class CapturingRenderer(QuickMontageRenderer):
+        def _run(self, command: list[str], message: str) -> None:
+            captured.append(command)
+
+    settings = QuickMontageSettings(transition="none", music_enabled=False)
+    clip = MontageClip(
+        asset_id=uuid4(),
+        source_path=tmp_path / "source.mp4",
+        relative_path=Path("source.mp4"),
+        media_type=MediaType.VIDEO,
+        source_start_seconds=5.2,
+        duration_seconds=2,
+        has_audio=True,
+    )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[clip],
+        total_duration_seconds=2,
+    )
+
+    CapturingRenderer()._render_segment(clip, plan, tmp_path / "segment.mp4")
+
+    command = captured[0]
+    filter_graph = command[command.index("-filter_complex") + 1]
+    assert command[command.index("-ss") + 1] == "4.200"
+    assert command[command.index("-t") + 1] == "3.250"
+    assert "trim=start=1.000:duration=2.000" in filter_graph
+    assert "atrim=start=1.000:duration=2.000" in filter_graph
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
 def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     media = tmp_path / "Моя поездка"

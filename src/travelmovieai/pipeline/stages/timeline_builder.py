@@ -16,7 +16,7 @@ from travelmovieai.infrastructure.artifacts import (
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "timeline-builder-v1"
+ARTIFACT_SCHEMA_VERSION = "timeline-builder-v2"
 
 
 class TimelineBuilderStage(Stage):

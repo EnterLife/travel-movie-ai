@@ -328,6 +328,43 @@ def test_semantic_selection_uses_quality_candidate_windows(
     assert "visual candidate: clean viewpoint" in plan.clips[0].selection_reason
 
 
+def test_semantic_selection_protects_people_from_quality_only_window(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "people-moment.mp4", created_at, duration=12)
+    scene = _scene(
+        source,
+        uuid4(),
+        82,
+        duration=12,
+        people_count=3,
+        people_groups=["family"],
+        vision_score_factors={"people": 88},
+        quality_metrics={
+            "candidate_windows": [
+                {
+                    "relative_position": 0.9,
+                    "score": 94,
+                    "source": "visual_quality",
+                    "label": "empty but sharp",
+                }
+            ]
+        },
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert plan.clips[0].source_start_seconds == 4.5
+    assert "people-safe center" in plan.clips[0].selection_reason
+
+
 def test_semantic_selection_accepts_top_level_relative_candidate_window(
     tmp_path: Path,
 ) -> None:

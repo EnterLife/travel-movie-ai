@@ -16,12 +16,11 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
         quality = scene.quality_score if scene.quality_score is not None else 60.0
         event_importance = float(scene.metadata.get("event_importance", base))
         landmark_bonus = min(8.0, len(scene.metadata.get("landmarks", [])) * 4.0)
+        people_bonus = _people_bonus(scene)
         audio_bonus, audio_penalty, audio_reasons = _audio_factors(scene)
         technical_reasons = list(scene.metadata.get("technical_rejection_reasons", []))
         technical_penalty = min(24.0, len(technical_reasons) * 8.0)
-        duplicate_penalty = (
-            35.0 if scene.metadata.get("duplicate_status") == "duplicate" else 0.0
-        )
+        duplicate_penalty = 35.0 if scene.metadata.get("duplicate_status") == "duplicate" else 0.0
         tags = _semantic_tags(scene)
         rarity = sum(1 / tag_frequency[tag] for tag in tags) / len(tags) if tags else 0.0
         diversity_bonus = min(8.0, rarity * 4)
@@ -34,6 +33,7 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
                 + event_importance * 0.08
                 + diversity_bonus
                 + landmark_bonus
+                + people_bonus
                 + audio_bonus
                 - technical_penalty
                 - duplicate_penalty
@@ -47,6 +47,8 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
         ]
         if landmark_bonus:
             reasons.append("landmark")
+        if people_bonus:
+            reasons.append("people")
         reasons.extend(audio_reasons)
         if diversity_bonus:
             reasons.append("semantic diversity")
@@ -66,6 +68,7 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
                             "visual_quality": quality,
                             "event_importance": event_importance,
                             "landmark_bonus": landmark_bonus,
+                            "people_bonus": people_bonus,
                             "audio_bonus": audio_bonus,
                             "audio_penalty": audio_penalty,
                             "diversity_bonus": diversity_bonus,
@@ -83,6 +86,17 @@ def rank_scenes(scenes: list[Scene]) -> list[Scene]:
             scene.start_seconds,
         ),
     )
+
+
+def _people_bonus(scene: Scene) -> float:
+    people_count = _float_value(scene.metadata.get("people_count"))
+    groups = scene.metadata.get("people_groups", [])
+    has_group = isinstance(groups, list) and any(
+        str(group).strip().casefold() not in {"", "none"} for group in groups
+    )
+    if people_count <= 0 and not has_group:
+        return 0.0
+    return min(8.0, 3.0 + people_count * 1.5 + (1.5 if has_group else 0.0))
 
 
 def _semantic_tags(scene: Scene) -> set[str]:

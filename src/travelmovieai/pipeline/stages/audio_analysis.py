@@ -22,6 +22,16 @@ class AudioAnalysisStage(Stage):
     name = PipelineStage.AUDIO_ANALYSIS
 
     def run(self, context: ProjectContext) -> StageResult:
+        if (
+            context.montage_settings is not None
+            and not context.montage_settings.audio_analysis
+        ):
+            return StageResult(
+                stage=self.name,
+                skipped=True,
+                message="Audio analysis disabled by montage settings.",
+            )
+
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
         scenes = repository.list_scenes()

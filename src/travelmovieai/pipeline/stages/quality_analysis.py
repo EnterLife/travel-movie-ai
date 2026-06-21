@@ -22,6 +22,16 @@ class QualityAnalysisStage(Stage):
     name = PipelineStage.QUALITY_ANALYSIS
 
     def run(self, context: ProjectContext) -> StageResult:
+        if (
+            context.montage_settings is not None
+            and not context.montage_settings.quality_analysis
+        ):
+            return StageResult(
+                stage=self.name,
+                skipped=True,
+                message="Visual quality analysis disabled by montage settings.",
+            )
+
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
         scenes = repository.list_scenes()

@@ -299,6 +299,33 @@ def test_speech_analysis_stage_reuses_cached_transcripts(
     assert (context.artifacts_dir / "speech_analysis.cache.json").is_file()
 
 
+def test_speech_analysis_stage_respects_disabled_montage_setting(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = ProjectContext(
+        input_path=tmp_path / "media",
+        workspace=tmp_path / "workspace",
+        settings=Settings(),
+        montage_settings=QuickMontageSettings(
+            semantic_analysis=True,
+            speech_analysis=False,
+        ),
+    )
+    context.prepare()
+
+    def fail_analyze(*args: object, **kwargs: object) -> SpeechAnalysisReport:
+        raise AssertionError("speech analysis should be skipped")
+
+    monkeypatch.setattr(speech_analysis, "analyze_speech", fail_analyze)
+
+    result = SpeechAnalysisStage().run(context)
+
+    assert result.stage is PipelineStage.SPEECH_ANALYSIS
+    assert result.skipped is True
+    assert "disabled" in result.message
+
+
 def test_audio_analysis_stage_reuses_cached_scene_audio_metadata(
     tmp_path: Path,
     monkeypatch,

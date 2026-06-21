@@ -24,10 +24,13 @@ class SceneDetectionStage(Stage):
         settings: QuickMontageSettings | None = None,
         detector: SceneDetector | None = None,
     ) -> None:
-        self._settings = settings or QuickMontageSettings()
+        self._settings = settings
         self._detector = detector or SceneDetector()
 
     def run(self, context: ProjectContext) -> StageResult:
+        settings = self._settings or context.montage_settings or QuickMontageSettings(
+            story_style=context.style
+        )
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
         assets = repository.list_assets()
@@ -40,12 +43,12 @@ class SceneDetectionStage(Stage):
             if asset.scan_error or asset.media_type not in {MediaType.VIDEO, MediaType.PHOTO}:
                 continue
             cached = existing.get(str(asset.id), [])
-            expected_key = scene_cache_key(asset, self._settings)
+            expected_key = scene_cache_key(asset, settings)
             if cached and all(scene.metadata.get("cache_key") == expected_key for scene in cached):
                 scenes.extend(cached)
                 cached_count += len(cached)
                 continue
-            detected, used_fallback = self._detector.detect(asset, self._settings)
+            detected, used_fallback = self._detector.detect(asset, settings)
             scenes.extend(detected)
             fallback_count += len(detected) if used_fallback else 0
 

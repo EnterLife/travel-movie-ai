@@ -40,10 +40,7 @@ class TimelineBuilderStage(Stage):
                 message="Timeline builder needs media assets and ranked scenes.",
             )
 
-        settings = QuickMontageSettings(
-            semantic_analysis=True,
-            story_style=context.style,
-        )
+        settings = _semantic_montage_settings(context)
         music_artifact = context.artifacts_dir / "music_plan.json"
         music_plan = _read_music_plan(music_artifact)
         timeline_artifact = context.artifacts_dir / "quick_timeline.json"
@@ -96,3 +93,11 @@ def _read_music_plan(path: Path) -> MusicPlan | None:
         return MusicPlan.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError) as error:
         raise MontageError("Не удалось прочитать music_plan.json для timeline.") from error
+
+
+def _semantic_montage_settings(context: ProjectContext) -> QuickMontageSettings:
+    if context.montage_settings is None:
+        return QuickMontageSettings(semantic_analysis=True, story_style=context.style)
+    return context.montage_settings.model_copy(
+        update={"semantic_analysis": True, "story_style": context.style}
+    )

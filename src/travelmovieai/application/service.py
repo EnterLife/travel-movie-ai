@@ -96,6 +96,24 @@ class TravelMovieService:
         style: StoryStyle,
         semantic: bool = False,
     ) -> StageResult:
+        if semantic:
+            return self.run_until(
+                PipelineStage.RENDERING,
+                input_path=input_path,
+                output_path=output_path,
+                workspace=workspace,
+                style=style,
+                montage_settings=QuickMontageSettings(
+                    semantic_analysis=True,
+                    story_style=style,
+                    vision_provider=self.settings.vision_provider,
+                    vision_model=(
+                        None
+                        if self.settings.vision_model == "auto"
+                        else self.settings.vision_model
+                    ),
+                ),
+            )
         result = self.create_quick_montage(
             input_path=input_path,
             workspace=workspace,
@@ -521,12 +539,14 @@ class TravelMovieService:
         workspace: Path | None,
         output_path: Path | None = None,
         style: StoryStyle = StoryStyle.CINEMATIC,
+        montage_settings: QuickMontageSettings | None = None,
     ) -> StageResult:
         context = self._context(
             input_path=input_path,
             output_path=output_path,
             workspace=workspace,
             style=style,
+            montage_settings=montage_settings,
         )
         return PipelineRunner(build_default_pipeline()).run_until(context, target)
 
@@ -551,6 +571,7 @@ class TravelMovieService:
         workspace: Path | None,
         output_path: Path | None = None,
         style: StoryStyle = StoryStyle.CINEMATIC,
+        montage_settings: QuickMontageSettings | None = None,
     ) -> ProjectContext:
         project_paths = self.resolve_project_paths(input_path, workspace)
         return ProjectContext(
@@ -559,6 +580,7 @@ class TravelMovieService:
             output_path=output_path,
             settings=self.settings,
             style=style,
+            montage_settings=montage_settings,
         )
 
 

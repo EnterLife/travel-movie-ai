@@ -411,9 +411,11 @@ travelmovieai create `
 Story styles: `cinematic`, `documentary`, `family`, `vlog`, `adventure`, and
 `romantic`.
 
-The `storyboard`, `render`, and `report` commands expose pipeline entry points.
-Some optional AI stages still contain placeholder behavior until narration,
-voice synthesis, and embeddings are promoted into the canonical pipeline.
+The `create --semantic` command runs the canonical pipeline through rendering.
+The `storyboard`, `render`, and `report` commands expose additional pipeline
+entry points. Some optional AI stages still contain placeholder behavior until
+narration, voice synthesis, and embeddings are promoted into the canonical
+pipeline.
 
 ## Configuration
 

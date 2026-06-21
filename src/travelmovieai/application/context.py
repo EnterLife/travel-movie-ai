@@ -5,6 +5,7 @@ from pathlib import Path
 
 from travelmovieai.core.config import Settings
 from travelmovieai.domain.enums import StoryStyle
+from travelmovieai.domain.models import QuickMontageSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +15,7 @@ class ProjectContext:
     settings: Settings
     output_path: Path | None = None
     style: StoryStyle = StoryStyle.CINEMATIC
+    montage_settings: QuickMontageSettings | None = None
 
     @property
     def frames_dir(self) -> Path:

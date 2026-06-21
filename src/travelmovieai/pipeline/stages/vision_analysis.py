@@ -24,6 +24,17 @@ class VisionAnalysisStage(Stage):
     name = PipelineStage.VISION_ANALYSIS
 
     def run(self, context: ProjectContext) -> StageResult:
+        montage_settings = context.montage_settings
+        provider_name = (
+            montage_settings.vision_provider
+            if montage_settings is not None
+            else context.settings.vision_provider
+        )
+        model_name = (
+            montage_settings.vision_model
+            if montage_settings is not None and montage_settings.vision_model is not None
+            else context.settings.vision_model
+        )
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
         scenes = repository.list_scenes()
@@ -36,8 +47,8 @@ class VisionAnalysisStage(Stage):
         input_fingerprint = artifact_fingerprint(_vision_inputs(scenes))
         config_fingerprint = artifact_fingerprint(
             {
-                "provider": context.settings.vision_provider,
-                "model": context.settings.vision_model,
+                "provider": provider_name,
+                "model": model_name,
                 "device": context.settings.device,
                 "allow_model_download": context.settings.allow_model_download,
                 "model_batch_size": resources.model_batch_size,
@@ -62,8 +73,8 @@ class VisionAnalysisStage(Stage):
             )
 
         provider: VisionProvider = build_vision_provider(
-            provider=context.settings.vision_provider,
-            model=context.settings.vision_model,
+            provider=provider_name,
+            model=model_name,
             device=context.settings.device,
             cache_dir=context.settings.model_cache.expanduser().resolve(),
             allow_download=context.settings.allow_model_download,

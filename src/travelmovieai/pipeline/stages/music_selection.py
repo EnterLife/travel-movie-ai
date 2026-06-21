@@ -36,10 +36,22 @@ class MusicSelectionStage(Stage):
                 message="Music selection needs media assets and ranked scenes.",
             )
 
-        settings = QuickMontageSettings(
-            semantic_analysis=True,
-            story_style=context.style,
-        )
+        settings = _semantic_montage_settings(context)
+        if not settings.music_enabled or settings.music_mode == "none":
+            music_plan = MusicPlan(
+                mode="none",
+                duration_seconds=0,
+                reasoning="Music disabled by montage settings.",
+            )
+            music_artifact = context.artifacts_dir / "music_plan.json"
+            write_json_atomic(music_artifact, music_plan)
+            return StageResult(
+                stage=self.name,
+                skipped=True,
+                artifacts=[music_artifact],
+                message="Music selection disabled by montage settings.",
+            )
+
         draft_plan = build_semantic_montage_plan(assets, scenes, settings)
         music_artifact = context.artifacts_dir / "music_plan.json"
         cache_artifact = context.artifacts_dir / "music_plan.cache.json"
@@ -107,6 +119,14 @@ def _cached_music_artifact_valid(music_artifact: Path) -> bool:
     if music_plan.mode == "none" or music_plan.source_path is None:
         return True
     return music_plan.source_path.is_file()
+
+
+def _semantic_montage_settings(context: ProjectContext) -> QuickMontageSettings:
+    if context.montage_settings is None:
+        return QuickMontageSettings(semantic_analysis=True, story_style=context.style)
+    return context.montage_settings.model_copy(
+        update={"semantic_analysis": True, "story_style": context.style}
+    )
 
 
 def _music_source_fingerprints(

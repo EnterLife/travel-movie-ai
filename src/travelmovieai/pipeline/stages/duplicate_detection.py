@@ -13,9 +13,24 @@ class DuplicateDetectionStage(Stage):
     name = PipelineStage.DUPLICATE_DETECTION
 
     def run(self, context: ProjectContext) -> StageResult:
+        if (
+            context.montage_settings is not None
+            and not context.montage_settings.duplicate_detection
+        ):
+            return StageResult(
+                stage=self.name,
+                skipped=True,
+                message="Duplicate detection disabled by montage settings.",
+            )
+
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
-        report, scenes = detect_duplicate_scenes(repository.list_scenes())
+        threshold = (
+            context.montage_settings.duplicate_similarity_threshold
+            if context.montage_settings is not None
+            else 0.92
+        )
+        report, scenes = detect_duplicate_scenes(repository.list_scenes(), threshold)
         repository.synchronize_scenes(scenes)
         artifact = context.artifacts_dir / "duplicates.json"
         write_json_atomic(artifact, report)

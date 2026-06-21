@@ -3,10 +3,16 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from travelmovieai.analysis.scenes import RepresentativeFrameExtractor
+from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, frame_sample_count_for_mode
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.domain.enums import PipelineStage
-from travelmovieai.domain.models import FrameSamplingReport, MediaAsset, Scene, StageResult
+from travelmovieai.domain.models import (
+    FrameSamplingReport,
+    MediaAsset,
+    QuickMontageSettings,
+    Scene,
+    StageResult,
+)
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
     stage_cache_manifest_matches,
@@ -17,7 +23,7 @@ from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.system import check_cuda
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "frame-sampling-v1"
+ARTIFACT_SCHEMA_VERSION = "frame-sampling-v2"
 
 
 class FrameSamplingStage(Stage):
@@ -30,6 +36,8 @@ class FrameSamplingStage(Stage):
         source_scenes = repository.list_scenes()
         artifact = context.artifacts_dir / "frame_sampling.json"
         cache_artifact = context.artifacts_dir / "frame_sampling.cache.json"
+        montage_settings = context.montage_settings or QuickMontageSettings()
+        frame_sample_count = frame_sample_count_for_mode(montage_settings.analysis_quality_mode)
         input_fingerprint = artifact_fingerprint(
             _asset_inputs(list(assets.values())),
             _scene_inputs(source_scenes),
@@ -38,6 +46,8 @@ class FrameSamplingStage(Stage):
             {
                 "ffmpeg_binary": context.settings.ffmpeg_binary,
                 "ffprobe_binary": context.settings.ffprobe_binary,
+                "analysis_quality_mode": montage_settings.analysis_quality_mode,
+                "frame_sample_count": frame_sample_count,
                 "schema": ARTIFACT_SCHEMA_VERSION,
             }
         )
@@ -60,6 +70,7 @@ class FrameSamplingStage(Stage):
             context.settings.ffmpeg_binary,
             context.settings.ffprobe_binary,
             use_cuda_decode=check_cuda(context.settings.ffmpeg_binary).available,
+            frame_sample_count=frame_sample_count,
         )
         scenes = []
         extracted_count = 0

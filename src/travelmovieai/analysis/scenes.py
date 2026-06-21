@@ -122,9 +122,11 @@ class RepresentativeFrameExtractor:
         ffmpeg_binary: str = "ffmpeg",
         ffprobe_binary: str = "ffprobe",
         use_cuda_decode: bool = False,
+        frame_sample_count: int = 3,
     ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
         self.use_cuda_decode = use_cuda_decode
+        self.frame_sample_count = max(3, min(9, frame_sample_count))
         self._probe = FFprobeClient(ffprobe_binary)
         self._video_durations: dict[Path, float | None] = {}
         self._duration_lock = Lock()
@@ -142,16 +144,15 @@ class RepresentativeFrameExtractor:
             return asset.path
 
         frames_dir.mkdir(parents=True, exist_ok=True)
-        frame_path = frames_dir / f"{scene.id}-contact-v3.png"
+        frame_path = frames_dir / f"{scene.id}-contact-v4-{self.frame_sample_count}.png"
         if frame_path.is_file() and frame_path.stat().st_size > 0:
             return frame_path
-        temporary_path = frame_path.with_name(
-            f".{frame_path.stem}.{uuid4().hex}.tmp.png"
-        )
+        temporary_path = frame_path.with_name(f".{frame_path.stem}.{uuid4().hex}.tmp.png")
         timestamps = _sample_timestamps(
             scene,
             asset,
             self._video_duration(asset),
+            self.frame_sample_count,
         )
         command = self._command(asset, timestamps, temporary_path, use_cuda=False)
         commands = (
@@ -186,20 +187,15 @@ class RepresentativeFrameExtractor:
             detail = completed.stderr.strip() if completed is not None else ""
             if not detail:
                 return_code = completed.returncode if completed is not None else "unknown"
-                detail = (
-                    f"FFmpeg exited with code {return_code}, "
-                    "but did not create an image."
-                )
-            raise MontageError(
-                f"Could not extract a frame from {asset.relative_path}: {detail}"
-            )
+                detail = f"FFmpeg exited with code {return_code}, but did not create an image."
+            raise MontageError(f"Could not extract a frame from {asset.relative_path}: {detail}")
         finally:
             temporary_path.unlink(missing_ok=True)
 
     def _command(
         self,
         asset: MediaAsset,
-        timestamps: tuple[float, float, float],
+        timestamps: tuple[float, ...],
         temporary_path: Path,
         *,
         use_cuda: bool,
@@ -218,16 +214,30 @@ class RepresentativeFrameExtractor:
                 command.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
             command.extend(["-i", str(asset.path)])
         download = "hwdownload,format=nv12," if use_cuda else ""
+        filters = []
+        labels = []
+        for index in range(len(timestamps)):
+            label = f"f{index}"
+            labels.append(f"[{label}]")
+            filters.append(
+                f"[{index}:v]{download}scale=480:270:force_original_aspect_ratio=decrease,"
+                f"pad=480:270:(ow-iw)/2:(oh-ih)/2:black[{label}]"
+            )
+        layout = "|".join(
+            f"{(index % 3) * 480}_{(index // 3) * 270}" for index in range(len(timestamps))
+        )
         command.extend(
             [
                 "-filter_complex",
-                f"[0:v]{download}scale=480:270:force_original_aspect_ratio=decrease,"
-                "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[a];"
-                f"[1:v]{download}scale=480:270:force_original_aspect_ratio=decrease,"
-                "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[b];"
-                f"[2:v]{download}scale=480:270:force_original_aspect_ratio=decrease,"
-                "pad=480:270:(ow-iw)/2:(oh-ih)/2:black[c];"
-                "[a][b][c]hstack=inputs=3,format=rgb24[v]",
+                ";".join(
+                    [
+                        *filters,
+                        (
+                            f"{''.join(labels)}xstack=inputs={len(labels)}:"
+                            f"layout={layout}:fill=black,format=rgb24[v]"
+                        ),
+                    ]
+                ),
                 "-map",
                 "[v]",
                 "-an",
@@ -251,9 +261,7 @@ class RepresentativeFrameExtractor:
         with self._duration_lock:
             if asset.path in self._video_durations:
                 return self._video_durations[asset.path]
-            stored = _optional_positive_float(
-                asset.probe_metadata.get("video_duration_seconds")
-            )
+            stored = _optional_positive_float(asset.probe_metadata.get("video_duration_seconds"))
             if stored is not None:
                 self._video_durations[asset.path] = stored
                 return stored
@@ -282,7 +290,8 @@ def _sample_timestamps(
     scene: Scene,
     asset: MediaAsset,
     video_duration: float | None,
-) -> tuple[float, float, float]:
+    count: int = 3,
+) -> tuple[float, ...]:
     end = scene.end_seconds
     if video_duration is not None:
         frame_margin = max(0.05, 1 / (asset.fps or 25))
@@ -290,12 +299,24 @@ def _sample_timestamps(
     duration = max(0, end - scene.start_seconds)
     if duration <= 0:
         timestamp = max(0, min(scene.start_seconds, (video_duration or end) - 0.05))
-        return timestamp, timestamp, timestamp
-    return (
-        scene.start_seconds + duration * 0.12,
-        scene.start_seconds + duration * 0.5,
-        scene.start_seconds + duration * 0.88,
-    )
+        return tuple(timestamp for _ in range(count))
+    return tuple(scene.start_seconds + duration * position for position in _sample_positions(count))
+
+
+def frame_sample_count_for_mode(mode: str) -> int:
+    if mode == "fast":
+        return 3
+    if mode == "deep":
+        return 9
+    return 5
+
+
+def _sample_positions(count: int) -> tuple[float, ...]:
+    if count <= 3:
+        return (0.12, 0.5, 0.88)
+    if count <= 5:
+        return (0.08, 0.3, 0.5, 0.7, 0.92)
+    return (0.06, 0.17, 0.29, 0.4, 0.5, 0.6, 0.71, 0.83, 0.94)
 
 
 def _optional_positive_float(value: object) -> float | None:

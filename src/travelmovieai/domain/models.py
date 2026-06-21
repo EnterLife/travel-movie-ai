@@ -393,7 +393,12 @@ class QuickMontageSettings(BaseModel):
     duplicate_detection: bool = True
     duplicate_similarity_threshold: float = Field(default=0.92, ge=0.5, le=1)
     max_scenes_per_source: int = Field(default=2, ge=1, le=20)
+    strict_source_diversity: bool = True
     max_scenes_per_event: int = Field(default=4, ge=1, le=20)
+    preserve_chronology: bool = True
+    chronology_tolerance_seconds: float = Field(default=0, ge=0, le=604800)
+    semantic_diversity_weight: float = Field(default=1.0, ge=0, le=3)
+    analysis_quality_mode: Literal["fast", "balanced", "deep"] = "balanced"
     story_style: StoryStyle = StoryStyle.CINEMATIC
     vision_provider: Literal["local", "qwen", "florence"] = "local"
     vision_model: str | None = Field(default=None, max_length=300)

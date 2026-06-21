@@ -254,10 +254,24 @@ the folder and it does not fill the target duration with weak material.
 `min_semantic_score` is a base quality target, but the actual threshold is
 computed from the score distribution of the current project: it rises for strong
 archives and relaxes for consistently modest material. The `max_scenes_per_source`
-setting is a base diversity guard: by default it keeps one source video from
-dominating a large archive, but the limit automatically relaxes when there are
-only a few long source videos and the movie needs more strong scenes. Use scene
-overrides when a specific fragment must be included or excluded.
+setting is a strict diversity guard by default when more than one source video is
+available, so one strong roll cannot dominate the movie. Set
+`strict_source_diversity=false` only when filling the requested duration is more
+important than source variety. A single long source video can still contribute
+multiple scenes because there is no alternate source to use. Use scene overrides
+when a specific fragment must be included or excluded.
+
+Semantic mode preserves capture chronology by default. Vision AI scores scenes
+and describes their story value, but the final timeline uses deterministic
+constraints for chronology, source diversity, event diversity, duplicate
+rejection, and technical quality. Set `preserve_chronology=false` for a more
+storyboard-driven order, or increase `chronology_tolerance_seconds` to allow
+small story-based reorderings inside a time window.
+
+Frame sampling depth is controlled by `analysis_quality_mode`. `fast` samples 3
+frames per scene, `balanced` samples 5, and `deep` samples 9. The default
+`balanced` mode spends more analysis time on representative frames without
+turning every run into a heavy final-quality pass.
 
 For long scenes, semantic montage does not blindly cut the middle of the scene.
 It builds candidate windows inside the scene and prefers explicit highlight
@@ -287,13 +301,16 @@ on strong beats or music accents. The adjustment keeps the same selected scenes,
 stays inside the available source scene window, and preserves the planned movie
 duration where possible.
 
-Story Timeline Optimizer follows storyboard sections when available, so selected
-clips are arranged as opening, journey, highlight, and finale before falling
-back to source chronology. It also applies section duration budgets and
-story-aware pacing for longer movies, using slightly shorter highlight clips
-while keeping the configured maximum clip duration. The optimizer avoids adjacent
-repeats across location, activity, shot type, shot scale, camera motion,
-movement direction, lighting, tags, and large brightness jumps. Semantic
+Story Timeline Optimizer follows source chronology by default and uses
+storyboard sections as tie-breakers inside identical or configured-near capture
+times. When chronology preservation is disabled, selected clips are arranged as
+opening, journey, highlight, and finale before falling back to source chronology.
+It also applies section duration budgets and story-aware pacing for longer
+movies, using slightly shorter highlight clips while keeping the configured
+maximum clip duration. The optimizer avoids adjacent repeats across location,
+activity, shot type, shot scale, camera motion, movement direction, lighting,
+tags, and large brightness jumps. `semantic_diversity_weight` controls how
+strongly these repeat penalties affect selection. Semantic
 timeline clips can also carry a per-cut transition policy so the renderer can use
 contextual fades, dissolves, or motion-oriented transitions instead of one
 transition style for every scene change. One strong but repetitive location or
@@ -528,7 +545,7 @@ Media Scan
 | Scene Ranking | Explain selection and rejection decisions | Implemented |
 | Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented |
 | Narration and Voice | Generate and synthesize optional voice-over | Planned |
-| Timeline Builder | Produce a declarative edit plan | Implemented |
+| Timeline Builder | Produce a declarative edit plan with chronological and diversity constraints | Implemented |
 | Rendering | Render, atomically replace, and validate the MP4 | Implemented |
 
 Stage contract changes must update domain models, serialization, downstream
@@ -586,9 +603,9 @@ The final scene score considers:
 Every selected or rejected scene should retain an explainable reason. The story
 is built before final editing decisions. Story Builder consumes structured
 metadata and transcripts, not raw media. The timeline optimizer should preserve
-the story shape with approximate section budgets and avoid adjacent repeats by
-location, activity, shot type, source asset, and semantic tags when alternatives
-exist.
+capture chronology unless explicitly configured otherwise, preserve the story
+shape with approximate section budgets, and avoid adjacent repeats by location,
+activity, shot type, source asset, and semantic tags when alternatives exist.
 
 ## Architecture
 
@@ -733,13 +750,14 @@ Analysis, Timeline Builder, Music Selection, and Rendering write typed sidecar
 cache manifests with input fingerprints, configuration fingerprints, artifact
 schema versions, and output paths. A rerun skips these stages only when the
 manifest matches current inputs and all required artifacts still exist and
-validate. Frame and quality fingerprints include source media and scene
-boundaries, while ignoring later semantic metadata. Vision, speech, and audio
-fingerprints include only the inputs those stages consume. Timeline fingerprints
-include ranked scenes and media assets. Music fingerprints include the timeline
-without embedded music, scene metadata, media assets, and local soundtrack file
-metadata. Rendering fingerprints include the final timeline, output path,
-FFmpeg/FFprobe settings, and worker configuration.
+validate. Frame fingerprints include source media, scene boundaries, and
+`analysis_quality_mode`, while ignoring later semantic metadata. Quality
+fingerprints include source media and scene boundaries. Vision, speech, and
+audio fingerprints include only the inputs those stages consume. Timeline
+fingerprints include ranked scenes and media assets. Music fingerprints include
+the timeline without embedded music, scene metadata, media assets, and local
+soundtrack file metadata. Rendering fingerprints include the final timeline,
+output path, FFmpeg/FFprobe settings, and worker configuration.
 
 Manual scene decisions do not invalidate Vision analysis. A full project reset
 can be performed by deleting only the workspace after carefully verifying its

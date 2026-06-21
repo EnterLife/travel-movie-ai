@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from travelmovieai.analysis.audio import analyze_audio
 from travelmovieai.analysis.duplicates import detect_duplicate_scenes
 from travelmovieai.analysis.quality import analyze_scene_quality
-from travelmovieai.analysis.scenes import RepresentativeFrameExtractor
+from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, frame_sample_count_for_mode
 from travelmovieai.analysis.speech import analyze_speech
 from travelmovieai.analysis.vision import VisionProvider, analyze_scenes
 from travelmovieai.application.context import ProjectContext
@@ -108,9 +108,7 @@ class TravelMovieService:
                     story_style=style,
                     vision_provider=self.settings.vision_provider,
                     vision_model=(
-                        None
-                        if self.settings.vision_model == "auto"
-                        else self.settings.vision_model
+                        None if self.settings.vision_model == "auto" else self.settings.vision_model
                     ),
                 ),
             )
@@ -271,6 +269,7 @@ class TravelMovieService:
             self.settings.ffmpeg_binary,
             self.settings.ffprobe_binary,
             use_cuda_decode=resources.nvenc,
+            frame_sample_count=frame_sample_count_for_mode(settings.analysis_quality_mode),
         )
         tracker.emit(
             12,

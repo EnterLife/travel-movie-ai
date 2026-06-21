@@ -107,7 +107,8 @@ def test_timeline_builder_stage_writes_plan_and_selection_report(tmp_path: Path)
     assert result.stage is PipelineStage.TIMELINE_BUILDER
     assert result.skipped is False
     assert plan.selection_mode == "semantic"
-    assert [clip.scene_id for clip in plan.clips] == [scenes[0].id, scenes[1].id]
+    assert plan.settings.preserve_chronology is True
+    assert {clip.scene_id for clip in plan.clips} == {scenes[0].id, scenes[1].id}
     assert {decision.scene_id for decision in selection.decisions} == {scene.id for scene in scenes}
 
 

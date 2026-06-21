@@ -158,7 +158,17 @@ def build_semantic_montage_plan(
         raise MontageError("AI analysis did not find any usable scenes for the edit.")
 
     scenes_by_id = {scene.id: scene for scene in candidates}
-    selected.sort(key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id))
+    if settings.preserve_chronology:
+        selected.sort(
+            key=lambda clip: _chronological_timeline_sort_key(
+                clip,
+                scenes_by_id,
+                assets_by_id,
+                settings,
+            )
+        )
+    else:
+        selected.sort(key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id))
     selected = _apply_transition_policy(selected, scenes_by_id, settings)
     return QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -178,16 +188,25 @@ def build_selection_report(
 ) -> SceneSelectionReport:
     ranked = rank_scenes(scenes)
     semantic_threshold = _semantic_score_threshold(ranked, settings)
-    selected = {clip.scene_id: clip for clip in plan.clips if clip.scene_id is not None}
+    selected = {
+        timeline_clip.scene_id: timeline_clip
+        for timeline_clip in plan.clips
+        if timeline_clip.scene_id is not None
+    }
+    selected_source_counts: dict[str, int] = {}
+    for timeline_clip in plan.clips:
+        source_id = str(timeline_clip.asset_id)
+        selected_source_counts[source_id] = selected_source_counts.get(source_id, 0) + 1
+    source_limit = _source_scene_limit(ranked, settings)
     decisions = []
     for scene in ranked:
-        clip = selected.get(scene.id)
-        if clip is not None:
+        selected_clip = selected.get(scene.id)
+        if selected_clip is not None:
             decisions.append(
                 SceneSelectionDecision(
                     scene_id=scene.id,
                     selected=True,
-                    reason=clip.selection_reason,
+                    reason=selected_clip.selection_reason,
                     score=float(scene.metadata.get("ranking_score", 0)),
                 )
             )
@@ -196,7 +215,13 @@ def build_selection_report(
             SceneSelectionDecision(
                 scene_id=scene.id,
                 selected=False,
-                reason=_rejection_reason(scene, settings, semantic_threshold),
+                reason=_rejection_reason(
+                    scene,
+                    settings,
+                    semantic_threshold,
+                    selected_source_counts,
+                    source_limit,
+                ),
                 score=float(scene.metadata.get("ranking_score", 0)),
             )
         )
@@ -290,6 +315,43 @@ def _story_timeline_sort_key(
         clip.relative_path.as_posix().casefold(),
         clip.source_start_seconds,
     )
+
+
+def _chronological_timeline_sort_key(
+    clip: MontageClip,
+    scenes_by_id: dict[UUID, Scene],
+    assets_by_id: dict[UUID, MediaAsset],
+    settings: QuickMontageSettings,
+) -> tuple[object, ...]:
+    scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
+    asset = assets_by_id[clip.asset_id]
+    captured_at = asset.created_at or asset.modified_at
+    capture_seconds = _datetime_seconds(captured_at)
+    if settings.chronology_tolerance_seconds > 0:
+        bucket = math.floor(capture_seconds / settings.chronology_tolerance_seconds)
+        return (
+            float(bucket),
+            _metadata_int(scene, "story_section_index", 99),
+            _metadata_int(scene, "story_role_order", 99),
+            _metadata_int(scene, "story_timeline_order", 9999),
+            capture_seconds,
+            clip.relative_path.as_posix().casefold(),
+            clip.source_start_seconds,
+        )
+    return (
+        capture_seconds,
+        clip.relative_path.as_posix().casefold(),
+        clip.source_start_seconds,
+        _metadata_int(scene, "story_section_index", 99),
+        _metadata_int(scene, "story_role_order", 99),
+        _metadata_int(scene, "story_timeline_order", 9999),
+    )
+
+
+def _datetime_seconds(value: datetime) -> float:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.timestamp()
 
 
 def _metadata_int(scene: Scene | None, key: str, default: int) -> int:
@@ -590,6 +652,8 @@ def _source_scene_limit(
 ) -> int:
     source_count = len({scene.asset_id for scene in eligible})
     if source_count <= 0:
+        return settings.max_scenes_per_source
+    if settings.strict_source_diversity and source_count > 1:
         return settings.max_scenes_per_source
 
     effective_clip_duration = max(
@@ -1080,6 +1144,8 @@ def _rejection_reason(
     scene: Scene,
     settings: QuickMontageSettings,
     semantic_threshold: float,
+    selected_source_counts: dict[str, int] | None = None,
+    source_limit: int | None = None,
 ) -> str:
     override = str(scene.metadata.get("selection_override", "auto"))
     if override == "exclude":
@@ -1094,6 +1160,13 @@ def _rejection_reason(
     ranking_score = scene.metadata.get("ranking_score")
     if isinstance(ranking_score, int | float) and ranking_score < semantic_threshold:
         return f"semantic score below adaptive {semantic_threshold:.0f}"
+    if (
+        settings.strict_source_diversity
+        and selected_source_counts is not None
+        and source_limit is not None
+        and selected_source_counts.get(str(scene.asset_id), 0) >= source_limit
+    ):
+        return f"source diversity limit of {source_limit} scene(s)"
     return "duration budget or event diversity limit"
 
 

@@ -106,7 +106,7 @@ def optimize_story_timeline_candidates(
     selected_duration = _estimated_timeline_duration(selected, assets_by_id, settings)
     remaining_pool = [scene for scene in scenes if scene.id not in selected_ids]
     while selected_duration < settings.target_duration_seconds - 0.05 and remaining_pool:
-        scene = _best_diverse_scene(remaining_pool, selected)
+        scene = _best_diverse_scene(remaining_pool, selected, settings)
         selected.append(scene)
         selected_ids.add(scene.id)
         remaining_pool = [item for item in remaining_pool if item.id != scene.id]
@@ -150,7 +150,7 @@ def _select_role_scenes(
     used = 0.0
     remaining = list(pool)
     while remaining:
-        scene = _best_diverse_scene(remaining, [*selected_so_far, *selected])
+        scene = _best_diverse_scene(remaining, [*selected_so_far, *selected], settings)
         duration = _estimated_scene_duration(scene, assets_by_id, settings)
         would_exceed = used + duration > budget_seconds
         if selected and would_exceed:
@@ -163,13 +163,18 @@ def _select_role_scenes(
     return selected
 
 
-def _best_diverse_scene(pool: list[Scene], selected: list[Scene]) -> Scene:
+def _best_diverse_scene(
+    pool: list[Scene],
+    selected: list[Scene],
+    settings: QuickMontageSettings,
+) -> Scene:
     previous = selected[-1] if selected else None
     recent = selected[-3:]
     return max(
         pool,
         key=lambda scene: (
-            _ranking_score(scene) - _diversity_penalty(scene, previous, recent),
+            _ranking_score(scene)
+            - _diversity_penalty(scene, previous, recent) * settings.semantic_diversity_weight,
             -ROLE_ORDER[_story_role(scene)],
             -_story_order_key(scene)[1],
         ),

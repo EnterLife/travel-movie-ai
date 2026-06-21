@@ -206,6 +206,62 @@ def test_semantic_selection_limits_scenes_from_one_source_video(tmp_path: Path) 
     assert {scene.id for scene in other_scenes} & {clip.scene_id for clip in plan.clips}
 
 
+def test_semantic_selection_keeps_strict_source_limit_by_default(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    dominant = _asset(tmp_path / "dominant-roll.mp4", created_at, duration=30)
+    alternate = _asset(tmp_path / "alternate-roll.mp4", created_at, duration=30)
+    dominant_scenes = [_scene(dominant, uuid4(), 99 - index, start=index * 4) for index in range(4)]
+    alternate_scene = _scene(alternate, uuid4(), 94)
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=12,
+        max_video_clip_seconds=3,
+        max_scenes_per_source=1,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(
+        [dominant, alternate],
+        [*dominant_scenes, alternate_scene],
+        settings,
+    )
+
+    source_counts: dict[object, int] = {}
+    for clip in plan.clips:
+        source_counts[clip.asset_id] = source_counts.get(clip.asset_id, 0) + 1
+    assert source_counts[dominant.id] == 1
+    assert source_counts[alternate.id] == 1
+
+
+def test_semantic_selection_can_relax_source_limit_for_coverage(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    dominant = _asset(tmp_path / "adaptive-roll.mp4", created_at, duration=30)
+    alternate = _asset(tmp_path / "adaptive-alternate.mp4", created_at, duration=30)
+    dominant_scenes = [_scene(dominant, uuid4(), 99 - index, start=index * 4) for index in range(4)]
+    alternate_scene = _scene(alternate, uuid4(), 94)
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=12,
+        max_video_clip_seconds=3,
+        max_scenes_per_source=1,
+        strict_source_diversity=False,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(
+        [dominant, alternate],
+        [*dominant_scenes, alternate_scene],
+        settings,
+    )
+
+    dominant_clips = [clip for clip in plan.clips if clip.asset_id == dominant.id]
+    assert len(dominant_clips) > 1
+
+
 def test_semantic_selection_relaxes_source_limit_for_few_long_videos(
     tmp_path: Path,
 ) -> None:
@@ -489,6 +545,134 @@ def test_semantic_timeline_uses_story_section_order(tmp_path: Path) -> None:
     )
     settings = QuickMontageSettings(
         semantic_analysis=True,
+        preserve_chronology=False,
+        target_duration_seconds=6,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([early_file, late_file], [highlight, opening], settings)
+
+    assert [clip.scene_id for clip in plan.clips] == [opening.id, highlight.id]
+
+
+def test_semantic_timeline_preserves_capture_chronology_by_default(tmp_path: Path) -> None:
+    early_file = _asset(
+        tmp_path / "early-highlight.mp4",
+        datetime(2026, 1, 1, tzinfo=UTC),
+        duration=6,
+    )
+    late_file = _asset(
+        tmp_path / "late-opening.mp4",
+        datetime(2026, 1, 2, tzinfo=UTC),
+        duration=6,
+    )
+    highlight = _scene(
+        early_file,
+        uuid4(),
+        94,
+        duration=6,
+        story_section_index=2,
+        story_section_role="highlight",
+        story_role_order=2,
+    )
+    opening = _scene(
+        late_file,
+        uuid4(),
+        92,
+        duration=6,
+        story_section_index=0,
+        story_section_role="opening",
+        story_role_order=0,
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=6,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([early_file, late_file], [highlight, opening], settings)
+
+    assert [clip.scene_id for clip in plan.clips] == [highlight.id, opening.id]
+
+
+def test_semantic_timeline_preserves_scene_order_inside_source_video(tmp_path: Path) -> None:
+    source = _asset(
+        tmp_path / "single-source.mp4",
+        datetime(2026, 1, 1, tzinfo=UTC),
+        duration=20,
+    )
+    early_highlight = _scene(
+        source,
+        uuid4(),
+        94,
+        start=0,
+        duration=4,
+        story_section_index=2,
+        story_section_role="highlight",
+        story_role_order=2,
+    )
+    late_opening = _scene(
+        source,
+        uuid4(),
+        92,
+        start=10,
+        duration=4,
+        story_section_index=0,
+        story_section_role="opening",
+        story_role_order=0,
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=8,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(
+        [source],
+        [early_highlight, late_opening],
+        settings,
+    )
+
+    assert [clip.scene_id for clip in plan.clips] == [early_highlight.id, late_opening.id]
+
+
+def test_semantic_timeline_can_use_story_order_over_capture_chronology(
+    tmp_path: Path,
+) -> None:
+    early_file = _asset(
+        tmp_path / "early-highlight.mp4",
+        datetime(2026, 1, 1, tzinfo=UTC),
+        duration=6,
+    )
+    late_file = _asset(
+        tmp_path / "late-opening.mp4",
+        datetime(2026, 1, 2, tzinfo=UTC),
+        duration=6,
+    )
+    highlight = _scene(
+        early_file,
+        uuid4(),
+        94,
+        duration=6,
+        story_section_index=2,
+        story_section_role="highlight",
+        story_role_order=2,
+    )
+    opening = _scene(
+        late_file,
+        uuid4(),
+        92,
+        duration=6,
+        story_section_index=0,
+        story_section_role="opening",
+        story_role_order=0,
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        preserve_chronology=False,
         target_duration_seconds=6,
         max_video_clip_seconds=3,
         transition="none",
@@ -622,6 +806,7 @@ def test_story_timeline_avoids_adjacent_similar_scenes_when_possible(
     ]
     settings = QuickMontageSettings(
         semantic_analysis=True,
+        preserve_chronology=False,
         target_duration_seconds=9,
         max_video_clip_seconds=3,
         transition="none",

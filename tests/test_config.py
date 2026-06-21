@@ -4,6 +4,7 @@ import pytest
 
 from travelmovieai.core.config import Settings, load_settings
 from travelmovieai.core.exceptions import ConfigurationError
+from travelmovieai.domain.models import QuickMontageSettings
 
 
 def test_load_settings_reads_toml(tmp_path: Path) -> None:
@@ -39,3 +40,11 @@ def test_load_settings_rejects_unknown_keys(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="remote_api_key"):
         load_settings(config_path)
+
+
+def test_quick_montage_settings_validate_analysis_quality_mode() -> None:
+    settings = QuickMontageSettings(analysis_quality_mode="deep")
+
+    assert settings.analysis_quality_mode == "deep"
+    with pytest.raises(ValueError, match="analysis_quality_mode"):
+        QuickMontageSettings(analysis_quality_mode="extreme")

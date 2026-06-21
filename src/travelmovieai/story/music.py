@@ -106,7 +106,7 @@ STYLE_KEYWORDS: dict[StoryStyle, tuple[str, ...]] = {
     StoryStyle.ADVENTURE: ("adventure", "energy", "action"),
     StoryStyle.ROMANTIC: ("romantic", "love", "emotional"),
 }
-MUSIC_KEYWORDS = ("music", "theme", "soundtrack", "score", "song", "музык", "песн")
+MUSIC_KEYWORDS = ("music", "theme", "soundtrack", "score", "song")
 
 
 def build_music_plan(
@@ -127,7 +127,7 @@ def build_music_plan(
     )
     mode = "none" if not settings.music_enabled else settings.music_mode
     if mode == "none":
-        return MusicPlan(mode="none", reasoning="Музыка отключена пользователем.")
+        return MusicPlan(mode="none", reasoning="Music was disabled by the user.")
     profile, reasoning = choose_music_profile(scenes, settings)
     bpm = PROFILE_BPM[profile]
     cue_sections = build_music_cue_sections(montage_plan, accents, bpm)
@@ -143,13 +143,13 @@ def build_music_plan(
             accents=accents,
             cue_sections=cue_sections,
             beat_grid=beat_grid,
-            reasoning="Использован выбранный пользователем музыкальный файл.",
+            reasoning="Used the music file selected by the user.",
         )
 
     if mode == "library":
         library_path = _select_library_track(assets, settings, bundled_music_dir)
         if library_path is None:
-            raise MontageError("В локальной библиотеке не найден подходящий музыкальный файл.")
+            raise MontageError("No suitable music file was found in the local library.")
         return MusicPlan(
             mode="library",
             source_path=library_path,
@@ -159,7 +159,7 @@ def build_music_plan(
             accents=accents,
             cue_sections=cue_sections,
             beat_grid=beat_grid,
-            reasoning=reasoning + " Выбран трек из локальной библиотеки.",
+            reasoning=reasoning + " Selected a track from the local library.",
         )
 
     if mode == "auto" and settings.music_path is not None:
@@ -173,7 +173,7 @@ def build_music_plan(
             accents=accents,
             cue_sections=cue_sections,
             beat_grid=beat_grid,
-            reasoning=reasoning + " Использован явно указанный файл.",
+            reasoning=reasoning + " Used the explicitly selected file.",
         )
 
     target_generator = (
@@ -198,7 +198,7 @@ def build_music_plan(
     )
     if cached is not None:
         if progress:
-            progress(1, 1, "Music AI: использована готовая композиция из кэша")
+            progress(1, 1, "Music AI: reused a cached composition")
         return cached
 
     generator_name: MusicGeneratorName = "procedural"
@@ -209,10 +209,10 @@ def build_music_plan(
         if neural_generator is None:
             if settings.music_engine == "ace-step":
                 raise MusicGenerationError(
-                    "ACE-Step недоступен. Запустите scripts\\setup_windows.bat."
+                    "ACE-Step is unavailable. Run scripts\\setup_windows.bat."
                 )
             fallback_used = True
-            generation_reason = " ACE-Step недоступен, использован процедурный fallback."
+            generation_reason = " ACE-Step is unavailable, so procedural fallback was used."
         else:
             try:
                 neural_generator.generate(
@@ -231,19 +231,19 @@ def build_music_plan(
                 )
                 generator_name = neural_generator.name
                 model_name = neural_generator.model
-                generation_reason = " Композиция создана специализированной локальной моделью."
+                generation_reason = " The composition was created by a dedicated local model."
             except MusicGenerationError as error:
                 if settings.music_engine == "ace-step":
                     raise
                 fallback_used = True
                 generation_reason = (
-                    " ACE-Step не завершил генерацию; использован процедурный "
+                    " ACE-Step did not finish generation; procedural "
                     f"fallback ({_short_error(error)})."
                 )
 
     if generator_name == "procedural":
         if progress:
-            progress(0, 1, "Процедурный синтез адаптивной музыки")
+            progress(0, 1, "Procedural adaptive music synthesis")
         generate_ambient_soundtrack(
             generated_path,
             duration_seconds=duration_seconds,
@@ -253,7 +253,7 @@ def build_music_plan(
             cue_sections=cue_sections,
         )
         if progress:
-            progress(1, 1, "Адаптивная музыка создана")
+            progress(1, 1, "Adaptive music created")
 
     return MusicPlan(
         mode="generated",
@@ -270,8 +270,8 @@ def build_music_plan(
         fallback_used=fallback_used,
         cache_key=cache_key,
         reasoning=(
-            reasoning + f" Создана единая композиция длиной {duration_seconds:.1f} с "
-            f"{len(accents)} синхронизированными музыкальными акцентами." + generation_reason
+            reasoning + f" Created one {duration_seconds:.1f}s composition with "
+            f"{len(accents)} synchronized music accent(s)." + generation_reason
         ),
         generated=True,
     )
@@ -401,7 +401,7 @@ def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
                     kind="event_change" if event_changed else "scene_change",
                     strength=0.32 if event_changed else 0.16,
                     scene_id=clip.scene_id,
-                    label=("Смена события" if event_changed else f"Смена сцены {index + 1}"),
+                    label=("Event change" if event_changed else f"Scene change {index + 1}"),
                 )
             )
         if clip.semantic_score is not None and clip.semantic_score >= highlight_threshold:
@@ -413,7 +413,7 @@ def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
                     kind="highlight",
                     strength=min(0.45, 0.32 + clip.semantic_score / 800),
                     scene_id=clip.scene_id,
-                    label=clip.caption or f"Важная сцена {index + 1}",
+                    label=clip.caption or f"Important scene {index + 1}",
                 )
             )
         previous_event = clip.event_id
@@ -425,7 +425,7 @@ def choose_music_profile(
     settings: QuickMontageSettings,
 ) -> tuple[MusicProfile, str]:
     if settings.music_profile != "auto":
-        return settings.music_profile, "Музыкальный профиль выбран пользователем."
+        return settings.music_profile, "Music profile selected by the user."
 
     metrics = [
         scene.metadata.get("quality_metrics", {})
@@ -438,10 +438,10 @@ def choose_music_profile(
     profile: MusicProfile = "calm"
     return (
         profile,
-        "AI-профиль по умолчанию выбран как очень спокойная низкая музыка; "
-        "яркие и энергичные профили доступны только при явном выборе. OpenCV-метрики "
-        f"(яркость {brightness:.0f}, насыщенность {saturation:.0f}, "
-        f"резкость {sharpness:.0f}).",
+        "The default AI profile is very calm, low-key music; brighter and more "
+        "energetic profiles are used only when selected explicitly. OpenCV metrics "
+        f"(brightness {brightness:.0f}, saturation {saturation:.0f}, "
+        f"sharpness {sharpness:.0f}).",
     )
 
 
@@ -458,13 +458,13 @@ def apply_music_accents(
         with wave.open(str(audio_path), "rb") as source:
             if source.getsampwidth() != 2:
                 raise MusicGenerationError(
-                    "Локальная музыкальная модель вернула неподдерживаемый WAV."
+                    "The local music model returned an unsupported WAV file."
                 )
             sample_rate = source.getframerate()
             source_channels = source.getnchannels()
             if source.getnframes() <= 0 or source_channels <= 0:
                 raise MusicGenerationError(
-                    "Локальная музыкальная модель вернула пустой WAV."
+                    "The local music model returned an empty WAV file."
                 )
             target_frames = round(duration_seconds * sample_rate)
             with wave.open(str(temporary_path), "wb") as target:
@@ -516,7 +516,7 @@ def apply_music_accents(
     except (OSError, wave.Error, ValueError) as error:
         temporary_path.unlink(missing_ok=True)
         raise MusicGenerationError(
-            "Не удалось синхронизировать сгенерированную музыку с timeline."
+            "Could not sync the generated music with the timeline."
         ) from error
 
 
@@ -622,7 +622,7 @@ def _cached_music_plan(
     return cached.model_copy(
         update={
             "source_path": generated_path,
-            "reasoning": cached.reasoning + " Композиция переиспользована из кэша.",
+            "reasoning": cached.reasoning + " Composition reused from cache.",
         }
     )
 
@@ -647,7 +647,7 @@ def generate_ambient_soundtrack(
     chords = PROFILE_CHORDS[profile]
     total_frames = int(duration_seconds * sample_rate)
     if total_frames <= 0:
-        raise MontageError("Невозможно создать музыку для пустого timeline.")
+        raise MontageError("Cannot create music for an empty timeline.")
     beat_seconds = 60 / bpm
     bar_seconds = beat_seconds * 4
     step_seconds = beat_seconds / 2
@@ -930,13 +930,13 @@ def _edge_accents(duration_seconds: float) -> list[MusicAccent]:
             time_seconds=0,
             kind="intro",
             strength=0.18,
-            label="Начало фильма",
+            label="Film opening",
         ),
         MusicAccent(
             time_seconds=max(0.0, duration_seconds - min(1.2, duration_seconds * 0.2)),
             kind="finale",
             strength=0.38,
-            label="Финальный музыкальный акцент",
+            label="Final music accent",
         ),
     ]
 
@@ -1102,10 +1102,10 @@ def _section_layers(
 
 def _manual_music(settings: QuickMontageSettings) -> Path:
     if settings.music_path is None:
-        raise MontageError("Для ручного режима укажите музыкальный файл.")
+        raise MontageError("Choose a music file for manual mode.")
     path = settings.music_path.expanduser().resolve()
     if not path.is_file():
-        raise MontageError(f"Музыкальный файл не найден: {path}")
+        raise MontageError(f"Music file not found: {path}")
     return path
 
 

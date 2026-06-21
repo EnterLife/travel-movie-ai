@@ -436,14 +436,14 @@ def _probe_rendered_movie(output_path: Path, ffprobe_binary: str) -> _RenderedPr
         ) from error
     if completed.returncode != 0:
         detail = completed.stderr.strip() or "unknown FFprobe error"
-        raise MontageError(f"Не удалось проверить итоговый фильм: {detail}")
+        raise MontageError(f"Could not validate the final movie: {detail}")
     try:
         payload = json.loads(completed.stdout)
         streams = payload.get("streams", [])
         stream_types = {stream.get("codec_type") for stream in streams}
         duration = float(payload.get("format", {}).get("duration", 0))
     except (TypeError, ValueError, json.JSONDecodeError) as error:
-        raise MontageError("FFprobe вернул некорректные данные итогового фильма.") from error
+        raise MontageError("FFprobe returned invalid final movie data.") from error
     return {
         "duration": max(0.0, duration),
         "has_video": "video" in stream_types,

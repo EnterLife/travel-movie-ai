@@ -69,7 +69,7 @@ class AceStepMusicGenerator:
         python_executable = self.runtime_dir / ".venv" / "Scripts" / "python.exe"
         cli_path = self.runtime_dir / "cli.py"
         if not python_executable.is_file() or not cli_path.is_file():
-            raise MusicGenerationError("Изолированное окружение ACE-Step установлено не полностью.")
+            raise MusicGenerationError("The isolated ACE-Step environment is incomplete.")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -105,9 +105,9 @@ class AceStepMusicGenerator:
                         "HF_HUB_OFFLINE": "1",
                         "TRANSFORMERS_OFFLINE": "1",
                     }
-                )
+            )
             if progress:
-                progress(0, 4, f"ACE-Step: подготовка {self.model}")
+                progress(0, 4, f"ACE-Step: preparing {self.model}")
             lines = self._run_streaming(
                 [
                     str(python_executable),
@@ -130,24 +130,26 @@ class AceStepMusicGenerator:
             )
             if not candidates:
                 detail = " ".join(lines[-5:])[-1000:]
-                raise MusicGenerationError(f"ACE-Step не создал WAV-файл. {detail}".strip())
+                raise MusicGenerationError(
+                    f"ACE-Step did not create a WAV file. {detail}".strip()
+                )
             if progress:
-                progress(3, 4, "ACE-Step: нормализация результата")
+                progress(3, 4, "ACE-Step: normalizing output")
             self._normalize(candidates[0], output_path, duration_seconds)
             if progress:
-                progress(4, 4, "ACE-Step: музыка создана")
+                progress(4, 4, "ACE-Step: music created")
 
     def _ensure_runtime(self, progress: MusicProgress | None) -> None:
         executable = self.runtime_dir / ".venv" / "Scripts" / "python.exe"
         if executable.is_file():
             return
         if not self.allow_download:
-            raise MusicGenerationError("Автозагрузка отключена, а runtime ACE-Step отсутствует.")
+            raise MusicGenerationError("Auto-download is disabled and ACE-Step runtime is missing.")
         setup_script = Path(__file__).resolve().parents[3] / "scripts" / "setup_windows.bat"
         if not setup_script.is_file():
-            raise MusicGenerationError("Не найден scripts\\setup_windows.bat.")
+            raise MusicGenerationError("scripts\\setup_windows.bat was not found.")
         if progress:
-            progress(0, 4, "ACE-Step: установка изолированного runtime")
+            progress(0, 4, "ACE-Step: installing isolated runtime")
         command_processor = os.environ.get("COMSPEC", "cmd.exe")
         self._run_streaming(
             [
@@ -163,7 +165,7 @@ class AceStepMusicGenerator:
             progress=progress,
         )
         if not executable.is_file():
-            raise MusicGenerationError("Не удалось установить runtime ACE-Step.")
+            raise MusicGenerationError("Could not install ACE-Step runtime.")
 
     def _configuration(
         self,
@@ -228,7 +230,7 @@ class AceStepMusicGenerator:
                 text=True,
             )
         except OSError as error:
-            raise MusicGenerationError("Не удалось запустить ACE-Step.") from error
+            raise MusicGenerationError("Could not start ACE-Step.") from error
 
         lines: list[str] = []
         line_count = 0
@@ -244,13 +246,13 @@ class AceStepMusicGenerator:
                 if progress:
                     lowered = line.casefold()
                     if "download" in lowered:
-                        progress(1, 4, "ACE-Step: загрузка весов модели")
+                        progress(1, 4, "ACE-Step: downloading model weights")
                     elif "initializ" in lowered or "loading" in lowered:
-                        progress(2, 4, "ACE-Step: загрузка модели в GPU/RAM")
+                        progress(2, 4, "ACE-Step: loading model into GPU/RAM")
                     elif "generat" in lowered:
-                        progress(2, 4, "ACE-Step: генерация композиции")
+                        progress(2, 4, "ACE-Step: generating composition")
                     elif line_count % 20 == 0:
-                        progress(1, 4, "ACE-Step: подготовка локальных компонентов")
+                        progress(1, 4, "ACE-Step: preparing local components")
             return_code = process.wait()
         except BaseException:
             process.terminate()
@@ -262,7 +264,7 @@ class AceStepMusicGenerator:
         if return_code != 0:
             detail = " ".join(lines[-8:])[-1500:]
             raise MusicGenerationError(
-                f"ACE-Step завершился с кодом {return_code}. {detail}".strip()
+                f"ACE-Step exited with code {return_code}. {detail}".strip()
             )
         return lines
 
@@ -301,7 +303,7 @@ class AceStepMusicGenerator:
         )
         if completed.returncode != 0 or not temporary_path.is_file():
             temporary_path.unlink(missing_ok=True)
-            raise MusicGenerationError("FFmpeg не смог нормализовать результат ACE-Step.")
+            raise MusicGenerationError("FFmpeg could not normalize ACE-Step output.")
         os.replace(temporary_path, output_path)
 
 

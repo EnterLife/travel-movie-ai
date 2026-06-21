@@ -179,7 +179,7 @@ def create_app(
         is_input = payload.purpose == "input"
         selected = directory_selector(
             initial_path,
-            ("Выберите папку с видео и фотографиями" if is_input else "Выберите папку workspace"),
+            ("Choose a folder with videos and photos" if is_input else "Choose a workspace folder"),
             is_input,
         )
         return DirectoryDialogResponse(selected_path=selected)
@@ -197,7 +197,7 @@ def create_app(
         try:
             paths = manager_from_app.resolve_project_paths(Path(payload.input_path), workspace)
             if _movie_manager(request).is_workspace_active(paths.workspace):
-                raise WorkspaceBusyError("Для этого workspace уже выполняется монтаж фильма.")
+                raise WorkspaceBusyError("A movie edit is already running for this workspace.")
             return manager_from_app.submit(paths.input_path, paths.workspace)
         except InvalidProjectPathError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
@@ -215,7 +215,7 @@ def create_app(
     def get_scan(job_id: UUID, request: Request) -> ScanJobResponse:
         job = _manager(request).get(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail="Задание не найдено.")
+            raise HTTPException(status_code=404, detail="Job not found.")
         return job
 
     @app.get("/api/scans/{job_id}/result", response_model=MediaScanReport)
@@ -223,12 +223,12 @@ def create_app(
         manager_from_app = _manager(request)
         job = manager_from_app.get(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail="Задание не найдено.")
+            raise HTTPException(status_code=404, detail="Job not found.")
         if job.status == "failed":
             raise HTTPException(status_code=409, detail=job.error or job.message)
         report = manager_from_app.get_report(job_id)
         if report is None:
-            raise HTTPException(status_code=409, detail="Результат ещё не готов.")
+            raise HTTPException(status_code=409, detail="Result is not ready yet.")
         return report
 
     @app.post(
@@ -246,7 +246,7 @@ def create_app(
                 Path(payload.input_path), workspace
             )
             if _manager(request).is_workspace_active(paths.workspace):
-                raise WorkspaceBusyError("Для этого workspace уже выполняется анализ медиатеки.")
+                raise WorkspaceBusyError("A media scan is already running for this workspace.")
             return movie_manager_from_app.submit(
                 paths.input_path,
                 paths.workspace,
@@ -261,35 +261,35 @@ def create_app(
     def get_movie(job_id: UUID, request: Request) -> MovieJobResponse:
         job = _movie_manager(request).get(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+            raise HTTPException(status_code=404, detail="Movie job not found.")
         return job
 
     @app.post("/api/movies/{job_id}/pause", response_model=MovieJobResponse)
     def pause_movie(job_id: UUID, request: Request) -> MovieJobResponse:
         job = _movie_manager(request).pause(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+            raise HTTPException(status_code=404, detail="Movie job not found.")
         return job
 
     @app.post("/api/movies/{job_id}/resume", response_model=MovieJobResponse)
     def resume_movie(job_id: UUID, request: Request) -> MovieJobResponse:
         job = _movie_manager(request).resume(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+            raise HTTPException(status_code=404, detail="Movie job not found.")
         return job
 
     @app.post("/api/movies/{job_id}/cancel", response_model=MovieJobResponse)
     def cancel_movie(job_id: UUID, request: Request) -> MovieJobResponse:
         job = _movie_manager(request).cancel(job_id)
         if job is None:
-            raise HTTPException(status_code=404, detail="Задание монтажа не найдено.")
+            raise HTTPException(status_code=404, detail="Movie job not found.")
         return job
 
     @app.get("/api/movies/{job_id}/download", response_class=FileResponse)
     def download_movie(job_id: UUID, request: Request) -> FileResponse:
         output_path = _movie_manager(request).output_path(job_id)
         if output_path is None or not output_path.is_file():
-            raise HTTPException(status_code=409, detail="Фильм ещё не готов.")
+            raise HTTPException(status_code=409, detail="The movie is not ready yet.")
         return FileResponse(
             output_path,
             media_type="video/mp4",
@@ -316,7 +316,7 @@ def create_app(
         repository.initialize()
         scene = repository.set_scene_selection_override(scene_id, payload.decision)
         if scene is None:
-            raise HTTPException(status_code=404, detail="Сцена не найдена.")
+            raise HTTPException(status_code=404, detail="Scene not found.")
         return SceneListResponse(scenes=[scene])
 
     @app.get("/api/scenes/{scene_id}/thumbnail", response_class=FileResponse)
@@ -333,13 +333,13 @@ def create_app(
             None,
         )
         if scene is None or scene.keyframe_path is None or not scene.keyframe_path.is_file():
-            raise HTTPException(status_code=404, detail="Кадр сцены не найден.")
+            raise HTTPException(status_code=404, detail="Scene thumbnail not found.")
         frame_path = scene.keyframe_path.resolve()
         if not (
             frame_path.is_relative_to(paths.workspace)
             or frame_path.is_relative_to(paths.input_path)
         ):
-            raise HTTPException(status_code=403, detail="Недопустимый путь кадра.")
+            raise HTTPException(status_code=403, detail="Invalid thumbnail path.")
         return FileResponse(frame_path)
 
     return app

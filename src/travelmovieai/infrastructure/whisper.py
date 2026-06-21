@@ -29,7 +29,7 @@ class FasterWhisperProvider:
             resolved_segments = list(segments)
         except (OSError, RuntimeError, ValueError) as error:
             raise PipelineStageError(
-                f"Whisper не смог распознать звук сцены {audio_path.name}."
+                f"Whisper could not transcribe scene audio {audio_path.name}."
             ) from error
         text = " ".join(segment.text.strip() for segment in resolved_segments).strip()
         log_probabilities = [
@@ -65,7 +65,7 @@ class FasterWhisperProvider:
             module = importlib.import_module("faster_whisper")
         except ImportError as error:
             raise DependencyUnavailableError(
-                'Для распознавания речи установите python -m pip install -e ".[speech]".'
+                'Install speech dependencies with python -m pip install -e ".[speech]".'
             ) from error
         device = "cuda" if self.device in {"auto", "cuda"} else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
@@ -87,7 +87,7 @@ class FasterWhisperProvider:
                 except (OSError, RuntimeError, ValueError):
                     pass
             raise PipelineStageError(
-                f"Не удалось загрузить Faster Whisper модель '{self.model}'."
+                f"Could not load Faster Whisper model '{self.model}'."
             ) from error
         return self._loaded_model
 

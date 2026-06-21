@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -19,22 +19,22 @@
           </span>
           <span>
             <strong>TravelMovieAI</strong>
-            <small>Локальная медиатека путешествий</small>
+            <small>Local travel media editor</small>
           </span>
         </a>
 
         <div class="server-state" id="server-state">
           <span class="server-dot"></span>
-          <span>Проверка сервера</span>
+          <span>Checking server</span>
         </div>
       </header>
 
       <section class="hero">
-        <h1>Соберите клип путешествия<br>в пару кликов</h1>
+        <h1>Create a travel film<br>from a folder</h1>
         <p>
-          Укажите папку с видео и фотографиями. TravelMovieAI локально
-          проиндексирует материалы, извлечёт метаданные и подготовит проект
-          к следующим этапам монтажа.
+          Choose a folder with your travel videos and photos. TravelMovieAI
+          indexes the media locally, extracts metadata, and prepares the project
+          for AI-assisted editing.
         </p>
       </section>
 
@@ -42,15 +42,15 @@
         <article class="panel form-panel">
           <div class="panel-heading">
             <div>
-              <h2>Новый анализ</h2>
+              <h2>New Scan</h2>
             </div>
-            <span class="privacy-badge">Только локально</span>
+            <span class="privacy-badge">Local only</span>
           </div>
 
           <form id="scan-form">
             <label for="input-path">
-              Папка с материалами
-              <span>обязательно</span>
+              Media folder
+              <span>required</span>
             </label>
             <div class="field-shell directory-field">
               <span class="field-icon" aria-hidden="true">↳</span>
@@ -62,16 +62,16 @@
                 required
               >
               <button id="browse-input-path" class="folder-picker" type="button">
-                Выбрать папку
+                Browse
               </button>
             </div>
             <p class="field-help">
-              Вставьте полный путь. Вложенные папки будут просканированы автоматически.
+              Paste a full path. Subfolders are scanned automatically.
             </p>
 
             <label for="workspace">
               Workspace
-              <span>автоматически</span>
+              <span>automatic</span>
             </label>
             <div class="field-shell directory-field">
               <span class="field-icon" aria-hidden="true">◇</span>
@@ -82,15 +82,15 @@
                 autocomplete="off"
               >
               <button id="browse-workspace" class="folder-picker" type="button">
-                Выбрать папку
+                Browse
               </button>
             </div>
             <p class="field-help">
-              По умолчанию создаётся внутри папки проекта. Путь можно изменить.
+              A workspace is created automatically, or you can choose one.
             </p>
 
             <button class="primary-button" id="submit-button" type="submit">
-              <span>Запустить анализ</span>
+              <span>Start Scan</span>
               <span class="button-arrow" aria-hidden="true">→</span>
             </button>
           </form>
@@ -101,7 +101,7 @@
         <aside class="panel process-panel">
           <div class="panel-heading">
             <div>
-              <h2>Текущий процесс</h2>
+              <h2>Current Job</h2>
             </div>
           </div>
 
@@ -109,23 +109,23 @@
             <div class="orbit" aria-hidden="true">
               <div class="orbit-core"></div>
             </div>
-            <h3>Ожидает материалы</h3>
-            <p>После запуска здесь появится прогресс и итоговая статистика.</p>
+            <h3>Waiting for media</h3>
+            <p>Progress and scan results will appear here after you start.</p>
           </div>
 
           <div class="job-state hidden" id="job-state">
             <div class="job-status-line">
-              <span class="status-chip" id="status-chip">В очереди</span>
+              <span class="status-chip" id="status-chip">Queued</span>
               <span class="job-time" id="job-time">00:00</span>
             </div>
-            <h3 id="job-title">Подготовка задания</h3>
-            <p id="job-message">Задание ожидает запуска.</p>
+            <h3 id="job-title">Preparing job</h3>
+            <p id="job-message">The job is waiting to start.</p>
             <div class="progress-track">
               <span id="progress-bar"></span>
             </div>
             <dl class="path-summary">
               <div>
-                <dt>Источник</dt>
+                <dt>Source</dt>
                 <dd id="source-summary">—</dd>
               </div>
               <div>
@@ -137,8 +137,8 @@
 
           <div class="recent-jobs hidden" id="recent-jobs">
             <div class="recent-jobs-heading">
-              <span>Последние задания</span>
-              <button id="refresh-jobs" type="button">Обновить</button>
+              <span>Recent Jobs</span>
+              <button id="refresh-jobs" type="button">Refresh</button>
             </div>
             <div class="recent-jobs-list" id="recent-jobs-list"></div>
           </div>
@@ -148,185 +148,185 @@
       <section class="results hidden" id="results">
         <div class="results-heading">
           <div>
-            <h2>Результат сканирования</h2>
+            <h2>Scan Results</h2>
           </div>
           <button class="secondary-button" id="new-scan-button" type="button">
-            Новый анализ
+            New Scan
           </button>
         </div>
 
         <div class="stats-grid">
           <article class="stat-card">
-            <span>Найдено</span>
+            <span>Found</span>
             <strong id="stat-discovered">0</strong>
-            <small>поддерживаемых файлов</small>
+            <small>supported files</small>
           </article>
           <article class="stat-card">
-            <span>Проверено</span>
+            <span>Probed</span>
             <strong id="stat-probed">0</strong>
-            <small>через FFprobe</small>
+            <small>with FFprobe</small>
           </article>
           <article class="stat-card">
-            <span>Из кэша</span>
+            <span>Cached</span>
             <strong id="stat-cached">0</strong>
-            <small>без повторной обработки</small>
+            <small>reused without reprocessing</small>
           </article>
           <article class="stat-card accent-card">
-            <span>Ошибки</span>
+            <span>Issues</span>
             <strong id="stat-errors">0</strong>
-            <small>требуют внимания</small>
+            <small>need attention</small>
           </article>
         </div>
 
         <article class="panel movie-panel">
           <div class="movie-panel-heading">
             <div class="movie-panel-copy">
-              <h3>AI-режиссёр</h3>
+              <h3>AI Edit</h3>
               <p>
-                Настройте анализ, монтаж и soundtrack. Режим Auto использует
-                локальную vision-модель, OpenCV и CUDA, когда они доступны.
+                Configure analysis, pacing, and soundtrack. Auto mode uses the
+                local vision model, OpenCV, and CUDA when available.
               </p>
             </div>
             <div class="capability-list" id="capability-list">
-              <span class="capability-chip pending">Проверка AI и GPU...</span>
+              <span class="capability-chip pending">Checking AI and GPU...</span>
             </div>
           </div>
 
           <div class="ai-config-grid">
             <section class="config-card">
-              <h4>Нейросеть и анализ</h4>
-              <label for="vision-provider">Vision backend <span>локально</span></label>
+              <h4>AI Analysis</h4>
+              <label for="vision-provider">Vision backend <span>local</span></label>
               <select id="vision-provider">
                 <option value="local">Local Auto · Qwen2.5-VL</option>
-                <option value="florence">Florence-2 напрямую</option>
+                <option value="florence">Florence-2 direct</option>
               </select>
 
               <label for="vision-model">
-                Vision-модель <span id="vision-model-source">автовыбор</span>
+                Vision model <span id="vision-model-source">auto</span>
               </label>
               <select id="vision-model">
-                <option value="">Загрузка моделей...</option>
+                <option value="">Loading models...</option>
               </select>
 
-              <label for="story-style">Стиль истории <span>AI</span></label>
+              <label for="story-style">Story style <span>AI</span></label>
               <select id="story-style">
-                <option value="cinematic">Кинематографичный</option>
-                <option value="documentary">Документальный</option>
-                <option value="family">Семейный</option>
-                <option value="vlog">Влог</option>
-                <option value="adventure">Приключение</option>
-                <option value="romantic">Романтический</option>
+                <option value="cinematic">Cinematic</option>
+                <option value="documentary">Documentary</option>
+                <option value="family">Family</option>
+                <option value="vlog">Vlog</option>
+                <option value="adventure">Adventure</option>
+                <option value="romantic">Romantic</option>
               </select>
 
               <label class="toggle-row" for="semantic-analysis">
                 <input id="semantic-analysis" type="checkbox" checked>
                 <span>
-                  <strong>Семантический AI-отбор</strong>
-                  <small>Смысл, эмоции, действия и важность каждой сцены</small>
+                  <strong>Semantic scene selection</strong>
+                  <small>Meaning, emotion, action, and scene importance</small>
                 </span>
               </label>
               <label class="toggle-row" for="quality-analysis">
                 <input id="quality-analysis" type="checkbox" checked>
                 <span>
                   <strong>OpenCV quality analysis</strong>
-                  <small>Резкость, экспозиция, контраст и насыщенность</small>
+                  <small>Sharpness, exposure, contrast, and saturation</small>
                 </span>
               </label>
               <label class="toggle-row" for="speech-analysis">
                 <input id="speech-analysis" type="checkbox">
                 <span>
-                  <strong>Распознавание речи</strong>
-                  <small>Faster Whisper, медленнее; помогает не обрезать важные реплики</small>
+                  <strong>Speech recognition</strong>
+                  <small>Faster Whisper; slower, but helps preserve important lines</small>
                 </span>
               </label>
             </section>
 
             <section class="config-card">
-              <h4>Монтаж и CUDA</h4>
-              <label for="render-device">Устройство рендера <span>FFmpeg</span></label>
+              <h4>Edit and Render</h4>
+              <label for="render-device">Render device <span>FFmpeg</span></label>
               <select id="render-device">
-                <option value="auto">Auto: NVENC для финального кодирования</option>
-                <option value="cuda">NVIDIA NVENC · только этап рендера</option>
+                <option value="auto">Auto: NVENC for final encoding</option>
+                <option value="cuda">NVIDIA NVENC · render only</option>
                 <option value="cpu">CPU / libx264</option>
               </select>
 
               <div class="compact-settings">
-                <label for="movie-duration">Фильм, сек.</label>
+                <label for="movie-duration">Film, sec.</label>
                 <input id="movie-duration" type="number" min="5" max="3600" value="90">
-                <label for="clip-duration">Сцена, сек.</label>
+                <label for="clip-duration">Clip, sec.</label>
                 <input id="clip-duration" type="number" min="1" max="60" value="6">
-                <label for="photo-duration">Фото, сек.</label>
+                <label for="photo-duration">Photo, sec.</label>
                 <input id="photo-duration" type="number" min="1" max="15" value="3">
               </div>
 
-              <label for="transition-type">Переходы <span>FFmpeg</span></label>
+              <label for="transition-type">Transitions <span>FFmpeg</span></label>
               <select id="transition-type">
                 <option value="fade">Fade</option>
                 <option value="dissolve">Dissolve</option>
                 <option value="wipeleft">Wipe left</option>
                 <option value="slideright">Slide right</option>
-                <option value="none">Без переходов</option>
+                <option value="none">No transitions</option>
               </select>
 
               <label class="toggle-row" for="preview-mode">
                 <input id="preview-mode" type="checkbox">
                 <span>
-                  <strong>Быстрый preview</strong>
-                  <small>До 854×480 и 24 FPS для быстрой проверки монтажа</small>
+                  <strong>Fast preview</strong>
+                  <small>Up to 854x480 and 24 FPS for quick review</small>
                 </span>
               </label>
             </section>
 
             <section class="config-card">
-              <h4>Музыкальный режиссёр</h4>
-              <label for="music-mode">Источник музыки <span>локально</span></label>
+              <h4>Soundtrack</h4>
+              <label for="music-mode">Music source <span>local</span></label>
               <select id="music-mode">
-                <option value="auto">AI Auto: подстроить под монтаж</option>
-                <option value="generated">Сгенерировать локально</option>
-                <option value="library">Выбрать из библиотеки</option>
-                <option value="manual">Указать файл</option>
-                <option value="none">Без музыки</option>
+                <option value="auto">AI Auto: adapt to the edit</option>
+                <option value="generated">Generate locally</option>
+                <option value="library">Pick from library</option>
+                <option value="manual">Use a file</option>
+                <option value="none">No music</option>
               </select>
 
-              <label for="music-engine">Движок генерации <span>локально</span></label>
+              <label for="music-engine">Generation engine <span>local</span></label>
               <select id="music-engine">
-                <option value="auto">AI Auto: ACE-Step с fallback</option>
+                <option value="auto">AI Auto: ACE-Step with fallback</option>
                 <option value="ace-step">ACE-Step only</option>
-                <option value="procedural">Процедурный синтез</option>
+                <option value="procedural">Procedural synthesis</option>
               </select>
 
-              <label for="music-model">Музыкальная модель <span>автозагрузка</span></label>
+              <label for="music-model">Music model <span>auto-download</span></label>
               <select id="music-model">
                 <option value="auto">ACE-Step 1.5 Turbo</option>
               </select>
 
-              <label for="music-profile">Характер <span>AI Auto</span></label>
+              <label for="music-profile">Mood <span>AI Auto</span></label>
               <select id="music-profile">
-                <option value="auto">Очень спокойный низкий</option>
-                <option value="lounge">Мелодичный lounge</option>
-                <option value="calm">Спокойный</option>
-                <option value="cinematic">Кинематографичный</option>
-                <option value="warm">Тёплый</option>
-                <option value="energetic">Энергичный</option>
+                <option value="auto">Very calm and low-key</option>
+                <option value="lounge">Melodic lounge</option>
+                <option value="calm">Calm</option>
+                <option value="cinematic">Cinematic</option>
+                <option value="warm">Warm</option>
+                <option value="energetic">Energetic</option>
               </select>
 
               <label class="toggle-row" for="music-sync">
                 <input id="music-sync" type="checkbox" checked>
                 <span>
-                  <strong>Синхронизировать с монтажом</strong>
-                  <small>Акценты на важных сценах, сменах событий и в финале</small>
+                  <strong>Sync to edit</strong>
+                  <small>Accents on key scenes, event changes, and the finale</small>
                 </span>
               </label>
 
               <label for="music-volume">
-                Громкость
+                Volume
                 <span id="music-volume-value">12%</span>
               </label>
               <input id="music-volume" type="range" min="0" max="40" value="12">
 
               <label for="music-path" class="music-label">
-                Музыкальный файл
-                <span>для ручного режима</span>
+                Music file
+                <span>manual mode</span>
               </label>
               <input
                 id="music-path"
@@ -341,11 +341,11 @@
 
           <div class="movie-actions">
             <button class="primary-button movie-button" id="movie-button" type="button">
-              <span>Запустить AI-монтаж</span>
+              <span>Start AI Edit</span>
               <span class="button-arrow" aria-hidden="true">▶</span>
             </button>
             <p id="movie-hint">
-              Исходные файлы не изменяются. Решения сохраняются в workspace.
+              Source files are never modified. Edit decisions are saved in the workspace.
             </p>
           </div>
         </article>
@@ -353,18 +353,18 @@
         <article class="panel movie-progress hidden" id="movie-progress">
           <div class="movie-progress-header">
             <div>
-              <span class="status-chip running" id="movie-status">Монтаж</span>
-              <h3 id="movie-progress-title">Подготовка фильма</h3>
-              <p id="movie-progress-message">Задание ожидает запуска.</p>
+              <span class="status-chip running" id="movie-status">Editing</span>
+              <h3 id="movie-progress-title">Preparing film</h3>
+              <p id="movie-progress-message">The edit is waiting to start.</p>
             </div>
             <strong id="movie-progress-percent">0%</strong>
           </div>
           <div class="movie-control-actions">
             <button class="secondary-button" id="movie-pause-button" type="button">
-              Пауза
+              Pause
             </button>
             <button class="danger-button" id="movie-cancel-button" type="button">
-              Полная остановка
+              Stop
             </button>
           </div>
           <div class="movie-progress-meter">
@@ -372,33 +372,33 @@
           </div>
           <dl class="movie-progress-details">
             <div>
-              <dt>Этап</dt>
-              <dd id="movie-progress-phase">Ожидание</dd>
+              <dt>Phase</dt>
+              <dd id="movie-progress-phase">Waiting</dd>
             </div>
             <div>
-              <dt>Прошло</dt>
+              <dt>Elapsed</dt>
               <dd id="movie-progress-elapsed">00:00</dd>
             </div>
             <div>
-              <dt>До конца этапа</dt>
+              <dt>Phase ETA</dt>
               <dd id="movie-progress-eta">—</dd>
             </div>
             <div>
-              <dt>Ресурсы</dt>
-              <dd id="movie-progress-resources">Определяются...</dd>
+              <dt>Resources</dt>
+              <dd id="movie-progress-resources">Detecting...</dd>
             </div>
           </dl>
           <section class="movie-subtasks">
             <div class="movie-subtasks-heading">
-              <span>Прогресс по подзадачам</span>
+              <span>Stage Progress</span>
               <span id="movie-subtasks-summary">0 / 0</span>
             </div>
             <div class="movie-subtasks-list" id="movie-subtasks-list"></div>
           </section>
           <div class="movie-log-wrap">
             <div class="movie-log-heading">
-              <span>Журнал обработки</span>
-              <span id="movie-log-count">0 сообщений</span>
+              <span>Processing Log</span>
+              <span id="movie-log-count">0 messages</span>
             </div>
             <div class="movie-log" id="movie-log" role="log" aria-live="polite"></div>
           </div>
@@ -407,11 +407,11 @@
         <article class="panel movie-result hidden" id="movie-result">
           <div class="movie-result-heading">
             <div>
-              <h3>Ваш фильм собран</h3>
+              <h3>Your film is ready</h3>
               <p id="movie-result-summary"></p>
             </div>
             <a class="download-button" id="movie-download" href="#" download>
-              Скачать MP4
+              Download MP4
             </a>
           </div>
           <video id="movie-preview" controls preload="metadata"></video>
@@ -420,10 +420,10 @@
         <article class="panel scene-review hidden" id="scene-review">
           <div class="scene-review-heading">
             <div>
-              <h3>Отбор сцен</h3>
+              <h3>Scene Selection</h3>
               <p>
-                Измените решение и снова запустите монтаж. Повторный Vision AI
-                анализ для неизменённых сцен не потребуется.
+                Adjust decisions and run the edit again. Vision AI results are
+                reused for scenes that have not changed.
               </p>
             </div>
           </div>
@@ -433,14 +433,14 @@
         <article class="panel files-panel">
           <div class="files-toolbar">
             <div>
-              <h3>Медиатека</h3>
-              <p id="files-caption">Файлы текущего проекта</p>
+              <h3>Media Library</h3>
+              <p id="files-caption">Files in the current project</p>
             </div>
             <input
               id="file-filter"
               class="filter-input"
               type="search"
-              placeholder="Поиск по имени..."
+              placeholder="Search by name..."
             >
           </div>
 
@@ -448,12 +448,12 @@
             <table>
               <thead>
                 <tr>
-                  <th>Файл</th>
-                  <th>Тип</th>
-                  <th>Размер</th>
-                  <th>Длительность</th>
-                  <th>Разрешение</th>
-                  <th>Статус</th>
+                  <th>File</th>
+                  <th>Type</th>
+                  <th>Size</th>
+                  <th>Duration</th>
+                  <th>Resolution</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody id="files-body"></tbody>
@@ -464,7 +464,7 @@
       </section>
 
       <footer>
-        <span>TravelMovieAI · локальный режим</span>
+        <span>TravelMovieAI · local mode</span>
         <a href="/api/docs" target="_blank" rel="noreferrer">API</a>
       </footer>
     </main>

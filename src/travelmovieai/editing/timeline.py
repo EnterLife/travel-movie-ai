@@ -77,7 +77,7 @@ def build_quick_montage_plan(
         effective_duration += duration - (transition if len(clips) > 1 else 0)
 
     if not clips:
-        raise MontageError("В проекте нет пригодных видео или фотографий для монтажа.")
+        raise MontageError("The project has no usable videos or photos to edit.")
 
     return QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -155,7 +155,7 @@ def build_semantic_montage_plan(
             break
 
     if not selected:
-        raise MontageError("AI-анализ не нашёл пригодных сцен для монтажа.")
+        raise MontageError("AI analysis did not find any usable scenes for the edit.")
 
     scenes_by_id = {scene.id: scene for scene in candidates}
     selected.sort(key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id))

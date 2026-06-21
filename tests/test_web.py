@@ -105,7 +105,7 @@ class FakeMovieService(FakeScanService):
         timeline_path = workspace / "artifacts" / "quick_timeline.json"
         timeline_path.write_text("{}", encoding="utf-8")
         if callable(progress):
-            progress(1, 1, "Фильм готов")
+            progress(1, 1, "Film ready")
         return QuickMontageResult(
             output_path=movie_path,
             timeline_path=timeline_path,
@@ -131,11 +131,11 @@ class ControlledMovieService(FakeMovieService):
     ) -> QuickMontageResult:
         assert workspace is not None
         if callable(progress):
-            progress(100, 1000, "Кадры: 1/10")
+            progress(100, 1000, "Frames: 1/10")
         self.started.set()
         self.advance.wait(timeout=5)
         if callable(progress):
-            progress(200, 1000, "Кадры: 2/10")
+            progress(200, 1000, "Frames: 2/10")
         return super().create_quick_montage(
             input_path=input_path,
             workspace=workspace,
@@ -159,10 +159,10 @@ def test_web_interface_serves_page_and_health() -> None:
     assert page.status_code == 200
     assert "TravelMovieAI" in page.text
     assert "D:\\Vacation\\Japan2026" not in page.text
-    assert "Выбрать папку" in page.text
+    assert "Browse" in page.text
     assert 'class="section-number"' not in page.text
     assert "STAGE 01" not in page.text
-    assert "Соберите клип путешествия" in page.text
+    assert "Create a travel film" in page.text
     assert 'id="music-engine"' in page.text
     assert 'id="music-model"' in page.text
     assert "ACE-Step only" in page.text
@@ -218,7 +218,7 @@ def test_web_directory_dialog_returns_selected_path(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["selected_path"] == str(tmp_path)
-    assert calls == [(tmp_path, "Выберите папку с видео и фотографиями", True)]
+    assert calls == [(tmp_path, "Choose a folder with videos and photos", True)]
 
 
 def test_web_health_is_not_ready_without_ffprobe() -> None:
@@ -227,7 +227,7 @@ def test_web_health_is_not_ready_without_ffprobe() -> None:
             name=name,
             configured_value=name,
             available=name != "ffprobe",
-            error="Исполняемый файл не найден." if name == "ffprobe" else None,
+            error="Executable not found." if name == "ffprobe" else None,
         )
 
     with TestClient(
@@ -352,7 +352,7 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
         == "skipped"
     )
     assert len(job["logs"]) >= 3
-    assert job["logs"][-1]["message"] == "Фильм готов."
+    assert job["logs"][-1]["message"] == "Film ready."
     assert download.status_code == 200
     assert download.content == b"fake mp4"
 
@@ -479,7 +479,7 @@ def test_web_returns_conflict_for_active_workspace(tmp_path: Path) -> None:
         _wait_for_http_job(client, first.json()["id"])
 
     assert conflict.status_code == 409
-    assert "уже выполняется" in conflict.json()["detail"]
+    assert "already queued or running" in conflict.json()["detail"]
 
 
 def test_job_history_survives_manager_restart(tmp_path: Path) -> None:
@@ -514,7 +514,7 @@ def test_interrupted_job_is_marked_failed_on_restart(tmp_path: Path) -> None:
         input_path=media,
         workspace=workspace,
         created_at=datetime.now(UTC),
-        message="Сканирование медиатеки...",
+        message="Scanning media...",
     )
     write_json_atomic(state_path, ScanJobHistory(jobs=[queued]))
 
@@ -523,7 +523,7 @@ def test_interrupted_job_is_marked_failed_on_restart(tmp_path: Path) -> None:
 
     assert restored is not None
     assert restored.status is JobStatus.FAILED
-    assert "перезапуском сервера" in restored.message
+    assert "server restart" in restored.message
     manager.shutdown()
 
 

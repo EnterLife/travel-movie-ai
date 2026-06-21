@@ -29,5 +29,5 @@ def test_analyze_reports_unsafe_workspace_without_traceback(tmp_path: Path) -> N
     )
 
     assert result.exit_code == 1
-    assert "Workspace не может" in result.stderr
+    assert "Workspace cannot" in result.stderr
     assert "Traceback" not in result.stderr

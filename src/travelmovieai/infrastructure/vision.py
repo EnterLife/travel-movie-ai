@@ -77,7 +77,7 @@ class LocalQwenVisionProvider:
     @property
     def runtime_description(self) -> str:
         if self._loaded_model is None:
-            return "не загружена"
+            return "not loaded"
         device = str(self._loaded_model.device)
         precision = "4-bit NF4" if self.quantize_4bit else "native precision"
         placement = ", GPU + RAM offload" if self.use_cpu_offload else ""
@@ -140,13 +140,13 @@ class LocalQwenVisionProvider:
             return results
         except (ValidationError, json.JSONDecodeError) as error:
             raise VisionAnalysisError(
-                "Локальная Qwen-модель вернула ответ, который не удалось привести "
-                "к схеме анализа сцены. Повторите сцену или выберите другую модель."
+                "The local Qwen model returned a response that did not match the "
+                "scene analysis schema. Retry the scene or choose another model."
             ) from error
         except (OSError, RuntimeError, ValueError, KeyError, IndexError) as error:
             raise VisionAnalysisError(
-                f"Локальная Qwen-модель не смогла проанализировать {image_path.name}. "
-                "Проверьте свободную RAM/VRAM и при необходимости выберите модель 3B."
+                f"The local Qwen model could not analyze {image_path.name}. "
+                "Check available RAM/VRAM and choose the 3B model if needed."
             ) from error
 
     def _generate_contents(
@@ -215,13 +215,13 @@ class LocalQwenVisionProvider:
                 importlib.import_module("bitsandbytes")
         except ImportError as error:
             raise DependencyUnavailableError(
-                "Для локальной Qwen Vision установите optional-группу vision: "
+                "Install the vision optional dependency group for local Qwen Vision: "
                 'python -m pip install -e ".[vision]".'
             ) from error
 
         if self.device == "cuda" and not self._torch.cuda.is_available():
             raise DependencyUnavailableError(
-                "Выбран CUDA, но установленная сборка PyTorch не видит видеокарту."
+                "CUDA was selected, but the installed PyTorch build cannot see the GPU."
             )
         resolved_device = (
             "cuda" if self.device in {"auto", "cuda"} and self._torch.cuda.is_available() else "cpu"
@@ -285,12 +285,12 @@ class LocalQwenVisionProvider:
             self._loaded_model.eval()
         except (AttributeError, OSError, RuntimeError, ValueError) as error:
             download_hint = (
-                "Проверьте интернет и свободное место в кэше моделей."
+                "Check internet access and free space in the model cache."
                 if self.allow_download
-                else "Автозагрузка отключена, а модель отсутствует в локальном кэше."
+                else "Auto-download is disabled and the model is missing from the local cache."
             )
             raise VisionAnalysisError(
-                f"Не удалось загрузить Qwen Vision '{self.model}'. {download_hint}"
+                f"Could not load Qwen Vision '{self.model}'. {download_hint}"
             ) from error
 
     def _max_memory(self) -> dict[int | str, str]:
@@ -350,7 +350,7 @@ class Florence2VisionProvider:
                 )
         except (OSError, RuntimeError, ValueError, KeyError) as error:
             raise VisionAnalysisError(
-                f"Florence-2 не смогла проанализировать {image_path.name}."
+                f"Florence-2 could not analyze {image_path.name}."
             ) from error
         caption = str(parsed.get(task, generated)).strip()
         return _understanding_from_caption(caption, style)
@@ -370,8 +370,8 @@ class Florence2VisionProvider:
             transformers = importlib.import_module("transformers")
         except ImportError as error:
             raise DependencyUnavailableError(
-                "Для Florence-2 установите optional-группу vision и совместимую "
-                "с вашей системой сборку PyTorch."
+                "Install the vision optional dependency group for Florence-2 and a "
+                "PyTorch build compatible with your system."
             ) from error
         device = self._resolved_device()
         dtype = self._torch.float16 if device == "cuda" else self._torch.float32
@@ -395,8 +395,8 @@ class Florence2VisionProvider:
             self._loaded_model.eval()
         except (OSError, RuntimeError, ValueError) as error:
             raise VisionAnalysisError(
-                f"Не удалось загрузить локальную Florence-2 модель '{self.model}'. "
-                "Проверьте интернет, свободное место и настройки автозагрузки."
+                f"Could not load local Florence-2 model '{self.model}'. "
+                "Check internet access, free space, and auto-download settings."
             ) from error
 
     def _resolved_device(self) -> str:

@@ -45,17 +45,17 @@ def analyze_speech(
         if asset is None or asset.media_type is not MediaType.VIDEO or not _has_audio(asset):
             updated.append(scene)
             if progress:
-                progress(index, total, f"Whisper: сцена {index}/{total}, без речи")
+                progress(index, total, f"Whisper: scene {index}/{total}, no speech")
             continue
         cache_key = _speech_cache_key(scene, asset, provider.model)
         if scene.metadata.get("speech_cache_key") == cache_key and scene.transcript is not None:
             updated.append(scene)
             cached_count += 1
             if progress:
-                progress(index, total, f"Whisper-кэш: сцена {index}/{total}")
+                progress(index, total, f"Whisper cache: scene {index}/{total}")
             continue
         if progress:
-            progress(index - 1, total, f"Whisper: сцена {index}/{total}")
+            progress(index - 1, total, f"Whisper: scene {index}/{total}")
         audio_path = audio_dir / f"{scene.id}-{cache_key[:12]}.wav"
         _extract_scene_audio(ffmpeg_binary, asset.path, scene, audio_path)
         transcript = provider.transcribe(audio_path)
@@ -79,7 +79,7 @@ def analyze_speech(
         )
         transcribed_count += 1
         if progress:
-            progress(index, total, f"Whisper: готово {index}/{total}")
+            progress(index, total, f"Whisper: complete {index}/{total}")
     return SpeechAnalysisReport(
         created_at=datetime.now(UTC),
         provider=provider.name,
@@ -134,7 +134,9 @@ def _extract_scene_audio(
     try:
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "unknown FFmpeg error"
-            raise PipelineStageError(f"Не удалось извлечь речь из {source_path.name}: {detail}")
+            raise PipelineStageError(
+                f"Could not extract speech from {source_path.name}: {detail}"
+            )
         os.replace(temporary, output_path)
     finally:
         temporary.unlink(missing_ok=True)

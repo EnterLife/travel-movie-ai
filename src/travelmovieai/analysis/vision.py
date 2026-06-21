@@ -48,7 +48,7 @@ def analyze_scenes(
             analyzed_by_index[index] = scene
             cached_count += 1
             if progress:
-                progress(index, total, f"AI-кэш сцены {index}/{total}")
+                progress(index, total, f"AI cache: scene {index}/{total}")
             continue
         pending.append((index, scene, cache_key))
 
@@ -60,7 +60,7 @@ def analyze_scenes(
             progress(
                 offset,
                 total,
-                f"AI-анализ сцен {offset + 1}-{offset + len(chunk)}/{len(pending)}, "
+                f"AI analysis: scenes {offset + 1}-{offset + len(chunk)}/{len(pending)}, "
                 f"batch={len(chunk)}",
             )
         image_paths = [
@@ -85,7 +85,7 @@ def analyze_scenes(
             progress(
                 min(total, offset + len(chunk)),
                 total,
-                f"AI готово сцен {offset + len(chunk)}/{len(pending)}, batch={len(chunk)}",
+                f"AI complete: scenes {offset + len(chunk)}/{len(pending)}, batch={len(chunk)}",
             )
 
     analyzed = [analyzed_by_index[index] for index in sorted(analyzed_by_index)]

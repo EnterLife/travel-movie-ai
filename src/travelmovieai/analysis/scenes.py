@@ -187,11 +187,11 @@ class RepresentativeFrameExtractor:
             if not detail:
                 return_code = completed.returncode if completed is not None else "unknown"
                 detail = (
-                    f"FFmpeg завершился с кодом {return_code}, "
-                    "но не создал изображение."
+                    f"FFmpeg exited with code {return_code}, "
+                    "but did not create an image."
                 )
             raise MontageError(
-                f"Не удалось извлечь кадр из {asset.relative_path}: {detail}"
+                f"Could not extract a frame from {asset.relative_path}: {detail}"
             )
         finally:
             temporary_path.unlink(missing_ok=True)

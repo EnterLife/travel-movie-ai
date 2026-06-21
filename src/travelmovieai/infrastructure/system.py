@@ -75,7 +75,7 @@ def check_executable(binary: str, *, timeout_seconds: float = 5) -> ExecutableSt
             name=Path(binary).name,
             configured_value=binary,
             available=False,
-            error="Исполняемый файл не найден.",
+            error="Executable not found.",
         )
 
     try:
@@ -103,7 +103,7 @@ def check_executable(binary: str, *, timeout_seconds: float = 5) -> ExecutableSt
             configured_value=binary,
             available=False,
             resolved_path=Path(resolved),
-            error=version[0] if version else "Не удалось получить версию.",
+            error=version[0] if version else "Could not read executable version.",
         )
 
     return ExecutableStatus(
@@ -138,8 +138,8 @@ def check_cuda(ffmpeg_binary: str = "ffmpeg") -> CudaStatus:
     note = None
     if gpu and not torch_cuda:
         note = (
-            "NVIDIA GPU доступен, но локальный PyTorch установлен без CUDA. "
-            "Vision AI будет работать на CPU."
+            "An NVIDIA GPU is available, but local PyTorch was installed without CUDA. "
+            "Vision AI will run on CPU."
         )
     return CudaStatus(
         available=gpu is not None,

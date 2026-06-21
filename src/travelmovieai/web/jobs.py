@@ -68,12 +68,12 @@ class ScanJobManager:
             input_path=project_paths.input_path,
             workspace=project_paths.workspace,
             created_at=datetime.now(UTC),
-            message="Задание ожидает запуска.",
+            message="The job is waiting to start.",
         )
         with self._lock:
             if self._workspace_is_active(project_paths.workspace):
                 raise WorkspaceBusyError(
-                    "Для этого workspace уже выполняется или ожидает другое задание."
+                    "Another job is already queued or running for this workspace."
                 )
             self._jobs[job.id] = job
             self._trim_history()
@@ -115,7 +115,7 @@ class ScanJobManager:
             job = self._jobs[job_id]
             job.status = JobStatus.RUNNING
             job.started_at = datetime.now(UTC)
-            job.message = "Сканирование медиатеки..."
+            job.message = "Scanning media..."
             self._persist()
 
         try:
@@ -130,7 +130,7 @@ class ScanJobManager:
             return
         except Exception:
             LOGGER.exception("Unexpected scan job failure", extra={"job_id": str(job.id)})
-            self._fail(job, "Внутренняя ошибка сервера. Подробности записаны в журнал.")
+            self._fail(job, "Internal server error. Details were written to the log.")
             return
 
         with self._lock:
@@ -144,7 +144,7 @@ class ScanJobManager:
         with self._lock:
             job.status = JobStatus.FAILED
             job.finished_at = datetime.now(UTC)
-            job.message = "Сканирование завершилось с ошибкой."
+            job.message = "The scan failed."
             job.error = error
             self._persist()
 
@@ -188,7 +188,7 @@ class ScanJobManager:
             finished_at = saved.finished_at
             if status in {JobStatus.QUEUED, JobStatus.RUNNING}:
                 status = JobStatus.FAILED
-                message = "Задание было прервано перезапуском сервера."
+                message = "The job was interrupted by a server restart."
                 error = message
                 finished_at = now
 

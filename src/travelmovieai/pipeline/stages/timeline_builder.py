@@ -92,7 +92,7 @@ def _read_music_plan(path: Path) -> MusicPlan | None:
     try:
         return MusicPlan.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError) as error:
-        raise MontageError("Не удалось прочитать music_plan.json для timeline.") from error
+        raise MontageError("Could not read music_plan.json for the timeline.") from error
 
 
 def _semantic_montage_settings(context: ProjectContext) -> QuickMontageSettings:

@@ -81,32 +81,32 @@ let defaultWorkspaceRoot = "";
 let workspaceIsAutomatic = true;
 
 const statusLabels = {
-  queued: "В очереди",
-  running: "Выполняется",
-  paused: "Пауза",
-  cancelled: "Остановлено",
-  completed: "Готово",
-  failed: "Ошибка",
+  queued: "Queued",
+  running: "Running",
+  paused: "Paused",
+  cancelled: "Stopped",
+  completed: "Complete",
+  failed: "Failed",
 };
 
 const phaseLabels = {
-  queued: "Ожидание",
-  preparing: "Подготовка",
-  media_scan: "Медиатека",
-  scene_detection: "Детектирование сцен",
-  frame_sampling: "Извлечение кадров",
-  quality_analysis: "OpenCV-анализ",
+  queued: "Waiting",
+  preparing: "Preparing",
+  media_scan: "Media scan",
+  scene_detection: "Scene detection",
+  frame_sampling: "Frame extraction",
+  quality_analysis: "OpenCV analysis",
   vision_analysis: "Vision AI",
-  speech_analysis: "Распознавание речи",
+  speech_analysis: "Speech recognition",
   audio_analysis: "Audio Analysis",
-  story_builder: "Сценарий и отбор",
-  music: "Музыка",
+  story_builder: "Story and selection",
+  music: "Music",
   timeline: "Timeline",
-  rendering: "Рендеринг",
-  validation: "Проверка результата",
-  completed: "Завершено",
-  failed: "Ошибка",
-  processing: "Обработка",
+  rendering: "Rendering",
+  validation: "Validation",
+  completed: "Complete",
+  failed: "Failed",
+  processing: "Processing",
 };
 
 async function requestJson(url, options = {}) {
@@ -123,7 +123,7 @@ async function requestJson(url, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(payload?.detail || `Ошибка HTTP ${response.status}`);
+    throw new Error(payload?.detail || `HTTP error ${response.status}`);
   }
   return payload;
 }
@@ -132,7 +132,7 @@ async function pickDirectory(purpose, field, button) {
   hideError();
   button.disabled = true;
   const originalLabel = button.textContent;
-  button.textContent = "Открытие...";
+  button.textContent = "Opening...";
   try {
     const payload = await requestJson("/api/dialogs/directory", {
       method: "POST",
@@ -147,7 +147,7 @@ async function pickDirectory(purpose, field, button) {
       field.dispatchEvent(new Event("change", { bubbles: true }));
     }
   } catch (error) {
-    showError(`Не удалось открыть выбор папки: ${error.message}`);
+    showError(`Could not open the folder picker: ${error.message}`);
   } finally {
     button.disabled = false;
     button.textContent = originalLabel;
@@ -163,15 +163,15 @@ async function checkHealth() {
     serverState.classList.toggle("offline", !health.ready);
     serverState.querySelector("span:last-child").textContent = health.ready
       ? health.status === "ok"
-        ? "Сервер готов"
-        : "FFmpeg требует настройки"
-      : "FFprobe не найден";
+        ? "Server ready"
+        : "FFmpeg needs configuration"
+      : "FFprobe not found";
     submitButton.disabled = !health.ready;
     movieButton.disabled = !movieReady;
     if (!health.ready) {
       showError(
         health.ffprobe.error ||
-          "FFprobe недоступен. Проверьте PATH или ffprobe_binary в configs/settings.toml.",
+          "FFprobe is unavailable. Check PATH or ffprobe_binary in configs/settings.toml.",
       );
     }
   } catch (error) {
@@ -179,7 +179,7 @@ async function checkHealth() {
     movieReady = false;
     serverState.classList.add("offline");
     serverState.classList.remove("online");
-    serverState.querySelector("span:last-child").textContent = "Нет связи";
+    serverState.querySelector("span:last-child").textContent = "Offline";
     submitButton.disabled = true;
     movieButton.disabled = true;
     showError(error.message);
@@ -198,8 +198,8 @@ async function loadCapabilities() {
       renderDevice.value = "auto";
     }
   } catch {
-    capabilityList.replaceChildren(capabilityChip("AI/GPU: нет данных", false));
-    visionModel.replaceChildren(new Option("Модели недоступны", ""));
+    capabilityList.replaceChildren(capabilityChip("AI/GPU: unavailable", false));
+    visionModel.replaceChildren(new Option("Models unavailable", ""));
   }
 }
 
@@ -220,11 +220,11 @@ function renderCapabilities(capabilities) {
     capabilityChip(
       capabilities.cuda.available
         ? `${capabilities.cuda.gpu_name} · ${capabilities.cuda.memory_mb} MB`
-        : "NVIDIA GPU не найдена",
+        : "NVIDIA GPU not found",
       capabilities.cuda.available,
     ),
     capabilityChip(
-      capabilities.cuda.ffmpeg_nvenc ? "NVENC готов" : "NVENC недоступен",
+      capabilities.cuda.ffmpeg_nvenc ? "NVENC ready" : "NVENC unavailable",
       capabilities.cuda.ffmpeg_nvenc,
     ),
     capabilityChip(
@@ -234,15 +234,15 @@ function renderCapabilities(capabilities) {
     capabilityChip(
       capabilities.music_ai.runtime_installed
         ? `Music AI · ${shortModelName(capabilities.music_ai.resolved_model)}`
-        : "Music AI · установится при первом запуске",
+        : "Music AI · installs on first run",
       capabilities.music_ai.available,
     ),
     capabilityChip(
-      capabilities.opencv_available ? "OpenCV готов" : "OpenCV fallback: Pillow",
+      capabilities.opencv_available ? "OpenCV ready" : "OpenCV fallback: Pillow",
       capabilities.opencv_available,
     ),
     capabilityChip(
-      `${capabilities.resources.logical_cores} CPU · кадры ${capabilities.resources.frame_workers}× · рендер ${capabilities.resources.render_workers}×`,
+      `${capabilities.resources.logical_cores} CPU · frames ${capabilities.resources.frame_workers}x · render ${capabilities.resources.render_workers}x`,
       true,
     ),
   );
@@ -261,7 +261,7 @@ function populateModels(capabilities) {
     populateFlorenceModels();
     return;
   }
-  visionModelSource.textContent = "локально";
+  visionModelSource.textContent = "local";
   visionModel.replaceChildren(
     new Option(
       `Auto · ${shortModelName(capabilities.local_ai.resolved_model)}`,
@@ -294,7 +294,7 @@ function populateMusicModels(musicAi) {
 }
 
 function populateFlorenceModels() {
-  visionModelSource.textContent = "локально";
+  visionModelSource.textContent = "local";
   visionModel.replaceChildren(
     new Option("microsoft/Florence-2-large", "microsoft/Florence-2-large", true, true),
     new Option("microsoft/Florence-2-base", "microsoft/Florence-2-base"),
@@ -307,9 +307,9 @@ function shortModelName(model) {
 
 function localModelLabel(model) {
   const name = shortModelName(model);
-  if (name.includes("3B")) return `${name} · быстро, 6 ГБ VRAM`;
-  if (name.includes("7B")) return `${name} · высокое качество, GPU + RAM`;
-  if (name.includes("32B")) return `${name} · максимум, очень медленно`;
+  if (name.includes("3B")) return `${name} · fast, 6 GB VRAM`;
+  if (name.includes("7B")) return `${name} · higher quality, GPU + RAM`;
+  if (name.includes("32B")) return `${name} · maximum quality, very slow`;
   return name;
 }
 
@@ -326,7 +326,7 @@ form.addEventListener("submit", async (event) => {
   hideError();
   results.classList.add("hidden");
   if (!serverReady) {
-    showError("Сервер не готов к анализу. Проверьте FFprobe.");
+    showError("The server is not ready. Check FFprobe.");
     return;
   }
   submitButton.disabled = true;
@@ -440,10 +440,10 @@ function showJob(job) {
   statusChip.className = `status-chip ${job.status}`;
   jobTitle.textContent =
     job.status === "completed"
-      ? "Медиатека проиндексирована"
+      ? "Media library indexed"
       : job.status === "failed"
-        ? "Не удалось завершить анализ"
-        : "Анализ материалов";
+        ? "Scan failed"
+        : "Scanning media";
   jobMessage.textContent = job.message;
   sourceSummary.textContent = job.input_path;
   sourceSummary.title = job.input_path;
@@ -463,7 +463,7 @@ function showResults(report) {
   document.querySelector("#stat-cached").textContent = report.cached_count;
   document.querySelector("#stat-errors").textContent = report.error_count;
   document.querySelector("#files-caption").textContent =
-    `${report.discovered_count} файлов · ${formatDate(report.scanned_at)}`;
+    `${report.discovered_count} files · ${formatDate(report.scanned_at)}`;
   results.classList.remove("hidden");
   movieButton.disabled = !movieReady;
   renderFiles(currentAssets);
@@ -472,11 +472,11 @@ function showResults(report) {
 
 movieButton.addEventListener("click", async () => {
   if (!currentJob || currentJob.status !== "completed") {
-    showError("Сначала завершите анализ медиатеки.");
+    showError("Complete a media scan first.");
     return;
   }
   if (!movieReady) {
-    showError("Для монтажа требуется FFmpeg.");
+    showError("FFmpeg is required to create a movie.");
     return;
   }
 
@@ -484,20 +484,20 @@ movieButton.addEventListener("click", async () => {
   movieResult.classList.add("hidden");
   movieProgress.classList.remove("hidden");
   movieButton.disabled = true;
-  movieStatus.textContent = "В очереди";
+  movieStatus.textContent = "Queued";
   movieStatus.className = "status-chip running";
-  movieProgressTitle.textContent = "Подготовка фильма";
-  movieProgressMessage.textContent = "Монтаж ожидает запуска.";
+  movieProgressTitle.textContent = "Preparing film";
+  movieProgressMessage.textContent = "The edit is waiting to start.";
   movieProgressBar.style.width = "2%";
   movieProgressPercent.textContent = "0%";
-  movieProgressPhase.textContent = "Ожидание";
+  movieProgressPhase.textContent = "Waiting";
   movieProgressElapsed.textContent = "00:00";
   movieProgressEta.textContent = "—";
-  movieProgressResources.textContent = "Определяются...";
+  movieProgressResources.textContent = "Detecting...";
   movieSubtasksList.replaceChildren();
   movieSubtasksSummary.textContent = "0 / 0";
   movieLog.replaceChildren();
-  movieLogCount.textContent = "0 сообщений";
+  movieLogCount.textContent = "0 messages";
 
   try {
     currentMovieJob = await requestJson("/api/movies", {
@@ -509,11 +509,11 @@ movieButton.addEventListener("click", async () => {
           target_duration_seconds: Number(movieDuration.value),
           max_video_clip_seconds: Number(clipDuration.value),
           photo_duration_seconds: Number(photoDuration.value),
-            semantic_analysis: semanticAnalysis.checked,
-            quality_analysis: qualityAnalysis.checked,
-            speech_analysis: speechAnalysis.checked,
-            audio_analysis: true,
-            vision_provider: visionProvider.value,
+          semantic_analysis: semanticAnalysis.checked,
+          quality_analysis: qualityAnalysis.checked,
+          speech_analysis: speechAnalysis.checked,
+          audio_analysis: true,
+          vision_provider: visionProvider.value,
           vision_model: visionModel.value || null,
           render_device: renderDevice.value,
           story_style: storyStyle.value,
@@ -572,16 +572,16 @@ function showMovieProgress(job) {
   movieStatus.className = `status-chip ${job.status}`;
   movieProgressTitle.textContent =
     job.status === "completed"
-      ? "Фильм готов"
+      ? "Film ready"
       : job.status === "failed"
-        ? "Ошибка монтажа"
+        ? "Edit failed"
         : job.status === "paused"
-          ? "Монтаж на паузе"
+          ? "Edit paused"
           : job.status === "cancelled"
-            ? "Монтаж остановлен"
-        : "Идёт монтаж";
+            ? "Edit stopped"
+        : "Editing";
   moviePauseButton.disabled = !["running", "paused", "queued"].includes(job.status);
-  moviePauseButton.textContent = job.status === "paused" ? "Продолжить" : "Пауза";
+  moviePauseButton.textContent = job.status === "paused" ? "Resume" : "Pause";
   movieCancelButton.disabled = !["running", "paused", "queued"].includes(job.status);
   movieProgressMessage.textContent = job.message;
   const percent = Math.max(0, Math.min(100, job.progress_percent || 0));
@@ -591,7 +591,7 @@ function showMovieProgress(job) {
   movieProgressElapsed.textContent = formatClock(job.elapsed_seconds);
   movieProgressEta.textContent =
     job.eta_seconds == null ? "—" : `≈ ${formatClock(job.eta_seconds)}`;
-  movieProgressResources.textContent = job.resources?.summary || "Определяются...";
+  movieProgressResources.textContent = job.resources?.summary || "Detecting...";
   renderMovieSubtasks(job.subtasks || []);
   renderMovieLogs(job.logs || []);
 }
@@ -614,11 +614,11 @@ function renderMovieSubtasks(subtasks) {
     const state = document.createElement("span");
     state.textContent =
       task.status === "skipped"
-        ? "Отключено"
+        ? "Disabled"
         : task.status === "completed"
-          ? "Готово"
+          ? "Done"
           : task.status === "failed"
-            ? "Ошибка"
+            ? "Failed"
             : `${Math.round(task.progress_percent)}%`;
     header.append(label, state);
 
@@ -651,18 +651,18 @@ function renderMovieLogs(logs) {
     row.append(time, phase, message);
     movieLog.append(row);
   }
-  movieLogCount.textContent = `${logs.length} сообщений`;
+  movieLogCount.textContent = `${logs.length} ${logs.length === 1 ? "message" : "messages"}`;
   if (keepPinned) movieLog.scrollTop = movieLog.scrollHeight;
 }
 
 function showMovieResult(job) {
   const downloadUrl = `/api/movies/${job.id}/download`;
   movieResultSummary.textContent =
-    `${job.clip_count} фрагментов · ${formatDuration(job.duration_seconds)} · ${
-      job.selection_mode === "semantic" ? "AI-отбор" : "быстрый режим"
-    } · ${job.render_encoder || "кодировщик неизвестен"} · ${
-      job.music_profile || job.music_mode || "без музыки"
-    } · ${job.music_generator || "музыкальный файл"}`;
+    `${job.clip_count} clips · ${formatDuration(job.duration_seconds)} · ${
+      job.selection_mode === "semantic" ? "AI selection" : "quick mode"
+    } · ${job.render_encoder || "unknown encoder"} · ${
+      job.music_profile || job.music_mode || "no music"
+    } · ${job.music_generator || "music file"}`;
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");
@@ -694,19 +694,19 @@ function renderSceneReview(scenes) {
     });
     const image = document.createElement("img");
     image.loading = "lazy";
-    image.alt = scene.caption || "Кадры сцены";
+    image.alt = scene.caption || "Scene frames";
     image.src = `/api/scenes/${scene.id}/thumbnail?${query}`;
 
     const copy = document.createElement("div");
     copy.className = "scene-card-copy";
     const title = document.createElement("strong");
-    title.textContent = scene.caption || "Сцена без описания";
+    title.textContent = scene.caption || "Untitled scene";
     const metrics = document.createElement("small");
     const rank = scene.metadata?.ranking_score;
     metrics.textContent =
-      `AI ${formatScore(scene.importance_score)} · качество ${formatScore(
+      `AI ${formatScore(scene.importance_score)} · quality ${formatScore(
         scene.quality_score,
-      )}${rank == null ? "" : ` · итог ${formatScore(rank)}`}`;
+      )}${rank == null ? "" : ` · final ${formatScore(rank)}`}`;
     const reasons = document.createElement("p");
     reasons.textContent = sceneDecisionSummary(scene);
     copy.append(title, metrics, reasons);
@@ -714,9 +714,9 @@ function renderSceneReview(scenes) {
     const actions = document.createElement("div");
     actions.className = "scene-actions";
     for (const [decision, label] of [
-      ["auto", "Авто"],
-      ["include", "Обязательно"],
-      ["exclude", "Исключить"],
+      ["auto", "Auto"],
+      ["include", "Include"],
+      ["exclude", "Exclude"],
     ]) {
       const button = document.createElement("button");
       button.type = "button";
@@ -754,14 +754,14 @@ async function updateSceneDecision(sceneId, decision) {
 
 function sceneDecisionSummary(scene) {
   if (scene.metadata?.duplicate_status === "duplicate") {
-    return "Похожая сцена: автоматически пропускается, если не сделать обязательной.";
+    return "Similar scene: skipped automatically unless you mark it as included.";
   }
   const technical = scene.metadata?.technical_rejection_reasons || [];
   if (technical.length) {
-    return `Технические проблемы: ${technical.join(", ")}.`;
+    return `Technical issues: ${technical.join(", ")}.`;
   }
   const reasons = scene.metadata?.ranking_reasons || [];
-  return reasons.join(" · ") || "Решение появится после semantic анализа.";
+  return reasons.join(" · ") || "A decision will appear after semantic analysis.";
 }
 
 function formatScore(value) {
@@ -788,7 +788,7 @@ function renderFiles(assets) {
   const hiddenCount = assets.length - visible.length;
   tableNote.classList.toggle("hidden", hiddenCount <= 0);
   tableNote.textContent =
-    hiddenCount > 0 ? `Показаны первые 250 файлов. Ещё скрыто: ${hiddenCount}.` : "";
+    hiddenCount > 0 ? `Showing the first 250 files. Hidden: ${hiddenCount}.` : "";
 }
 
 function cell(value, title = "") {
@@ -811,16 +811,16 @@ function statusCell(error) {
   const element = document.createElement("td");
   const badge = document.createElement("span");
   badge.className = `file-status ${error ? "error" : "ok"}`;
-  badge.textContent = error ? "Ошибка" : "Готово";
+  badge.textContent = error ? "Error" : "Ready";
   if (error) badge.title = error;
   element.append(badge);
   return element;
 }
 
 fileFilter.addEventListener("input", () => {
-  const query = fileFilter.value.trim().toLocaleLowerCase("ru");
+  const query = fileFilter.value.trim().toLocaleLowerCase("en-US");
   const filtered = currentAssets.filter((asset) =>
-    asset.relative_path.toLocaleLowerCase("ru").includes(query),
+    asset.relative_path.toLocaleLowerCase("en-US").includes(query),
   );
   renderFiles(filtered);
 });
@@ -873,12 +873,12 @@ function updateTimer() {
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return "0 Б";
+  if (bytes === 0) return "0 B";
   if (!bytes) return "—";
-  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** index;
-  return `${value.toLocaleString("ru-RU", { maximumFractionDigits: 1 })} ${units[index]}`;
+  return `${value.toLocaleString("en-US", { maximumFractionDigits: 1 })} ${units[index]}`;
 }
 
 function formatDuration(seconds) {
@@ -902,7 +902,7 @@ function formatResolution(asset) {
 }
 
 function formatDate(value) {
-  return new Intl.DateTimeFormat("ru-RU", {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
@@ -944,7 +944,7 @@ moviePauseButton.addEventListener("click", async () => {
 });
 movieCancelButton.addEventListener("click", async () => {
   if (!currentMovieJob) return;
-  if (!window.confirm("Полностью остановить монтаж? Уже созданные кэш-файлы сохранятся.")) {
+  if (!window.confirm("Stop the edit? Existing cache files will be kept.")) {
     return;
   }
   try {

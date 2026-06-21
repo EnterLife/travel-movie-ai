@@ -57,7 +57,7 @@ def analyze_audio(
             progress(
                 index,
                 len(scenes),
-                f"Audio Analysis: сцена {index}/{len(scenes)} · {analysis.primary_label}",
+                f"Audio Analysis: scene {index}/{len(scenes)} · {analysis.primary_label}",
             )
     return AudioAnalysisReport(
         created_at=datetime.now(UTC),

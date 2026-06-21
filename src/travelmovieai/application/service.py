@@ -156,16 +156,16 @@ class TravelMovieService:
         settings = _effective_montage_settings(settings)
         resources = self.get_resource_profile()
         tracker = _ProgressTracker(progress)
-        tracker.emit(0, f"Профиль ресурсов: {resources.summary}")
+        tracker.emit(0, f"Resource profile: {resources.summary}")
         context = self._context(input_path=input_path, workspace=workspace)
-        tracker.emit(1, "Проверка медиатеки и обновление индекса")
+        tracker.emit(1, "Checking media library and updating index")
         self.analyze(input_path=context.input_path, workspace=context.workspace)
-        tracker.emit(5, "Media Scan завершён, чтение метаданных")
+        tracker.emit(5, "Media scan complete, reading metadata")
         analysis_path = context.artifacts_dir / "analysis.json"
         try:
             report = MediaScanReport.model_validate_json(analysis_path.read_text(encoding="utf-8"))
         except (OSError, ValidationError) as error:
-            raise MontageError("Не удалось прочитать результаты Media Scan.") from error
+            raise MontageError("Could not read media scan results.") from error
 
         quality_report_path = context.artifacts_dir / "montage_quality_report.json"
         quality_report: MontageQualityReport | None = None
@@ -178,9 +178,9 @@ class TravelMovieService:
                 resources,
             )
         else:
-            tracker.emit(10, "Быстрый отбор клипов по длительности")
+            tracker.emit(10, "Selecting quick clips by duration")
             plan = build_quick_montage_plan(report.assets, settings)
-            tracker.emit(78, "Построение музыкальной карты по границам клипов")
+            tracker.emit(78, "Building a music map from clip boundaries")
             music_plan = self._build_music_plan(
                 context,
                 report,
@@ -198,13 +198,13 @@ class TravelMovieService:
             plan = apply_music_directing(plan)
             quality_report = build_montage_quality_report(plan, [])
             write_json_atomic(quality_report_path, quality_report)
-            tracker.emit(80, "Быстрый монтажный план сформирован")
+            tracker.emit(80, "Quick edit plan created")
         timeline_path = context.artifacts_dir / "quick_timeline.json"
         default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
         resolved_output = (output_path or context.artifacts_dir / default_name).resolve()
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(timeline_path, plan)
-        tracker.emit(84, f"Timeline сохранён: {len(plan.clips)} клипов")
+        tracker.emit(84, f"Timeline saved: {len(plan.clips)} clip(s)")
         render_encoder = QuickMontageRenderer(
             self.settings.ffmpeg_binary,
             self.settings.ffprobe_binary,
@@ -234,7 +234,7 @@ class TravelMovieService:
                 ffmpeg_binary=self.settings.ffmpeg_binary,
             ),
         )
-        tracker.emit(100, "Фильм готов и проверен через FFprobe")
+        tracker.emit(100, "Film ready and validated with FFprobe")
         return QuickMontageResult(
             output_path=resolved_output,
             timeline_path=timeline_path,
@@ -256,7 +256,7 @@ class TravelMovieService:
         tracker: _ProgressTracker,
         resources: ResourceProfile,
     ) -> QuickMontagePlan:
-        tracker.emit(6, "Детектирование сцен")
+        tracker.emit(6, "Scene detection")
         SceneDetectionStage(settings=settings).run(context)
         scenes_path = context.artifacts_dir / "scenes.json"
         try:
@@ -264,7 +264,7 @@ class TravelMovieService:
                 scenes_path.read_text(encoding="utf-8")
             )
         except (OSError, ValidationError) as error:
-            raise MontageError("Не удалось прочитать результаты Scene Detection.") from error
+            raise MontageError("Could not read scene detection results.") from error
 
         assets_by_id = {asset.id: asset for asset in report.assets}
         extractor = RepresentativeFrameExtractor(
@@ -274,8 +274,8 @@ class TravelMovieService:
         )
         tracker.emit(
             12,
-            f"Найдено сцен: {len(scene_report.scenes)}. "
-            f"Извлечение кадров в {resources.frame_workers} потоков, "
+            f"Scenes found: {len(scene_report.scenes)}. "
+            f"Extracting frames with {resources.frame_workers} worker(s), "
             f"decode={'NVDEC' if resources.nvenc else 'CPU'}",
         )
         prepared_scenes = _extract_scene_frames(
@@ -286,7 +286,7 @@ class TravelMovieService:
             resources.frame_workers,
             tracker.range(12, 32),
         )
-        tracker.emit(32, f"Подготовка кадров завершена: {extractor.backend_summary}")
+        tracker.emit(32, f"Frame preparation complete: {extractor.backend_summary}")
 
         quality_report = (
             analyze_scene_quality(
@@ -310,24 +310,24 @@ class TravelMovieService:
             ),
             "disabled",
         )
-        tracker.emit(45, f"Анализ качества сохранён, backend={quality_backend}")
+        tracker.emit(45, f"Quality analysis saved, backend={quality_backend}")
         vision_provider = self._vision_provider(
             settings.vision_provider,
             settings.vision_model,
         )
         tracker.emit(
             45,
-            f"Vision AI: загрузка {vision_provider.model}. "
-            "При первом запуске модель может загружаться в локальный кэш",
+            f"Vision AI: loading {vision_provider.model}. "
+            "The first run may download the model into the local cache",
         )
         try:
             prepare = getattr(vision_provider, "prepare", None)
             if callable(prepare):
                 prepare()
-            runtime = getattr(vision_provider, "runtime_description", "готова")
+            runtime = getattr(vision_provider, "runtime_description", "ready")
             tracker.emit(
                 45,
-                f"Vision AI: модель загружена ({runtime}), начало анализа сцен",
+                f"Vision AI: model loaded ({runtime}), starting scene analysis",
             )
             vision_report = analyze_scenes(
                 quality_report.scenes,
@@ -343,7 +343,7 @@ class TravelMovieService:
         write_json_atomic(vision_path, vision_report)
         speech_scenes = vision_report.scenes
         if settings.speech_analysis:
-            tracker.emit(70, "Whisper: распознавание речи и важных реплик")
+            tracker.emit(70, "Whisper: transcribing speech and important lines")
             speech_report = analyze_speech(
                 vision_report.scenes,
                 report.assets,
@@ -361,9 +361,9 @@ class TravelMovieService:
                 speech_report,
             )
         else:
-            tracker.emit(74, "Распознавание речи отключено")
+            tracker.emit(74, "Speech recognition disabled")
         if settings.audio_analysis:
-            tracker.emit(74, "Audio Analysis: классификация речи, тишины и шумов")
+            tracker.emit(74, "Audio Analysis: classifying speech, silence, and noise")
             audio_report = analyze_audio(
                 speech_scenes,
                 report.assets,
@@ -376,9 +376,9 @@ class TravelMovieService:
                 audio_report,
             )
         else:
-            tracker.emit(76, "Audio Analysis отключён")
+            tracker.emit(76, "Audio Analysis disabled")
         if settings.duplicate_detection:
-            tracker.emit(76, "Поиск похожих и повторяющихся сцен")
+            tracker.emit(76, "Finding similar and duplicate scenes")
             duplicate_report, deduplicated_scenes = detect_duplicate_scenes(
                 speech_scenes,
                 settings.duplicate_similarity_threshold,
@@ -389,7 +389,7 @@ class TravelMovieService:
             )
         else:
             deduplicated_scenes = speech_scenes
-        tracker.emit(77, "Объединение Vision AI, OpenCV и аудиометаданных")
+        tracker.emit(77, "Merging Vision AI, OpenCV, and audio metadata")
         descriptions = build_multimodal_descriptions(deduplicated_scenes)
         write_json_atomic(
             context.artifacts_dir / "scene_descriptions.json",
@@ -399,7 +399,7 @@ class TravelMovieService:
             deduplicated_scenes,
             report.assets,
         )
-        tracker.emit(79, f"События поездки сгруппированы: {len(event_report.events)}")
+        tracker.emit(79, f"Trip events grouped: {len(event_report.events)}")
         events_path = context.artifacts_dir / "events.json"
         write_json_atomic(events_path, event_report)
         storyboard = build_storyboard(
@@ -408,7 +408,7 @@ class TravelMovieService:
             settings.story_style,
         )
         event_scenes = apply_story_structure(event_scenes, storyboard)
-        tracker.emit(81, "Сценарий и порядок сцен сформированы")
+        tracker.emit(81, "Story structure and scene order created")
         write_json_atomic(context.artifacts_dir / "storyboard.json", storyboard)
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
@@ -419,12 +419,12 @@ class TravelMovieService:
             event_scenes,
             settings,
         )
-        tracker.emit(82, f"AI-отбор завершён: {len(plan.clips)} клипов")
+        tracker.emit(82, f"AI selection complete: {len(plan.clips)} clip(s)")
         write_json_atomic(
             context.artifacts_dir / "selection_decisions.json",
             build_selection_report(event_scenes, plan, settings),
         )
-        tracker.emit(82, "Построение музыкальной карты по важности сцен и событиям")
+        tracker.emit(82, "Building a music map from scene and event importance")
         music_plan = self._build_music_plan(
             context,
             report,
@@ -435,8 +435,8 @@ class TravelMovieService:
         )
         tracker.emit(
             83,
-            f"Музыка: {music_plan.mode}, профиль {music_plan.profile}, "
-            f"акцентов {len(music_plan.accents)}",
+            f"Music: {music_plan.mode}, profile {music_plan.profile}, "
+            f"{len(music_plan.accents)} accent(s)",
         )
         final_plan = plan.model_copy(
             update={
@@ -657,6 +657,6 @@ def _extract_scene_frames(
             progress(
                 completed,
                 len(valid_jobs),
-                f"Кадры: {completed}/{len(valid_jobs)}, workers={worker_count}",
+                f"Frames: {completed}/{len(valid_jobs)}, workers={worker_count}",
             )
     return [prepared[index] for index in sorted(prepared)]

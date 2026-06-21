@@ -44,7 +44,7 @@ class RenderingStage(Stage):
                 timeline_artifact.read_text(encoding="utf-8")
             )
         except (OSError, ValidationError) as error:
-            raise MontageError("Не удалось прочитать timeline для рендера.") from error
+            raise MontageError("Could not read the timeline for rendering.") from error
         if not plan.clips:
             return StageResult(
                 stage=self.name,

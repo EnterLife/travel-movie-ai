@@ -58,12 +58,12 @@ class QuickMontageRenderer:
             progress(
                 len(plan.clips),
                 total_steps,
-                "Переходы, музыка и финальная сборка",
+                "Transitions, music, and final assembly",
             )
         self._compose_segments(segment_paths, plan, output_path, work_dir)
         self._validate_output(output_path)
         if progress:
-            progress(total_steps, total_steps, "Фильм готов")
+            progress(total_steps, total_steps, "Film ready")
         return self._encoder
 
     def _render_segments(
@@ -86,7 +86,7 @@ class QuickMontageRenderer:
                     progress(
                         index - 1,
                         total_steps,
-                        f"Рендер клипа {index}/{len(plan.clips)}, "
+                        f"Rendering clip {index}/{len(plan.clips)}, "
                         f"encoder={self._encoder}, threads={self.ffmpeg_threads}",
                     )
                 self._render_segment(clip, plan, segment_path)
@@ -109,7 +109,7 @@ class QuickMontageRenderer:
                     progress(
                         completed,
                         total_steps,
-                        f"Готово клипов {completed}/{len(plan.clips)}, "
+                        f"Clips complete {completed}/{len(plan.clips)}, "
                         f"render workers={worker_count}, encoder={self._encoder}",
                     )
         return segment_paths
@@ -223,7 +223,7 @@ class QuickMontageRenderer:
                 str(output_path),
             ]
         )
-        self._run(command, f"Не удалось подготовить {clip.relative_path}")
+        self._run(command, f"Could not prepare {clip.relative_path}")
 
     def _compose_segments(
         self,
@@ -280,13 +280,13 @@ class QuickMontageRenderer:
         )
         try:
             try:
-                self._run(command, "Не удалось применить переходы и музыку")
+                self._run(command, "Could not apply transitions and music")
             except MontageError:
                 if self._render_device != "auto" or self._encoder != "h264_nvenc":
                     raise
                 self._encoder = "libx264"
                 command = _replace_video_encoder(command, self._video_encoder_args())
-                self._run(command, "Не удалось применить переходы и музыку")
+                self._run(command, "Could not apply transitions and music")
             os.replace(temporary_output, output_path)
         finally:
             temporary_output.unlink(missing_ok=True)
@@ -326,7 +326,7 @@ class QuickMontageRenderer:
                     "+faststart",
                     str(temporary_output),
                 ],
-                "Не удалось объединить подготовленные клипы",
+                "Could not join prepared clips",
             )
             os.replace(temporary_output, output_path)
         finally:
@@ -357,7 +357,7 @@ class QuickMontageRenderer:
         if render_device == "cuda":
             if not cuda.available or not cuda.ffmpeg_nvenc:
                 raise DependencyUnavailableError(
-                    "CUDA-рендеринг выбран, но NVIDIA GPU или h264_nvenc недоступны."
+                    "CUDA rendering was selected, but NVIDIA GPU or h264_nvenc is unavailable."
                 )
             return "h264_nvenc"
         if render_device == "auto" and cuda.available and cuda.ffmpeg_nvenc:
@@ -416,15 +416,17 @@ class QuickMontageRenderer:
             ) from error
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "unknown FFprobe error"
-            raise MontageError(f"Итоговый фильм не прошёл FFprobe-проверку: {detail}")
+            raise MontageError(f"The final movie failed FFprobe validation: {detail}")
         try:
             payload = json.loads(completed.stdout)
             stream_types = {stream.get("codec_type") for stream in payload.get("streams", [])}
             duration = float(payload.get("format", {}).get("duration", 0))
         except (TypeError, ValueError, json.JSONDecodeError) as error:
-            raise MontageError("FFprobe вернул некорректные данные итогового фильма.") from error
+            raise MontageError("FFprobe returned invalid final movie data.") from error
         if "video" not in stream_types or "audio" not in stream_types or duration <= 0:
-            raise MontageError("Итоговый файл не содержит ожидаемые видео, аудио или длительность.")
+            raise MontageError(
+                "The final file does not contain the expected video, audio, or duration."
+            )
 
 
 def _decimal(value: float) -> str:

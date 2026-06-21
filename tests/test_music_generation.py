@@ -277,4 +277,4 @@ def test_generated_music_is_reused_when_timeline_and_model_match(
 
     assert generator.calls == 1
     assert second.cache_key == first.cache_key
-    assert "кэша" in second.reasoning
+    assert "cache" in second.reasoning

@@ -193,7 +193,7 @@ def analyze_scene_quality(
         for index, scene in enumerate(scenes, start=1):
             analyzed.append(_analyze_scene_quality(scene, resolved_analyzer))
             if progress:
-                progress(index, len(scenes), f"{backend_label}: сцена {index}/{len(scenes)}")
+                progress(index, len(scenes), f"{backend_label}: scene {index}/{len(scenes)}")
     else:
         analyzed_by_index: dict[int, Scene] = {}
         with ThreadPoolExecutor(
@@ -210,7 +210,7 @@ def analyze_scene_quality(
                     progress(
                         completed,
                         len(scenes),
-                        f"{backend_label}: сцена {completed}/{len(scenes)}, workers={workers}",
+                        f"{backend_label}: scene {completed}/{len(scenes)}, workers={workers}",
                     )
         analyzed = [analyzed_by_index[index] for index in range(len(scenes))]
     return QualityAnalysisReport(

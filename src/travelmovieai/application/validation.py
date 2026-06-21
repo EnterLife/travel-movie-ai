@@ -18,19 +18,19 @@ def validate_project_paths(input_path: Path, workspace: Path) -> ProjectPaths:
     resolved_workspace = workspace.expanduser().resolve()
 
     if not resolved_input.exists():
-        raise InvalidProjectPathError("Исходная папка не существует.")
+        raise InvalidProjectPathError("The source folder does not exist.")
     if not resolved_input.is_dir():
-        raise InvalidProjectPathError("Исходный путь должен быть папкой.")
+        raise InvalidProjectPathError("The source path must be a folder.")
     if not os.access(resolved_input, os.R_OK):
-        raise InvalidProjectPathError("Нет прав на чтение исходной папки.")
+        raise InvalidProjectPathError("The source folder is not readable.")
     if resolved_workspace.exists() and not resolved_workspace.is_dir():
-        raise InvalidProjectPathError("Workspace должен быть папкой.")
+        raise InvalidProjectPathError("Workspace must be a folder.")
     writable_root = _nearest_existing_parent(resolved_workspace)
     if not os.access(writable_root, os.W_OK):
-        raise InvalidProjectPathError("Нет прав на запись в каталог workspace.")
+        raise InvalidProjectPathError("Workspace is not writable.")
     if resolved_input.is_relative_to(resolved_workspace):
         raise InvalidProjectPathError(
-            "Workspace не может совпадать с исходной папкой или быть её родителем."
+            "Workspace cannot be the source folder or one of its parents."
         )
 
     return ProjectPaths(input_path=resolved_input, workspace=resolved_workspace)

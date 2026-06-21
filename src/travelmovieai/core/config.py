@@ -56,5 +56,5 @@ def load_settings(path: Path = DEFAULT_CONFIG_PATH) -> Settings:
         return Settings.model_validate(payload)
     except (OSError, tomllib.TOMLDecodeError, ValidationError) as error:
         raise ConfigurationError(
-            f"Не удалось прочитать конфигурацию {resolved.resolve()}: {error}"
+            f"Could not read configuration {resolved.resolve()}: {error}"
         ) from error

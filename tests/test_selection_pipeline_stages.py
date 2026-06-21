@@ -400,9 +400,11 @@ def test_timeline_builder_stage_invalidates_cache_when_scenes_change(
         assets: list[MediaAsset],
         scenes: list[Scene],
         settings: QuickMontageSettings,
+        music_plan: MusicPlan | None = None,
     ) -> QuickMontagePlan:
         nonlocal calls
         calls += 1
+        assert music_plan is None
         return _timeline_plan(assets[0], scenes[-1])
 
     monkeypatch.setattr(timeline_builder, "build_semantic_montage_plan", fake_build)
@@ -417,7 +419,7 @@ def test_timeline_builder_stage_invalidates_cache_when_scenes_change(
     assert plan.clips[0].scene_id == second_scene.id
 
 
-def test_music_selection_stage_updates_timeline_with_music_plan(
+def test_music_selection_stage_writes_music_plan_without_existing_timeline(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -425,17 +427,14 @@ def test_music_selection_stage_updates_timeline_with_music_plan(
     asset = _asset(tmp_path / "clip.mp4")
     scene = _scene(asset, score=90, start=0)
     _seed_project(context, [asset], [scene])
-    plan = _timeline_plan(asset, scene)
-    (context.artifacts_dir / "quick_timeline.json").write_text(
-        plan.model_dump_json(),
-        encoding="utf-8",
-    )
 
     def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
+        montage_plan = args[5]
+        assert isinstance(montage_plan, QuickMontagePlan)
         return MusicPlan(
             mode="generated",
             source_path=context.artifacts_dir / "theme.wav",
-            duration_seconds=plan.total_duration_seconds,
+            duration_seconds=montage_plan.total_duration_seconds,
             reasoning="fake music",
         )
 
@@ -445,15 +444,11 @@ def test_music_selection_stage_updates_timeline_with_music_plan(
     music_plan = MusicPlan.model_validate_json(
         (context.artifacts_dir / "music_plan.json").read_text(encoding="utf-8")
     )
-    updated = QuickMontagePlan.model_validate_json(
-        (context.artifacts_dir / "quick_timeline.json").read_text(encoding="utf-8")
-    )
 
     assert result.stage is PipelineStage.MUSIC_SELECTION
     assert result.skipped is False
     assert music_plan.mode == "generated"
-    assert updated.music_path == context.artifacts_dir / "theme.wav"
-    assert updated.music_plan is not None
+    assert not (context.artifacts_dir / "quick_timeline.json").exists()
 
 
 def test_music_selection_stage_reuses_cached_artifacts(
@@ -464,17 +459,14 @@ def test_music_selection_stage_reuses_cached_artifacts(
     asset = _asset(tmp_path / "clip.mp4")
     scene = _scene(asset, score=90, start=0)
     _seed_project(context, [asset], [scene])
-    plan = _timeline_plan(asset, scene)
-    (context.artifacts_dir / "quick_timeline.json").write_text(
-        plan.model_dump_json(),
-        encoding="utf-8",
-    )
     calls = 0
 
     def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
         nonlocal calls
         calls += 1
-        return MusicPlan(mode="none", duration_seconds=plan.total_duration_seconds)
+        montage_plan = args[5]
+        assert isinstance(montage_plan, QuickMontagePlan)
+        return MusicPlan(mode="none", duration_seconds=montage_plan.total_duration_seconds)
 
     monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
 
@@ -487,7 +479,7 @@ def test_music_selection_stage_reuses_cached_artifacts(
     assert (context.artifacts_dir / "music_plan.cache.json").is_file()
 
 
-def test_music_selection_stage_skips_without_timeline(tmp_path: Path) -> None:
+def test_music_selection_stage_skips_without_assets_or_scenes(tmp_path: Path) -> None:
     context = _context(tmp_path)
 
     result = MusicSelectionStage().run(context)
@@ -495,6 +487,33 @@ def test_music_selection_stage_skips_without_timeline(tmp_path: Path) -> None:
     assert result.stage is PipelineStage.MUSIC_SELECTION
     assert result.skipped is True
     assert not (context.artifacts_dir / "music_plan.json").exists()
+
+
+def test_timeline_builder_stage_embeds_existing_music_plan(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "music-timeline.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    music_plan = MusicPlan(
+        mode="generated",
+        source_path=context.artifacts_dir / "theme.wav",
+        duration_seconds=6,
+        reasoning="fake music",
+    )
+    (context.artifacts_dir / "music_plan.json").write_text(
+        music_plan.model_dump_json(),
+        encoding="utf-8",
+    )
+
+    result = TimelineBuilderStage().run(context)
+    plan = QuickMontagePlan.model_validate_json(
+        (context.artifacts_dir / "quick_timeline.json").read_text(encoding="utf-8")
+    )
+
+    assert result.stage is PipelineStage.TIMELINE_BUILDER
+    assert result.skipped is False
+    assert plan.music_path == music_plan.source_path
+    assert plan.music_plan == music_plan
 
 
 def test_rendering_stage_renders_timeline_and_writes_quality_report(

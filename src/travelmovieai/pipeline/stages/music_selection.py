@@ -1,14 +1,13 @@
-"""Pipeline stage that plans soundtrack cues for the montage timeline."""
+"""Pipeline stage that plans soundtrack cues for the montage."""
 
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage
-from travelmovieai.domain.models import MusicPlan, QuickMontagePlan, StageResult
-from travelmovieai.editing.timeline import apply_music_directing
+from travelmovieai.domain.models import MusicPlan, QuickMontageSettings, StageResult
+from travelmovieai.editing.timeline import build_semantic_montage_plan
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
     stage_cache_manifest_matches,
@@ -26,35 +25,31 @@ class MusicSelectionStage(Stage):
     name = PipelineStage.MUSIC_SELECTION
 
     def run(self, context: ProjectContext) -> StageResult:
-        timeline_artifact = context.artifacts_dir / "quick_timeline.json"
-        if not timeline_artifact.is_file():
-            return StageResult(
-                stage=self.name,
-                skipped=True,
-                message="Music selection needs quick_timeline.json.",
-            )
-
-        try:
-            plan = QuickMontagePlan.model_validate_json(
-                timeline_artifact.read_text(encoding="utf-8")
-            )
-        except (OSError, ValidationError) as error:
-            raise MontageError("Не удалось прочитать timeline для подбора музыки.") from error
-
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
         assets = repository.list_assets()
         scenes = repository.list_scenes()
-        base_plan = _musicless_plan(plan)
+        if not assets or not scenes:
+            return StageResult(
+                stage=self.name,
+                skipped=True,
+                message="Music selection needs media assets and ranked scenes.",
+            )
+
+        settings = QuickMontageSettings(
+            semantic_analysis=True,
+            story_style=context.style,
+        )
+        draft_plan = build_semantic_montage_plan(assets, scenes, settings)
         music_artifact = context.artifacts_dir / "music_plan.json"
         cache_artifact = context.artifacts_dir / "music_plan.cache.json"
         input_fingerprint = artifact_fingerprint(
-            base_plan,
             assets,
             scenes,
+            settings,
             _music_source_fingerprints(
                 context.settings.music_library.expanduser().resolve(),
-                plan.settings.music_path,
+                settings.music_path,
             ),
         )
         config_fingerprint = artifact_fingerprint(
@@ -70,71 +65,44 @@ class MusicSelectionStage(Stage):
             artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
             input_fingerprint=input_fingerprint,
             config_fingerprint=config_fingerprint,
-            artifacts=[music_artifact, timeline_artifact],
-        ) and _cached_music_artifacts_valid(music_artifact, timeline_artifact):
+            artifacts=[music_artifact],
+        ) and _cached_music_artifact_valid(music_artifact):
             return StageResult(
                 stage=self.name,
                 skipped=True,
-                artifacts=[music_artifact, timeline_artifact, cache_artifact],
+                artifacts=[music_artifact, cache_artifact],
                 message="Music selection reused cached soundtrack metadata.",
             )
 
         music_plan = build_music_plan(
             assets,
             scenes,
-            plan.settings,
+            settings,
             context.settings.music_library.expanduser().resolve(),
             context.artifacts_dir / context.settings.generated_music_filename,
-            plan,
+            draft_plan,
             neural_generator=None,
         )
-        updated_plan = plan.model_copy(
-            update={
-                "music_plan": music_plan,
-                "music_path": music_plan.source_path,
-            }
-        )
-        updated_plan = apply_music_directing(updated_plan, scenes)
         write_json_atomic(music_artifact, music_plan)
-        write_json_atomic(timeline_artifact, updated_plan)
         write_stage_cache_manifest(
             cache_artifact,
             stage=self.name,
             artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            input_fingerprint=artifact_fingerprint(
-                _musicless_plan(updated_plan),
-                assets,
-                scenes,
-                _music_source_fingerprints(
-                    context.settings.music_library.expanduser().resolve(),
-                    plan.settings.music_path,
-                ),
-            ),
+            input_fingerprint=input_fingerprint,
             config_fingerprint=config_fingerprint,
-            artifacts=[music_artifact, timeline_artifact],
+            artifacts=[music_artifact],
         )
         return StageResult(
             stage=self.name,
-            artifacts=[music_artifact, timeline_artifact, cache_artifact],
+            artifacts=[music_artifact, cache_artifact],
             message=f"Music selection prepared {music_plan.mode} soundtrack metadata.",
         )
 
 
-def _musicless_plan(plan: QuickMontagePlan) -> QuickMontagePlan:
-    return plan.model_copy(update={"music_path": None, "music_plan": None})
-
-
-def _cached_music_artifacts_valid(music_artifact: Path, timeline_artifact: Path) -> bool:
+def _cached_music_artifact_valid(music_artifact: Path) -> bool:
     try:
         music_plan = MusicPlan.model_validate_json(music_artifact.read_text(encoding="utf-8"))
-        timeline = QuickMontagePlan.model_validate_json(
-            timeline_artifact.read_text(encoding="utf-8")
-        )
     except (OSError, ValidationError):
-        return False
-    if timeline.music_plan is None:
-        return False
-    if timeline.music_plan != music_plan:
         return False
     if music_plan.mode == "none" or music_plan.source_path is None:
         return True

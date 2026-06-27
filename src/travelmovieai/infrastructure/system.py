@@ -173,8 +173,10 @@ def detect_resource_profile(
         elif memory_mb < 16 * 1024:
             memory_factor = 0.7
 
-    automatic_frames = max(1, min(16, round(logical_cores * 0.85 * memory_factor)))
-    automatic_analysis = max(1, min(16, round(logical_cores * memory_factor)))
+    frame_worker_cap = 24 if memory_mb is not None and memory_mb >= 32 * 1024 else 16
+    analysis_worker_cap = 32 if memory_mb is not None and memory_mb >= 32 * 1024 else 16
+    automatic_frames = max(1, min(frame_worker_cap, round(logical_cores * 0.85 * memory_factor)))
+    automatic_analysis = max(1, min(analysis_worker_cap, round(logical_cores * memory_factor)))
     automatic_render = max(
         1,
         min(

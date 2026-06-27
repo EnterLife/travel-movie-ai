@@ -138,7 +138,9 @@ def test_frame_sampling_stage_reuses_cached_contact_sheets(
 
     monkeypatch.setattr(frame_sampling, "RepresentativeFrameExtractor", FakeExtractor)
     monkeypatch.setattr(
-        frame_sampling, "check_cuda", lambda *args: type("Cuda", (), {"available": False})()
+        frame_sampling,
+        "detect_resource_profile",
+        lambda *args, **kwargs: type("Profile", (), {"nvenc": False, "frame_workers": 2})(),
     )
 
     first = FrameSamplingStage().run(context)
@@ -162,9 +164,14 @@ def test_quality_analysis_stage_reuses_cached_metrics(
     _seed_project(context, [asset], [scene])
     calls = 0
 
-    def fake_analyze(scenes: list[Scene]) -> QualityAnalysisReport:
+    def fake_analyze(
+        scenes: list[Scene],
+        *,
+        workers: int = 1,
+    ) -> QualityAnalysisReport:
         nonlocal calls
         calls += 1
+        assert workers == 3
         updated = [
             item.model_copy(
                 update={
@@ -180,6 +187,11 @@ def test_quality_analysis_stage_reuses_cached_metrics(
         return QualityAnalysisReport(created_at=datetime.now(UTC), scenes=updated)
 
     monkeypatch.setattr(quality_analysis, "analyze_scene_quality", fake_analyze)
+    monkeypatch.setattr(
+        quality_analysis,
+        "detect_resource_profile",
+        lambda *args, **kwargs: type("Profile", (), {"analysis_workers": 3})(),
+    )
 
     first = QualityAnalysisStage().run(context)
     second = QualityAnalysisStage().run(context)

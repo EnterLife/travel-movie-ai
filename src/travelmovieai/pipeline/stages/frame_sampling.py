@@ -1,7 +1,10 @@
 """Pipeline stage that extracts representative scene contact sheets."""
 
+from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, frame_sample_count_for_mode
 from travelmovieai.application.context import ProjectContext
@@ -20,7 +23,7 @@ from travelmovieai.infrastructure.artifacts import (
     write_stage_cache_manifest,
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
-from travelmovieai.infrastructure.system import check_cuda
+from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
 ARTIFACT_SCHEMA_VERSION = "frame-sampling-v2"
@@ -69,27 +72,25 @@ class FrameSamplingStage(Stage):
                 message="Frame sampling reused cached contact sheets.",
             )
 
+        resources = detect_resource_profile(
+            context.settings.ffmpeg_binary,
+            worker_override=context.settings.workers,
+            batch_override=context.settings.batch_size,
+        )
         extractor = RepresentativeFrameExtractor(
             context.settings.ffmpeg_binary,
             context.settings.ffprobe_binary,
-            use_cuda_decode=check_cuda(context.settings.ffmpeg_binary).available,
+            use_cuda_decode=resources.nvenc,
             frame_sample_count=frame_sample_count,
             timeout_seconds=context.settings.frame_extraction_timeout_seconds,
         )
-        scenes = []
-        extracted_count = 0
-        cached_count = 0
-        for scene in source_scenes:
-            asset = assets.get(scene.asset_id)
-            if asset is None:
-                continue
-            previous = scene.keyframe_path
-            frame_path = extractor.extract(scene, asset, context.frames_dir)
-            if previous == frame_path and frame_path.is_file():
-                cached_count += 1
-            else:
-                extracted_count += 1
-            scenes.append(scene.model_copy(update={"keyframe_path": frame_path}))
+        scenes, extracted_count, cached_count = _extract_frames(
+            source_scenes,
+            assets,
+            extractor,
+            context.frames_dir,
+            resources.frame_workers,
+        )
 
         repository.synchronize_scenes(scenes)
         report = FrameSamplingReport(
@@ -113,7 +114,8 @@ class FrameSamplingStage(Stage):
             artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Frame sampling prepared {len(scenes)} scene(s): "
-                f"{extracted_count} extracted, {cached_count} cached."
+                f"{extracted_count} extracted, {cached_count} cached, "
+                f"workers={min(max(1, resources.frame_workers), max(1, len(scenes)))}."
             ),
         )
 
@@ -128,6 +130,44 @@ def _cached_frame_sampling_valid(artifact: Path, scenes: list[Scene]) -> bool:
     return all(
         scene.keyframe_path is not None and scene.keyframe_path.is_file() for scene in scenes
     )
+
+
+def _extract_frames(
+    source_scenes: list[Scene],
+    assets: Mapping[UUID, MediaAsset],
+    extractor: RepresentativeFrameExtractor,
+    frames_dir: Path,
+    workers: int,
+) -> tuple[list[Scene], int, int]:
+    jobs = [
+        (index, scene, asset)
+        for index, scene in enumerate(source_scenes)
+        if (asset := assets.get(scene.asset_id)) is not None
+    ]
+    if not jobs:
+        return [], 0, 0
+
+    worker_count = min(max(1, workers), len(jobs))
+    results: dict[int, tuple[Scene, bool]] = {}
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="travelmovieai-frame-stage",
+    ) as executor:
+        futures = {
+            executor.submit(extractor.extract, scene, asset, frames_dir): (index, scene)
+            for index, scene, asset in jobs
+        }
+        for future in as_completed(futures):
+            index, scene = futures[future]
+            previous = scene.keyframe_path
+            frame_path = future.result()
+            cached = previous == frame_path and frame_path.is_file()
+            results[index] = (scene.model_copy(update={"keyframe_path": frame_path}), cached)
+
+    ordered = [results[index] for index in sorted(results)]
+    scenes = [scene for scene, _ in ordered]
+    cached_count = sum(1 for _, cached in ordered if cached)
+    return scenes, len(scenes) - cached_count, cached_count
 
 
 def _asset_inputs(assets: list[MediaAsset]) -> list[dict[str, object]]:

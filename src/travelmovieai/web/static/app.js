@@ -28,6 +28,7 @@ const movieDuration = document.querySelector("#movie-duration");
 const clipDuration = document.querySelector("#clip-duration");
 const photoDuration = document.querySelector("#photo-duration");
 const storyStyle = document.querySelector("#story-style");
+const analysisQualityMode = document.querySelector("#analysis-quality-mode");
 const visionProvider = document.querySelector("#vision-provider");
 const visionModel = document.querySelector("#vision-model");
 const visionModelSource = document.querySelector("#vision-model-source");
@@ -517,6 +518,7 @@ movieButton.addEventListener("click", async () => {
           vision_model: visionModel.value || null,
           render_device: renderDevice.value,
           story_style: storyStyle.value,
+          analysis_quality_mode: analysisQualityMode.value,
           transition: transitionType.value,
           preview_mode: previewMode.checked,
           music_enabled: musicMode.value !== "none",

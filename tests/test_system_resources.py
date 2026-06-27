@@ -55,3 +55,21 @@ def test_six_gb_gpu_uses_safe_two_scene_batch(monkeypatch) -> None:
 
     assert profile.model_batch_size == 2
     assert "vision batch 2" in profile.summary
+
+
+def test_high_memory_workstation_uses_more_analysis_workers(monkeypatch) -> None:
+    monkeypatch.setattr(system.os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(system, "_system_memory_mb", lambda: 64 * 1024)
+
+    profile = detect_resource_profile(
+        cuda=CudaStatus(
+            available=True,
+            gpu_name="RTX Workstation",
+            memory_mb=16 * 1024,
+            ffmpeg_nvenc=True,
+        )
+    )
+
+    assert profile.frame_workers == 24
+    assert profile.analysis_workers == 32
+    assert profile.model_batch_size == 16

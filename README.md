@@ -271,9 +271,10 @@ storyboard-driven order, or increase `chronology_tolerance_seconds` to allow
 small story-based reorderings inside a time window.
 
 Frame sampling depth is controlled by `analysis_quality_mode`. `fast` samples 3
-frames per scene, `balanced` samples 5, and `deep` samples 9. The default
-`balanced` mode spends more analysis time on representative frames without
-turning every run into a heavy final-quality pass.
+frames per scene, `balanced` samples 5, and `deep` samples 9. The web interface
+defaults AI edits to `deep` so the first semantic pass sees more of each scene.
+Use `fast` for rough previews and `balanced` when runtime matters more than
+maximum scene-understanding quality.
 
 For long scenes, semantic montage does not blindly cut the middle of the scene.
 It builds candidate windows inside the scene and prefers explicit highlight
@@ -481,15 +482,16 @@ At the first montage, TravelMovieAI detects:
 - FFmpeg NVENC support.
 
 The resulting profile separately selects concurrency for frame extraction,
-OpenCV analysis, and segment rendering. CPU rendering divides FFmpeg threads
-between concurrent jobs. NVENC is selected automatically when available and
-falls back to `libx264` if initialization fails.
+OpenCV analysis, Vision AI batching, and segment rendering. CPU rendering
+divides FFmpeg threads between concurrent jobs. NVENC is selected automatically
+when available and falls back to `libx264` if initialization fails.
 
 On the tested 16-thread CPU with 32 GB RAM and an RTX 3060, the automatic
 profile uses up to 14 concurrent frame jobs, 16 quality-analysis workers, a
-two-scene Vision batch, and four parallel render workers. These stages run
-sequentially, so CPU, CUDA, NVDEC, and NVENC graphs are not expected to peak at
-the same time.
+two-scene Vision batch, and four parallel render workers. On high-memory
+workstations, the frame-extraction and OpenCV-analysis caps rise further while
+remaining bounded. These stages run sequentially, so CPU, CUDA, NVDEC, and
+NVENC graphs are not expected to peak at the same time.
 
 GPU usage by stage:
 

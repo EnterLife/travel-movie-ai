@@ -22,6 +22,7 @@ Implemented:
 - perceptual duplicate detection;
 - event grouping, multimodal captions, storyboard generation, and scene ranking;
 - explainable scene selection with `Auto`, `Include`, and `Exclude` overrides;
+- energy-aware semantic clip pacing with speech and people protection;
 - generated, library, manual, or disabled music modes with ducking;
 - transitions, quick preview, and final H.264/AAC rendering;
 - NVIDIA NVENC acceleration with CPU fallback;
@@ -306,11 +307,14 @@ storyboard sections as tie-breakers inside identical or configured-near capture
 times. When chronology preservation is disabled, selected clips are arranged as
 opening, journey, highlight, and finale before falling back to source chronology.
 It also applies section duration budgets and story-aware pacing for longer
-movies, using slightly shorter highlight clips while keeping the configured
-maximum clip duration. The optimizer avoids adjacent repeats across location,
-activity, shot type, shot scale, camera motion, movement direction, lighting,
-tags, and large brightness jumps. `semantic_diversity_weight` controls how
-strongly these repeat penalties affect selection. Semantic
+movies. High-energy, shaky, or noisy moments are cut tighter, while speech and
+people moments resist overly aggressive shortening. The pacing decision uses
+Vision emotion/activity, OpenCV motion and shake metrics, speech boundaries, and
+audio context, and the reason is written into the selection explanation. The
+optimizer avoids adjacent repeats across location, activity, shot type, shot
+scale, camera motion, movement direction, lighting, tags, and large brightness
+jumps. `semantic_diversity_weight` controls how strongly these repeat penalties
+affect selection. Semantic
 timeline clips can also carry a per-cut transition policy so the renderer can use
 contextual fades, dissolves, or motion-oriented transitions instead of one
 transition style for every scene change. One strong but repetitive location or

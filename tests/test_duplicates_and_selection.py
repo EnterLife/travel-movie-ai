@@ -855,6 +855,67 @@ def test_story_pacing_shortens_highlights_in_longer_movies(tmp_path: Path) -> No
     assert durations[highlight.id] < durations[journey.id]
 
 
+def test_story_pacing_uses_energy_and_speech_protection(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [
+        _asset(tmp_path / f"energy-{index}.mp4", created_at, duration=10) for index in range(3)
+    ]
+    energetic = _scene(
+        assets[0],
+        uuid4(),
+        96,
+        duration=10,
+        emotion="exciting",
+        quality_metrics={"motion_score": 90},
+        story_section_role="journey",
+        story_role_order=1,
+    )
+    speech = _scene(
+        assets[1],
+        uuid4(),
+        95,
+        duration=10,
+        emotion="exciting",
+        quality_metrics={"motion_score": 90},
+        story_section_role="journey",
+        story_role_order=1,
+        speech_segments=[
+            {
+                "start_seconds": 1.0,
+                "end_seconds": 4.0,
+                "text": "This part needs room to breathe.",
+            }
+        ],
+    )
+    calm = _scene(
+        assets[2],
+        uuid4(),
+        94,
+        duration=10,
+        activity="sightseeing",
+        emotion="relaxing",
+        quality_metrics={"motion_score": 5},
+        story_section_role="journey",
+        story_role_order=1,
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=30,
+        max_video_clip_seconds=6,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(assets, [energetic, speech, calm], settings)
+    durations = {clip.scene_id: clip.duration_seconds for clip in plan.clips}
+    reasons = {clip.scene_id: clip.selection_reason for clip in plan.clips}
+
+    assert round(durations[energetic.id], 2) == 5.28
+    assert round(durations[speech.id], 2) == 5.88
+    assert durations[calm.id] == 6
+    assert "pacing: high energy" in reasons[energetic.id]
+    assert "pacing: speech hold" in reasons[speech.id]
+
+
 def test_semantic_timeline_assigns_contextual_transitions(tmp_path: Path) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
     assets = [

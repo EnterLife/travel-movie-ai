@@ -131,7 +131,7 @@ def build_semantic_montage_plan(
                 available_seconds=available,
                 duration_seconds=duration,
             )
-        selection_reason = _selection_reason(scene)
+        selection_reason = _selection_reason(scene, settings)
         if window_reason:
             selection_reason = f"{selection_reason}; {window_reason}"
         selected.append(
@@ -498,7 +498,73 @@ def _directed_clip_duration(
         "highlight": 0.86,
         "finale": 1.15,
     }.get(role, 1.0)
-    return min(available_seconds, settings.max_video_clip_seconds, max(1.0, duration * factor))
+    pacing_factor, _ = _scene_pacing(scene)
+    return min(
+        available_seconds,
+        settings.max_video_clip_seconds,
+        max(1.0, duration * factor * pacing_factor),
+    )
+
+
+def _scene_pacing(scene: Scene) -> tuple[float, str | None]:
+    quality_metrics = scene.metadata.get("quality_metrics", {})
+    metrics = quality_metrics if isinstance(quality_metrics, dict) else {}
+    motion_score = _float_value(metrics.get("motion_score"))
+    shake_score = _float_value(metrics.get("camera_shake_score"))
+    emotion = str(scene.metadata.get("emotion", "")).strip().casefold()
+    activity = str(scene.metadata.get("activity", "")).strip().casefold()
+    camera_motion = str(scene.metadata.get("camera_motion", "")).strip().casefold()
+
+    factor = 1.0
+    reasons: list[str] = []
+    if (
+        motion_score >= 68
+        or emotion in {"exciting", "adventurous"}
+        or activity in {"sports", "cycling", "boating", "traveling"}
+        or camera_motion in {"tracking", "pan", "tilt", "drone", "handheld"}
+    ):
+        factor *= 0.88
+        reasons.append("high-energy pacing")
+
+    audio_features = scene.metadata.get("audio_features", {})
+    audio = audio_features if isinstance(audio_features, dict) else {}
+    primary_audio = str(audio.get("primary_label", "")).strip().casefold()
+    noise_score = _float_value(audio.get("noise_score"))
+    if primary_audio in {"wind", "transport"} or noise_score >= 72 or shake_score >= 72:
+        factor *= 0.92
+        reasons.append("noise-trimmed pacing")
+
+    has_speech = bool(scene.transcript and scene.transcript.strip()) or bool(
+        _speech_segments(scene)
+    )
+    speech_likelihood = _float_value(audio.get("speech_likelihood"))
+    if has_speech or speech_likelihood >= 0.55:
+        factor = max(factor, 0.98)
+        reasons.append("speech-paced hold")
+    elif _has_people(scene):
+        factor = max(factor, 0.96)
+        reasons.append("people-paced hold")
+    elif emotion in {"relaxing", "romantic", "cinematic"} or activity in {
+        "relaxing",
+        "sightseeing",
+        "dining",
+    }:
+        factor = min(1.0, factor * 1.08)
+        reasons.append("calm pacing")
+
+    return max(0.72, min(1.0, factor)), _pacing_reason(factor, reasons)
+
+
+def _pacing_reason(factor: float, reasons: list[str]) -> str | None:
+    if factor >= 0.995 or not reasons:
+        return None
+    if "speech-paced hold" in reasons:
+        return "pacing: speech hold"
+    if "people-paced hold" in reasons:
+        return "pacing: people hold"
+    if "noise-trimmed pacing" in reasons:
+        return "pacing: trim noisy motion"
+    return "pacing: high energy"
 
 
 def _apply_transition_policy(
@@ -1170,11 +1236,16 @@ def _rejection_reason(
     return "duration budget or event diversity limit"
 
 
-def _selection_reason(scene: Scene) -> str:
+def _selection_reason(scene: Scene, settings: QuickMontageSettings) -> str:
     if scene.metadata.get("selection_override") == "include":
         return "required by user"
     reasons = scene.metadata.get("ranking_reasons", [])
-    return "; ".join(str(reason) for reason in reasons) or "best scene for event"
+    rendered_reasons = [str(reason) for reason in reasons]
+    if settings.target_duration_seconds >= 20:
+        _, pacing_reason = _scene_pacing(scene)
+        if pacing_reason:
+            rendered_reasons.append(pacing_reason)
+    return "; ".join(rendered_reasons) or "best scene for event"
 
 
 def _event_id(scene: Scene) -> UUID | None:

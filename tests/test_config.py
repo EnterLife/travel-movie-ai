@@ -50,3 +50,9 @@ def test_quick_montage_settings_validate_analysis_quality_mode() -> None:
     assert settings.analysis_quality_mode == "deep"
     with pytest.raises(ValueError, match="analysis_quality_mode"):
         QuickMontageSettings(analysis_quality_mode="extreme")
+
+
+def test_quick_montage_settings_default_to_cut_only_transitions() -> None:
+    settings = QuickMontageSettings()
+
+    assert settings.transition == "none"

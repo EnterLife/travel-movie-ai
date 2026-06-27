@@ -88,7 +88,7 @@ def test_quick_montage_plan_orders_assets_and_respects_duration(tmp_path: Path) 
     ]
     assert plan.total_duration_seconds == 10
     assert plan.clips[0].source_start_seconds == 7.5
-    assert plan.clips[-1].duration_seconds == 3
+    assert plan.clips[-1].duration_seconds == 2
 
 
 def test_renderer_filter_graph_uses_clip_transition_policy(tmp_path: Path) -> None:
@@ -119,6 +119,36 @@ def test_renderer_filter_graph_uses_clip_transition_policy(tmp_path: Path) -> No
     graph = _build_filter_graph(plan, transition_duration=0.4)
 
     assert "xfade=transition=slideright:duration=0.400" in graph
+
+
+def test_renderer_filter_graph_maps_soft_transition_preset(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(transition="soft", transition_duration_seconds=0.35)
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "first.mp4",
+                relative_path=Path("first.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+            ),
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "second.mp4",
+                relative_path=Path("second.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+            ),
+        ],
+        total_duration_seconds=5.65,
+    )
+
+    graph = _build_filter_graph(plan, transition_duration=0.35)
+
+    assert "xfade=transition=fade:duration=0.350" in graph
+    assert "xfade=transition=soft" not in graph
 
 
 def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> None:

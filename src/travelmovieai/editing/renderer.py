@@ -472,7 +472,9 @@ def _build_filter_graph(
         next_audio = f"a{index}mix"
         if transition_duration > 0:
             offset = max(0.0, elapsed - transition_duration)
-            transition_name = plan.clips[index].transition or plan.settings.transition
+            transition_name = _xfade_transition_name(
+                plan.clips[index].transition or plan.settings.transition
+            )
             lines.append(
                 f"[{video_label}][v{index}base]"
                 f"xfade=transition={transition_name}:"
@@ -539,3 +541,11 @@ def _replace_video_encoder(command: list[str], encoder_args: list[str]) -> list[
             break
         end += 2
     return [*replaced[:index], *encoder_args, *replaced[end:]]
+
+
+def _xfade_transition_name(transition: str) -> str:
+    if transition == "soft":
+        return "fade"
+    if transition == "cinematic":
+        return "dissolve"
+    return transition

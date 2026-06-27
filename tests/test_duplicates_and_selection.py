@@ -954,7 +954,7 @@ def test_semantic_timeline_assigns_contextual_transitions(tmp_path: Path) -> Non
         semantic_analysis=True,
         target_duration_seconds=18,
         max_video_clip_seconds=5,
-        transition="fade",
+        transition="cinematic",
         transition_duration_seconds=0.4,
     )
 
@@ -962,7 +962,7 @@ def test_semantic_timeline_assigns_contextual_transitions(tmp_path: Path) -> Non
     transitions = {clip.scene_id: clip.transition for clip in plan.clips}
 
     assert transitions[opening.id] is None
-    assert transitions[journey.id] == "slideright"
+    assert transitions[journey.id] == "dissolve"
     assert transitions[finale.id] == "dissolve"
 
 

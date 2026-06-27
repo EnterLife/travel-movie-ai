@@ -406,7 +406,15 @@ class QuickMontageSettings(BaseModel):
     scene_threshold: float = Field(default=27, ge=1, le=100)
     min_scene_duration_seconds: float = Field(default=1.5, ge=0.5, le=30)
     max_scene_duration_seconds: float = Field(default=12, ge=2, le=120)
-    transition: Literal["none", "fade", "dissolve", "wipeleft", "slideright"] = "fade"
+    transition: Literal[
+        "none",
+        "soft",
+        "cinematic",
+        "fade",
+        "dissolve",
+        "wipeleft",
+        "slideright",
+    ] = "none"
     transition_duration_seconds: float = Field(default=0.5, ge=0, le=3)
     music_enabled: bool = True
     music_mode: Literal["auto", "generated", "library", "manual", "none"] = "auto"

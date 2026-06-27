@@ -7,8 +7,48 @@ import pytest
 from PIL import Image
 
 from travelmovieai.analysis.scenes import RepresentativeFrameExtractor
+from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MediaAsset, Scene
+
+
+def test_frame_extraction_times_out_hung_ffmpeg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[float] = []
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, (int, float))
+        calls.append(float(timeout))
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=timeout)
+
+    monkeypatch.setattr("travelmovieai.analysis.scenes.subprocess.run", fake_run)
+    asset = MediaAsset(
+        path=tmp_path / "clip.mp4",
+        relative_path=Path("DJI sample.mp4"),
+        media_type=MediaType.VIDEO,
+        extension=".mp4",
+        size_bytes=1,
+        modified_at=datetime.now(UTC),
+        modified_ns=1,
+        duration_seconds=3,
+        width=640,
+        height=360,
+        fps=24,
+        probe_metadata={"video_duration_seconds": 3.0},
+    )
+    scene = Scene(asset_id=asset.id, start_seconds=0, end_seconds=3)
+
+    extractor = RepresentativeFrameExtractor(
+        use_cuda_decode=True,
+        timeout_seconds=0.25,
+    )
+    with pytest.raises(MontageError, match="timed out after 0.25s.*DJI sample.mp4"):
+        extractor.extract(scene, asset, tmp_path / "frames")
+
+    assert calls == [0.25, 0.25]
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")

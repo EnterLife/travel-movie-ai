@@ -16,6 +16,7 @@ def test_load_settings_reads_toml(tmp_path: Path) -> None:
                 'vision_provider = "florence"',
                 'vision_model = "microsoft/Florence-2-large"',
                 "allow_model_download = false",
+                "frame_extraction_timeout_seconds = 45",
                 "web_port = 8123",
             ]
         ),
@@ -27,6 +28,7 @@ def test_load_settings_reads_toml(tmp_path: Path) -> None:
     assert settings.workspace == Path("projects")
     assert settings.vision_provider == "florence"
     assert settings.allow_model_download is False
+    assert settings.frame_extraction_timeout_seconds == 45
     assert settings.web_port == 8123
 
 

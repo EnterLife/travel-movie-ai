@@ -269,6 +269,7 @@ class MovieJobManager:
             self._mark_worker_finished(job)
             return
         except Exception:
+            LOGGER.exception("Movie edit job failed unexpectedly")
             self._fail(job, "Internal edit error.")
             self._mark_worker_finished(job)
             return

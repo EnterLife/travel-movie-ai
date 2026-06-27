@@ -46,6 +46,9 @@ class FrameSamplingStage(Stage):
             {
                 "ffmpeg_binary": context.settings.ffmpeg_binary,
                 "ffprobe_binary": context.settings.ffprobe_binary,
+                "frame_extraction_timeout_seconds": (
+                    context.settings.frame_extraction_timeout_seconds
+                ),
                 "analysis_quality_mode": montage_settings.analysis_quality_mode,
                 "frame_sample_count": frame_sample_count,
                 "schema": ARTIFACT_SCHEMA_VERSION,
@@ -71,6 +74,7 @@ class FrameSamplingStage(Stage):
             context.settings.ffprobe_binary,
             use_cuda_decode=check_cuda(context.settings.ffmpeg_binary).available,
             frame_sample_count=frame_sample_count,
+            timeout_seconds=context.settings.frame_extraction_timeout_seconds,
         )
         scenes = []
         extracted_count = 0

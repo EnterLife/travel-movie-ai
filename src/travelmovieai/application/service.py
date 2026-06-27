@@ -270,6 +270,7 @@ class TravelMovieService:
             self.settings.ffprobe_binary,
             use_cuda_decode=resources.nvenc,
             frame_sample_count=frame_sample_count_for_mode(settings.analysis_quality_mode),
+            timeout_seconds=self.settings.frame_extraction_timeout_seconds,
         )
         tracker.emit(
             12,

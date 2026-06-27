@@ -446,6 +446,7 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 | `database_filename` | SQLite database filename | `project.db` |
 | `ffmpeg_binary` | FFmpeg command or full path | `ffmpeg` |
 | `ffprobe_binary` | FFprobe command or full path | `ffprobe` |
+| `frame_extraction_timeout_seconds` | Per-scene FFmpeg frame extraction timeout | `120` |
 | `vision_provider` | `local`, `qwen`, or `florence` | `local` |
 | `vision_model` | Vision model identifier or `auto` | `auto` |
 | `model_cache` | Downloaded local model cache | `models` |
@@ -484,7 +485,8 @@ the same time.
 
 GPU usage by stage:
 
-- frame sampling: FFmpeg NVDEC with automatic CPU fallback per source;
+- frame sampling: FFmpeg NVDEC with automatic CPU fallback per source and a
+  per-scene timeout;
 - quality metrics: PyTorch CUDA for dense pixel metrics, with OpenCV/Pillow fallback;
 - Vision AI: Qwen CUDA with 4-bit NF4 and hardware-sized batches;
 - rendering: NVENC encoding; software transitions and audio filters can still use CPU.

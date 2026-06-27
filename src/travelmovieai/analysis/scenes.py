@@ -123,10 +123,12 @@ class RepresentativeFrameExtractor:
         ffprobe_binary: str = "ffprobe",
         use_cuda_decode: bool = False,
         frame_sample_count: int = 3,
+        timeout_seconds: float = 120,
     ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
         self.use_cuda_decode = use_cuda_decode
         self.frame_sample_count = max(3, min(9, frame_sample_count))
+        self.timeout_seconds = timeout_seconds
         self._probe = FFprobeClient(ffprobe_binary)
         self._video_durations: dict[Path, float | None] = {}
         self._duration_lock = Lock()
@@ -161,9 +163,11 @@ class RepresentativeFrameExtractor:
             else [command]
         )
         completed = None
+        timed_out_backends: list[str] = []
         try:
             for candidate in commands:
                 temporary_path.unlink(missing_ok=True)
+                backend = "NVDEC" if self.use_cuda_decode and candidate is commands[0] else "CPU"
                 try:
                     completed = subprocess.run(
                         candidate,
@@ -171,11 +175,15 @@ class RepresentativeFrameExtractor:
                         check=False,
                         encoding="utf-8",
                         errors="replace",
+                        timeout=self.timeout_seconds,
                     )
                 except FileNotFoundError as error:
                     raise DependencyUnavailableError(
                         f"FFmpeg executable was not found: {self.ffmpeg_binary}"
                     ) from error
+                except subprocess.TimeoutExpired:
+                    timed_out_backends.append(backend)
+                    continue
                 if completed.returncode == 0 and temporary_path.is_file():
                     with self._backend_lock:
                         if self.use_cuda_decode and candidate is commands[0]:
@@ -184,6 +192,12 @@ class RepresentativeFrameExtractor:
                             self._cpu_count += 1
                     os.replace(temporary_path, frame_path)
                     return frame_path
+            if len(timed_out_backends) == len(commands):
+                tried = ", ".join(timed_out_backends)
+                raise MontageError(
+                    f"FFmpeg timed out after {self.timeout_seconds:g}s while extracting "
+                    f"frames from {asset.relative_path} ({tried})."
+                )
             detail = completed.stderr.strip() if completed is not None else ""
             if not detail:
                 return_code = completed.returncode if completed is not None else "unknown"

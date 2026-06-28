@@ -33,7 +33,6 @@ const visionProvider = document.querySelector("#vision-provider");
 const visionModel = document.querySelector("#vision-model");
 const visionModelSource = document.querySelector("#vision-model-source");
 const renderDevice = document.querySelector("#render-device");
-const transitionType = document.querySelector("#transition-type");
 const previewMode = document.querySelector("#preview-mode");
 const semanticAnalysis = document.querySelector("#semantic-analysis");
 const qualityAnalysis = document.querySelector("#quality-analysis");
@@ -158,21 +157,27 @@ async function pickDirectory(purpose, field, button) {
 async function checkHealth() {
   try {
     const health = await requestJson("/api/health");
-    serverReady = health.ready;
+    serverReady = health.ffprobe.available;
     movieReady = health.ffmpeg.available && health.ffprobe.available;
-    serverState.classList.toggle("online", health.ready);
-    serverState.classList.toggle("offline", !health.ready);
-    serverState.querySelector("span:last-child").textContent = health.ready
-      ? health.status === "ok"
+    serverState.classList.toggle("online", serverReady);
+    serverState.classList.toggle("offline", !serverReady);
+    const statusText = !health.ffprobe.available
+      ? "FFprobe not found"
+      : health.ffmpeg.available
         ? "Server ready"
-        : "FFmpeg needs configuration"
-      : "FFprobe not found";
-    submitButton.disabled = !health.ready;
+        : "Scans ready · FFmpeg not found";
+    serverState.querySelector("span:last-child").textContent = statusText;
+    submitButton.disabled = !serverReady;
     movieButton.disabled = !movieReady;
-    if (!health.ready) {
+    if (!serverReady) {
       showError(
         health.ffprobe.error ||
           "FFprobe is unavailable. Check PATH or ffprobe_binary in configs/settings.toml.",
+      );
+    } else if (!health.ffmpeg.available) {
+      showError(
+        health.ffmpeg.error ||
+          "FFmpeg is unavailable. Media scans can run, but movie creation is disabled.",
       );
     }
   } catch (error) {
@@ -327,7 +332,7 @@ form.addEventListener("submit", async (event) => {
   hideError();
   results.classList.add("hidden");
   if (!serverReady) {
-    showError("The server is not ready. Check FFprobe.");
+    showError("The scanner is not ready. Check FFprobe.");
     return;
   }
   submitButton.disabled = true;
@@ -519,7 +524,6 @@ movieButton.addEventListener("click", async () => {
           render_device: renderDevice.value,
           story_style: storyStyle.value,
           analysis_quality_mode: analysisQualityMode.value,
-          transition: transitionType.value,
           preview_mode: previewMode.checked,
           music_enabled: musicMode.value !== "none",
           music_mode: musicMode.value,

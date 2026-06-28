@@ -1,3 +1,4 @@
+import subprocess
 import wave
 from datetime import UTC, datetime
 from pathlib import Path
@@ -192,6 +193,44 @@ def test_ace_step_normalization_loops_short_model_output(
 
     assert commands[0][5:7] == ["-stream_loop", "-1"]
     assert output.read_bytes() == b"normalized"
+
+
+def test_ace_step_normalization_reports_ffmpeg_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=tmp_path / "runtime",
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="auto",
+        gpu_memory_mb=6144,
+        ffmpeg_timeout_seconds=0.25,
+    )
+    source = tmp_path / "short.wav"
+    source.touch()
+    output = tmp_path / "full.wav"
+    timeouts: list[float] = []
+
+    def run_ffmpeg(command: list[str], **kwargs: object) -> object:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, int | float)
+        timeouts.append(float(timeout))
+        Path(command[-1]).write_bytes(b"partial")
+        raise subprocess.TimeoutExpired(cmd=command, timeout=timeout)
+
+    monkeypatch.setattr(
+        "travelmovieai.infrastructure.music_generation.subprocess.run",
+        run_ffmpeg,
+    )
+
+    with pytest.raises(MusicGenerationError, match="timed out.*0.25s"):
+        generator._normalize(source, output, 120)
+
+    assert timeouts == [0.25]
+    assert not output.exists()
 
 
 def test_ace_step_runtime_uses_unified_windows_setup(

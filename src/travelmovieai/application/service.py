@@ -503,6 +503,7 @@ class TravelMovieService:
                 allow_download=self.settings.allow_model_download,
                 device=self.settings.device,
                 gpu_memory_mb=resources.gpu_memory_mb,
+                ffmpeg_timeout_seconds=self.settings.render_timeout_seconds,
             ),
         )
 

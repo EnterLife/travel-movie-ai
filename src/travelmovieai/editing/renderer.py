@@ -282,13 +282,13 @@ class QuickMontageRenderer:
         )
         try:
             try:
-                self._run(command, "Could not apply transitions and music")
+                self._run(command, "Could not assemble clips and music")
             except MontageError:
                 if self._render_device != "auto" or self._encoder != "h264_nvenc":
                     raise
                 self._encoder = "libx264"
                 command = _replace_video_encoder(command, self._video_encoder_args())
-                self._run(command, "Could not apply transitions and music")
+                self._run(command, "Could not assemble clips and music")
             os.replace(temporary_output, output_path)
         finally:
             temporary_output.unlink(missing_ok=True)

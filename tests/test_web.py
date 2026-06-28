@@ -155,6 +155,7 @@ def test_web_interface_serves_page_and_health() -> None:
         page = client.get("/")
         health = client.get("/api/health")
         styles = client.get("/static/styles.css")
+        script = client.get("/static/app.js")
 
     assert page.status_code == 200
     assert "TravelMovieAI" in page.text
@@ -165,7 +166,7 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "Create a travel film" in page.text
     assert 'id="music-engine"' in page.text
     assert 'id="music-model"' in page.text
-    assert "Cut only" in page.text
+    assert 'id="transition-type"' not in page.text
     assert "Simple dissolve" not in page.text
     assert "Cinematic dissolve" not in page.text
     assert 'id="music-volume" type="range" min="0" max="100" value="100"' in page.text
@@ -176,6 +177,11 @@ def test_web_interface_serves_page_and_health() -> None:
     assert health.json()["ffprobe"]["available"] is True
     assert styles.status_code == 200
     assert "--accent" in styles.text
+    assert script.status_code == 200
+    assert "transition:" not in script.text
+    assert "FFmpeg not found" in script.text
+    assert "Scans ready" in script.text
+    assert "The scanner is not ready. Check FFprobe." in script.text
 
 
 def test_phase_eta_counts_down_between_progress_updates() -> None:

@@ -46,6 +46,7 @@ class AceStepMusicGenerator:
         allow_download: bool,
         device: str,
         gpu_memory_mb: int | None,
+        ffmpeg_timeout_seconds: float = 7200,
     ) -> None:
         self.model = model
         self.runtime_dir = runtime_dir
@@ -54,6 +55,7 @@ class AceStepMusicGenerator:
         self.allow_download = allow_download
         self.device = device
         self.gpu_memory_mb = gpu_memory_mb
+        self.ffmpeg_timeout_seconds = ffmpeg_timeout_seconds if ffmpeg_timeout_seconds > 0 else 7200
 
     def generate(
         self,
@@ -275,35 +277,50 @@ class AceStepMusicGenerator:
         duration_seconds: float,
     ) -> None:
         temporary_path = output_path.with_name(f".{output_path.stem}.ace-step.wav")
-        completed = subprocess.run(
-            [
-                self.ffmpeg_binary,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-stream_loop",
-                "-1",
-                "-i",
-                str(source_path),
-                "-t",
-                f"{duration_seconds:.3f}",
-                "-ar",
-                "44100",
-                "-ac",
-                "2",
-                "-c:a",
-                "pcm_s16le",
-                str(temporary_path),
-            ],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                [
+                    self.ffmpeg_binary,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-stream_loop",
+                    "-1",
+                    "-i",
+                    str(source_path),
+                    "-t",
+                    f"{duration_seconds:.3f}",
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(temporary_path),
+                ],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=self.ffmpeg_timeout_seconds,
+            )
+        except FileNotFoundError as error:
+            temporary_path.unlink(missing_ok=True)
+            raise MusicGenerationError(
+                f"FFmpeg executable was not found: {self.ffmpeg_binary}"
+            ) from error
+        except subprocess.TimeoutExpired as error:
+            temporary_path.unlink(missing_ok=True)
+            raise MusicGenerationError(
+                "FFmpeg timed out while normalizing ACE-Step output after "
+                f"{self.ffmpeg_timeout_seconds:g}s."
+            ) from error
         if completed.returncode != 0 or not temporary_path.is_file():
             temporary_path.unlink(missing_ok=True)
-            raise MusicGenerationError("FFmpeg could not normalize ACE-Step output.")
+            detail = completed.stderr.strip()
+            suffix = f" {detail}" if detail else ""
+            raise MusicGenerationError(f"FFmpeg could not normalize ACE-Step output.{suffix}")
         os.replace(temporary_path, output_path)
 
 

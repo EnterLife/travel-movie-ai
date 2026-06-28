@@ -375,7 +375,7 @@ it to the full timeline instead of filling the remainder with silence. A cue she
 first-class contract with arrangement sections, BPM, intensity, and restrained
 accent points. It places musical structure at:
 
-- transitions between clips;
+- cut points between clips;
 - changes between detected trip events;
 - the center of high-scoring Vision AI scenes;
 - the opening and final moments.
@@ -454,7 +454,7 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 | `ffmpeg_binary` | FFmpeg command or full path | `ffmpeg` |
 | `ffprobe_binary` | FFprobe command or full path | `ffprobe` |
 | `frame_extraction_timeout_seconds` | Per-scene FFmpeg frame extraction timeout | `120` |
-| `render_timeout_seconds` | Per-FFmpeg render or validation command timeout | `7200` |
+| `render_timeout_seconds` | Per-FFmpeg render, validation, or music-normalization timeout | `7200` |
 | `vision_provider` | `local`, `qwen`, or `florence` | `local` |
 | `vision_model` | Vision model identifier or `auto` | `auto` |
 | `model_cache` | Downloaded local model cache | `models` |

@@ -281,9 +281,12 @@ def test_speech_analysis_stage_reuses_cached_transcripts(
         provider: object,
         ffmpeg_binary: str,
         audio_dir: Path,
+        *,
+        timeout_seconds: float = 120,
     ) -> SpeechAnalysisReport:
         nonlocal calls
         calls += 1
+        assert timeout_seconds == context.settings.frame_extraction_timeout_seconds
         updated = [
             item.model_copy(
                 update={
@@ -355,9 +358,12 @@ def test_audio_analysis_stage_reuses_cached_scene_audio_metadata(
         scenes: list[Scene],
         assets: list[MediaAsset],
         ffmpeg_binary: str,
+        *,
+        timeout_seconds: float = 120,
     ) -> AudioAnalysisReport:
         nonlocal calls
         calls += 1
+        assert timeout_seconds == context.settings.frame_extraction_timeout_seconds
         analysis = AudioSceneAnalysis(
             scene_id=scenes[0].id,
             has_audio=True,

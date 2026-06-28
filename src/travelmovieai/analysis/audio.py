@@ -10,7 +10,7 @@ from uuid import UUID
 import numpy as np
 from numpy.typing import NDArray
 
-from travelmovieai.core.exceptions import DependencyUnavailableError
+from travelmovieai.core.exceptions import DependencyUnavailableError, PipelineStageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     AudioAnalysisReport,
@@ -38,6 +38,8 @@ def analyze_audio(
     assets: list[MediaAsset],
     ffmpeg_binary: str = "ffmpeg",
     progress: Callable[[int, int, str], None] | None = None,
+    *,
+    timeout_seconds: float = 120,
 ) -> AudioAnalysisReport:
     assets_by_id = {asset.id: asset for asset in assets}
     analyzed: list[Scene] = []
@@ -46,7 +48,7 @@ def analyze_audio(
     skipped_count = 0
     for index, scene in enumerate(scenes, start=1):
         asset = assets_by_id.get(scene.asset_id)
-        analysis = _analyze_scene_audio(scene, asset, ffmpeg_binary)
+        analysis = _analyze_scene_audio(scene, asset, ffmpeg_binary, timeout_seconds)
         analyses.append(analysis)
         if analysis.has_audio:
             analyzed_count += 1
@@ -72,6 +74,7 @@ def _analyze_scene_audio(
     scene: Scene,
     asset: MediaAsset | None,
     ffmpeg_binary: str,
+    timeout_seconds: float,
 ) -> AudioSceneAnalysis:
     if asset is None or asset.media_type is not MediaType.VIDEO or not _has_audio(asset):
         return AudioSceneAnalysis(
@@ -80,7 +83,7 @@ def _analyze_scene_audio(
             primary_label="unknown",
             labels=[],
         )
-    samples = _decode_scene_audio(scene, asset, ffmpeg_binary)
+    samples = _decode_scene_audio(scene, asset, ffmpeg_binary, timeout_seconds)
     if samples.size == 0:
         return AudioSceneAnalysis(
             scene_id=scene.id,
@@ -156,6 +159,7 @@ def _decode_scene_audio(
     scene: Scene,
     asset: MediaAsset,
     ffmpeg_binary: str,
+    timeout_seconds: float,
 ) -> NDArray[np.float64]:
     duration = max(0.05, scene.end_seconds - scene.start_seconds)
     command = [
@@ -179,10 +183,20 @@ def _decode_scene_audio(
         "pipe:1",
     ]
     try:
-        completed = subprocess.run(command, capture_output=True, check=False)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
     except FileNotFoundError as error:
         raise DependencyUnavailableError(
             f"FFmpeg executable was not found: {ffmpeg_binary}"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise PipelineStageError(
+            f"FFmpeg timed out after {timeout_seconds:g}s while decoding audio "
+            f"from {asset.relative_path}."
         ) from error
     if completed.returncode != 0 or not completed.stdout:
         return np.asarray([], dtype=np.float64)
@@ -409,6 +423,5 @@ def _dbfs(value: float) -> float:
 
 def _has_audio(asset: MediaAsset) -> bool:
     return any(
-        stream.get("codec_type") == "audio"
-        for stream in asset.probe_metadata.get("streams", [])
+        stream.get("codec_type") == "audio" for stream in asset.probe_metadata.get("streams", [])
     )

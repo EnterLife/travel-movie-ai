@@ -111,6 +111,7 @@ class RenderingStage(Stage):
             output_path,
             ffprobe_binary=context.settings.ffprobe_binary,
             ffmpeg_binary=context.settings.ffmpeg_binary,
+            timeout_seconds=context.settings.render_timeout_seconds,
         )
         write_json_atomic(quality_artifact, quality_report)
         write_stage_cache_manifest(

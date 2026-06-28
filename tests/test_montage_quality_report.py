@@ -1,11 +1,17 @@
+import json
+import subprocess
 import wave
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
+from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MontageClip,
+    MontageQualityReport,
     MusicBeat,
     MusicCueSection,
     MusicPlan,
@@ -13,7 +19,10 @@ from travelmovieai.domain.models import (
     QuickMontageSettings,
     Scene,
 )
-from travelmovieai.editing.quality_report import build_montage_quality_report
+from travelmovieai.editing.quality_report import (
+    build_montage_quality_report,
+    enrich_montage_quality_report_with_render,
+)
 
 
 def test_montage_quality_report_flags_timeline_risks(tmp_path: Path) -> None:
@@ -231,3 +240,93 @@ def test_montage_quality_report_flags_excessive_center_cuts(tmp_path: Path) -> N
     report = build_montage_quality_report(plan, [])
 
     assert "excessive_center_cuts" in {issue.code for issue in report.issues}
+
+
+def test_render_quality_report_reports_ffprobe_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "final.mp4"
+    output.write_bytes(b"fake")
+    timeouts: list[float] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, int | float)
+        timeouts.append(float(timeout))
+        raise subprocess.TimeoutExpired(cmd=command, timeout=timeout)
+
+    monkeypatch.setattr("travelmovieai.editing.quality_report.subprocess.run", fake_run)
+
+    with pytest.raises(MontageError, match="FFprobe timed out after 0.25s"):
+        enrich_montage_quality_report_with_render(
+            _render_report(),
+            output,
+            timeout_seconds=0.25,
+        )
+
+    assert timeouts == [0.25]
+
+
+def test_render_quality_report_treats_sample_timeouts_as_unavailable_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "final.mp4"
+    output.write_bytes(b"fake")
+    calls = 0
+
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        timeout = kwargs["timeout"]
+        if calls == 1:
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        {
+                            "format": {"duration": "3.0"},
+                            "streams": [
+                                {"codec_type": "video"},
+                                {"codec_type": "audio"},
+                            ],
+                        }
+                    ),
+                    "stderr": "",
+                },
+            )()
+        raise subprocess.TimeoutExpired(cmd=command, timeout=timeout)
+
+    monkeypatch.setattr("travelmovieai.editing.quality_report.subprocess.run", fake_run)
+
+    report = enrich_montage_quality_report_with_render(
+        _render_report(),
+        output,
+        timeout_seconds=0.25,
+    )
+
+    assert report.rendered_has_video is True
+    assert report.rendered_has_audio is True
+    assert report.rendered_audio_rms == {}
+    assert report.rendered_video_luma == {}
+    assert "render_audio_rms_unavailable" in {issue.code for issue in report.issues}
+
+
+def _render_report() -> MontageQualityReport:
+    return MontageQualityReport(
+        created_at=datetime.now(UTC),
+        score=100,
+        target_duration_seconds=3,
+        planned_duration_seconds=3,
+        duration_ratio=1,
+        clip_count=1,
+        selected_scene_count=0,
+        selected_event_count=0,
+        total_event_count=0,
+        event_coverage_ratio=1,
+        source_count=1,
+        dominant_source_ratio=1,
+    )

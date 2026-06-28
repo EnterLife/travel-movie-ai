@@ -15,17 +15,14 @@ from travelmovieai.infrastructure.artifacts import (
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "audio-analysis-v1"
+ARTIFACT_SCHEMA_VERSION = "audio-analysis-v2"
 
 
 class AudioAnalysisStage(Stage):
     name = PipelineStage.AUDIO_ANALYSIS
 
     def run(self, context: ProjectContext) -> StageResult:
-        if (
-            context.montage_settings is not None
-            and not context.montage_settings.audio_analysis
-        ):
+        if context.montage_settings is not None and not context.montage_settings.audio_analysis:
             return StageResult(
                 stage=self.name,
                 skipped=True,
@@ -42,6 +39,7 @@ class AudioAnalysisStage(Stage):
         config_fingerprint = artifact_fingerprint(
             {
                 "ffmpeg_binary": context.settings.ffmpeg_binary,
+                "timeout_seconds": context.settings.frame_extraction_timeout_seconds,
                 "schema": ARTIFACT_SCHEMA_VERSION,
             }
         )
@@ -64,6 +62,7 @@ class AudioAnalysisStage(Stage):
             scenes,
             assets,
             context.settings.ffmpeg_binary,
+            timeout_seconds=context.settings.frame_extraction_timeout_seconds,
         )
         repository.synchronize_scenes(report.scenes)
         write_json_atomic(artifact, report)

@@ -104,19 +104,22 @@ def enrich_montage_quality_report_with_render(
     *,
     ffprobe_binary: str = "ffprobe",
     ffmpeg_binary: str = "ffmpeg",
+    timeout_seconds: float = 7200,
 ) -> MontageQualityReport:
-    probe = _probe_rendered_movie(output_path, ffprobe_binary)
+    probe = _probe_rendered_movie(output_path, ffprobe_binary, timeout_seconds)
     audio_rms = _rendered_audio_rms(
         output_path,
         duration_seconds=probe["duration"],
         has_audio=probe["has_audio"],
         ffmpeg_binary=ffmpeg_binary,
+        timeout_seconds=timeout_seconds,
     )
     video_luma = _rendered_video_luma(
         output_path,
         duration_seconds=probe["duration"],
         has_video=probe["has_video"],
         ffmpeg_binary=ffmpeg_binary,
+        timeout_seconds=timeout_seconds,
     )
     issues = [
         *report.issues,
@@ -411,7 +414,11 @@ def _render_issues(
     return issues
 
 
-def _probe_rendered_movie(output_path: Path, ffprobe_binary: str) -> _RenderedProbe:
+def _probe_rendered_movie(
+    output_path: Path,
+    ffprobe_binary: str,
+    timeout_seconds: float,
+) -> _RenderedProbe:
     resolved = shutil.which(ffprobe_binary) or ffprobe_binary
     try:
         completed = subprocess.run(
@@ -429,10 +436,15 @@ def _probe_rendered_movie(output_path: Path, ffprobe_binary: str) -> _RenderedPr
             check=False,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as error:
         raise DependencyUnavailableError(
             f"FFprobe executable was not found: {ffprobe_binary}"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise MontageError(
+            f"FFprobe timed out after {timeout_seconds:g}s while validating the final movie."
         ) from error
     if completed.returncode != 0:
         detail = completed.stderr.strip() or "unknown FFprobe error"
@@ -457,6 +469,7 @@ def _rendered_audio_rms(
     duration_seconds: object,
     has_audio: object,
     ffmpeg_binary: str,
+    timeout_seconds: float,
 ) -> dict[str, float]:
     if not has_audio or not isinstance(duration_seconds, int | float) or duration_seconds <= 0:
         return {}
@@ -473,6 +486,7 @@ def _rendered_audio_rms(
             start_seconds=start,
             duration_seconds=sample_duration,
             ffmpeg_binary=ffmpeg_binary,
+            timeout_seconds=timeout_seconds,
         )
         if rms is not None:
             values[label] = rms
@@ -485,6 +499,7 @@ def _audio_rms(
     start_seconds: float,
     duration_seconds: float,
     ffmpeg_binary: str,
+    timeout_seconds: float,
 ) -> float | None:
     resolved = shutil.which(ffmpeg_binary) or ffmpeg_binary
     try:
@@ -511,8 +526,9 @@ def _audio_rms(
             ],
             capture_output=True,
             check=False,
+            timeout=timeout_seconds,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
         return None
@@ -529,6 +545,7 @@ def _rendered_video_luma(
     duration_seconds: object,
     has_video: object,
     ffmpeg_binary: str,
+    timeout_seconds: float,
 ) -> dict[str, float]:
     if not has_video or not isinstance(duration_seconds, int | float) or duration_seconds <= 0:
         return {}
@@ -543,6 +560,7 @@ def _rendered_video_luma(
             output_path,
             start_seconds=start,
             ffmpeg_binary=ffmpeg_binary,
+            timeout_seconds=timeout_seconds,
         )
         if luma is not None:
             values[label] = luma
@@ -554,6 +572,7 @@ def _video_luma(
     *,
     start_seconds: float,
     ffmpeg_binary: str,
+    timeout_seconds: float,
 ) -> float | None:
     resolved = shutil.which(ffmpeg_binary) or ffmpeg_binary
     width = 16
@@ -579,8 +598,9 @@ def _video_luma(
             ],
             capture_output=True,
             check=False,
+            timeout=timeout_seconds,
         )
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     expected = width * height
     if completed.returncode != 0 or len(completed.stdout) < expected:

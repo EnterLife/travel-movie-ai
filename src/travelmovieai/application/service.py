@@ -231,6 +231,7 @@ class TravelMovieService:
                 resolved_output,
                 ffprobe_binary=self.settings.ffprobe_binary,
                 ffmpeg_binary=self.settings.ffmpeg_binary,
+                timeout_seconds=self.settings.render_timeout_seconds,
             ),
         )
         tracker.emit(100, "Film ready and validated with FFprobe")
@@ -354,7 +355,8 @@ class TravelMovieService:
                 ),
                 self.settings.ffmpeg_binary,
                 context.cache_dir / "speech",
-                tracker.range(70, 74),
+                timeout_seconds=self.settings.frame_extraction_timeout_seconds,
+                progress=tracker.range(70, 74),
             )
             speech_scenes = speech_report.scenes
             write_json_atomic(
@@ -369,7 +371,8 @@ class TravelMovieService:
                 speech_scenes,
                 report.assets,
                 self.settings.ffmpeg_binary,
-                tracker.range(74, 76),
+                timeout_seconds=self.settings.frame_extraction_timeout_seconds,
+                progress=tracker.range(74, 76),
             )
             speech_scenes = audio_report.scenes
             write_json_atomic(

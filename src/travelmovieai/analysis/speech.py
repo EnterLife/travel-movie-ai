@@ -34,6 +34,8 @@ def analyze_speech(
     ffmpeg_binary: str,
     audio_dir: Path,
     progress: Callable[[int, int, str], None] | None = None,
+    *,
+    timeout_seconds: float = 120,
 ) -> SpeechAnalysisReport:
     assets_by_id = {asset.id: asset for asset in assets}
     updated: list[Scene] = []
@@ -57,7 +59,13 @@ def analyze_speech(
         if progress:
             progress(index - 1, total, f"Whisper: scene {index}/{total}")
         audio_path = audio_dir / f"{scene.id}-{cache_key[:12]}.wav"
-        _extract_scene_audio(ffmpeg_binary, asset.path, scene, audio_path)
+        _extract_scene_audio(
+            ffmpeg_binary,
+            asset.path,
+            scene,
+            audio_path,
+            timeout_seconds,
+        )
         transcript = provider.transcribe(audio_path)
         updated.append(
             scene.model_copy(
@@ -95,6 +103,7 @@ def _extract_scene_audio(
     source_path: Path,
     scene: Scene,
     output_path: Path,
+    timeout_seconds: float = 120,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp.wav")
@@ -126,17 +135,22 @@ def _extract_scene_audio(
             check=False,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as error:
         raise DependencyUnavailableError(
             f"FFmpeg executable was not found: {ffmpeg_binary}"
         ) from error
+    except subprocess.TimeoutExpired as error:
+        temporary.unlink(missing_ok=True)
+        raise PipelineStageError(
+            f"FFmpeg timed out after {timeout_seconds:g}s while extracting speech "
+            f"from {source_path.name}."
+        ) from error
     try:
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "unknown FFmpeg error"
-            raise PipelineStageError(
-                f"Could not extract speech from {source_path.name}: {detail}"
-            )
+            raise PipelineStageError(f"Could not extract speech from {source_path.name}: {detail}")
         os.replace(temporary, output_path)
     finally:
         temporary.unlink(missing_ok=True)

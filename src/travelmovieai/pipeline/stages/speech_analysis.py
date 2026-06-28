@@ -16,17 +16,14 @@ from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.whisper import FasterWhisperProvider
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "speech-analysis-v1"
+ARTIFACT_SCHEMA_VERSION = "speech-analysis-v2"
 
 
 class SpeechAnalysisStage(Stage):
     name = PipelineStage.SPEECH_ANALYSIS
 
     def run(self, context: ProjectContext) -> StageResult:
-        if (
-            context.montage_settings is not None
-            and not context.montage_settings.speech_analysis
-        ):
+        if context.montage_settings is not None and not context.montage_settings.speech_analysis:
             return StageResult(
                 stage=self.name,
                 skipped=True,
@@ -47,6 +44,7 @@ class SpeechAnalysisStage(Stage):
                 "whisper_model": context.settings.whisper_model,
                 "device": context.settings.device,
                 "ffmpeg_binary": context.settings.ffmpeg_binary,
+                "timeout_seconds": context.settings.frame_extraction_timeout_seconds,
                 "schema": ARTIFACT_SCHEMA_VERSION,
             }
         )
@@ -74,6 +72,7 @@ class SpeechAnalysisStage(Stage):
             ),
             context.settings.ffmpeg_binary,
             context.cache_dir / "speech",
+            timeout_seconds=context.settings.frame_extraction_timeout_seconds,
         )
         repository.synchronize_scenes(report.scenes)
         write_json_atomic(artifact, report)

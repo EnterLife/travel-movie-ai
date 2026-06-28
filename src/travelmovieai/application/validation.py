@@ -28,9 +28,11 @@ def validate_project_paths(input_path: Path, workspace: Path) -> ProjectPaths:
     writable_root = _nearest_existing_parent(resolved_workspace)
     if not os.access(writable_root, os.W_OK):
         raise InvalidProjectPathError("Workspace is not writable.")
-    if resolved_input.is_relative_to(resolved_workspace):
+    if resolved_input.is_relative_to(resolved_workspace) or resolved_workspace.is_relative_to(
+        resolved_input
+    ):
         raise InvalidProjectPathError(
-            "Workspace cannot be the source folder or one of its parents."
+            "Workspace and source folder cannot be the same or nested inside each other."
         )
 
     return ProjectPaths(input_path=resolved_input, workspace=resolved_workspace)

@@ -233,6 +233,8 @@ transcripts, language, and confidence data, but increases processing time.
 1. Click the directory picker next to the source field, or enter a path manually.
 2. Review the automatically selected workspace under
    `<repository>\workspace\<source-folder>`, or choose another directory.
+   Keep the workspace separate from the source folder; neither directory may be
+   nested inside the other.
 3. Start media analysis.
 4. Choose a Vision backend, model, story style, and render device.
 5. Keep semantic and OpenCV analysis enabled for AI-directed editing.
@@ -826,8 +828,9 @@ Add the FFmpeg `bin` directory to `PATH` or configure full paths in
 
 ### No media files are found
 
-Verify the selected directory, nested folders, and supported extensions. The
-workspace should not contain the source-media directory.
+Verify the selected directory, nested folders, and supported extensions. Keep
+the workspace and source-media directory separate; neither should contain the
+other.
 
 ### SQLite is busy
 

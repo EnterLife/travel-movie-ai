@@ -364,9 +364,14 @@ def test_web_scan_rejects_invalid_paths(tmp_path: Path) -> None:
             "/api/scans",
             json={"input_path": str(media), "workspace": str(tmp_path)},
         )
+        nested_workspace = client.post(
+            "/api/scans",
+            json={"input_path": str(media), "workspace": str(media / "workspace")},
+        )
 
     assert missing_response.status_code == 400
     assert unsafe_workspace.status_code == 400
+    assert nested_workspace.status_code == 400
 
 
 def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:

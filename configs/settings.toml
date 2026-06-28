@@ -21,7 +21,8 @@ generated_music_filename = "generated_soundtrack.wav"
 
 whisper_model = "medium"
 
-# 0 enables automatic hardware-based selection.
+# 0 enables conservative automatic hardware-based selection.
+# Raise workers only after checking temperatures and system stability.
 batch_size = 0
 workers = 0
 

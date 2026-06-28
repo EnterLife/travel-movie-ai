@@ -28,6 +28,9 @@ class _RenderedProbe(TypedDict):
     has_audio: bool
 
 
+MUSIC_FADE_OUT_SECONDS = 1.5
+
+
 def build_montage_quality_report(
     plan: QuickMontagePlan,
     scenes: list[Scene],
@@ -477,7 +480,7 @@ def _rendered_audio_rms(
     starts = {
         "start": 0.0,
         "middle": max(0.0, duration_seconds * 0.5 - sample_duration / 2),
-        "end": max(0.0, duration_seconds - sample_duration - 0.05),
+        "end": max(0.0, duration_seconds - MUSIC_FADE_OUT_SECONDS - sample_duration - 0.05),
     }
     values: dict[str, float] = {}
     for label, start in starts.items():

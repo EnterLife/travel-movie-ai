@@ -15,9 +15,9 @@ def test_resource_profile_uses_available_cpu_memory_and_gpu(monkeypatch) -> None
         )
     )
 
-    assert profile.frame_workers == 14
-    assert profile.analysis_workers == 16
-    assert profile.render_workers == 4
+    assert profile.frame_workers == 10
+    assert profile.analysis_workers == 10
+    assert profile.render_workers == 1
     assert profile.ffmpeg_threads == 4
     assert profile.model_batch_size == 8
     assert "NVENC" in profile.summary
@@ -35,9 +35,24 @@ def test_resource_profile_honors_manual_overrides(monkeypatch) -> None:
 
     assert profile.frame_workers == 6
     assert profile.analysis_workers == 6
-    assert profile.render_workers == 6
-    assert profile.ffmpeg_threads == 2
+    assert profile.render_workers == 2
+    assert profile.ffmpeg_threads == 4
     assert profile.model_batch_size == 3
+
+
+def test_resource_profile_caps_high_manual_render_override(monkeypatch) -> None:
+    monkeypatch.setattr(system.os, "cpu_count", lambda: 24)
+    monkeypatch.setattr(system, "_system_memory_mb", lambda: 64 * 1024)
+
+    profile = detect_resource_profile(
+        cuda=CudaStatus(available=True, ffmpeg_nvenc=True),
+        worker_override=20,
+    )
+
+    assert profile.frame_workers == 12
+    assert profile.analysis_workers == 12
+    assert profile.render_workers == 2
+    assert profile.ffmpeg_threads == 4
 
 
 def test_six_gb_gpu_uses_safe_two_scene_batch(monkeypatch) -> None:
@@ -70,6 +85,6 @@ def test_high_memory_workstation_uses_more_analysis_workers(monkeypatch) -> None
         )
     )
 
-    assert profile.frame_workers == 24
-    assert profile.analysis_workers == 32
+    assert profile.frame_workers == 12
+    assert profile.analysis_workers == 12
     assert profile.model_batch_size == 16

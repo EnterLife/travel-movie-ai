@@ -211,6 +211,63 @@ def test_renderer_reports_ffmpeg_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
     assert calls == [0.25]
 
 
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="FFprobe is not installed")
+def test_renderer_strips_source_metadata_from_outputs(tmp_path: Path) -> None:
+    source = tmp_path / "tagged-source.mp4"
+    output = tmp_path / "clean-output.mp4"
+    _generate_tagged_video(source)
+    clip = MontageClip(
+        asset_id=uuid4(),
+        source_path=source,
+        relative_path=Path("tagged-source.mp4"),
+        media_type=MediaType.VIDEO,
+        duration_seconds=1,
+        has_audio=True,
+    )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(
+            width=320,
+            height=240,
+            fps=24,
+            music_enabled=False,
+            render_device="cpu",
+        ),
+        clips=[clip],
+        total_duration_seconds=1,
+    )
+
+    QuickMontageRenderer().render(plan, output, tmp_path / "render")
+
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(output),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    payload = json.loads(probe.stdout)
+    format_tags = payload.get("format", {}).get("tags", {})
+    stream_tags = [
+        stream.get("tags", {})
+        for stream in payload.get("streams", [])
+        if isinstance(stream, dict)
+    ]
+
+    assert "location" not in format_tags
+    assert "comment" not in format_tags
+    assert all("location" not in tags and "comment" not in tags for tags in stream_tags)
+
+
 def test_renderer_rejects_missing_soundtrack_before_ffmpeg(tmp_path: Path) -> None:
     missing_music = tmp_path / "missing.wav"
     plan = QuickMontagePlan(
@@ -442,6 +499,39 @@ def _generate_video(path: Path) -> None:
             "lavfi",
             "-i",
             "sine=frequency=440:sample_rate=48000:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(path),
+        ],
+        check=True,
+    )
+
+
+def _generate_tagged_video(path: Path) -> None:
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=24:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=1",
+            "-metadata",
+            "location=+43.6411+040.2682/",
+            "-metadata",
+            "comment=private drone metadata",
             "-c:v",
             "libx264",
             "-pix_fmt",

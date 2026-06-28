@@ -466,7 +466,7 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 | `music_library` | Local soundtrack directory | `assets/music` |
 | `music_model` | Local music model identifier or `auto` | `auto` |
 | `generated_music_filename` | Generated soundtrack filename | `generated_soundtrack.wav` |
-| `workers` | Parallel worker override; `0` means auto | `0` |
+| `workers` | Conservative parallel worker override; `0` means auto | `0` |
 | `batch_size` | Model batch override; `0` means auto | `0` |
 | `web_host` | Web server bind address | `127.0.0.1` |
 | `web_port` | Web server port | `8000` |
@@ -483,16 +483,18 @@ At the first montage, TravelMovieAI detects:
 - FFmpeg NVENC support.
 
 The resulting profile separately selects concurrency for frame extraction,
-OpenCV analysis, Vision AI batching, and segment rendering. CPU rendering
-divides FFmpeg threads between concurrent jobs. NVENC is selected automatically
-when available and falls back to `libx264` if initialization fails.
+OpenCV analysis, Vision AI batching, and segment rendering. Automatic rendering
+keeps FFmpeg segment preparation serial and caps FFmpeg threads to reduce heat,
+power spikes, and GPU-driver stress on local Windows machines. NVENC is selected
+automatically when available and falls back to `libx264` if initialization
+fails.
 
 On the tested 16-thread CPU with 32 GB RAM and an RTX 3060, the automatic
-profile uses up to 14 concurrent frame jobs, 16 quality-analysis workers, a
-two-scene Vision batch, and four parallel render workers. On high-memory
-workstations, the frame-extraction and OpenCV-analysis caps rise further while
-remaining bounded. These stages run sequentially, so CPU, CUDA, NVDEC, and
-NVENC graphs are not expected to peak at the same time.
+profile uses up to 10 concurrent frame jobs, 10 quality-analysis workers, a
+two-scene Vision batch, and one render worker with up to four FFmpeg threads.
+On high-memory workstations, the frame-extraction and OpenCV-analysis caps rise
+to 12 workers while remaining bounded. These stages run sequentially, so CPU,
+CUDA, NVDEC, and NVENC graphs are not expected to peak at the same time.
 
 GPU usage by stage:
 
@@ -502,8 +504,9 @@ GPU usage by stage:
 - Vision AI: Qwen CUDA with 4-bit NF4 and hardware-sized batches;
 - rendering: NVENC encoding; audio filters can still use CPU.
 
-Keep `workers = 0` for automatic operation. Set a manual limit only
-to reserve resources for other applications or reduce heat and power use.
+Keep `workers = 0` for automatic operation. Set a manual limit only after
+checking temperatures and system stability. Manual render parallelism is capped
+at two FFmpeg processes even when a higher worker override is configured.
 
 ## Supported Media
 
@@ -788,12 +791,14 @@ The renderer:
 
 - normalizes resolution, FPS, pixel format, and audio format;
 - creates silent audio for sources without audio;
-- prepares independent segments in parallel;
+- prepares independent segments with bounded parallelism;
 - joins prepared segments with direct cuts and no `xfade`/`acrossfade` visual
   transition;
 - adds generated, library, or manual music;
 - ducks music around source audio;
 - uses `h264_nvenc` or `libx264`;
+- strips source container metadata such as camera comments and GPS tags from
+  rendered movies;
 - writes the final movie atomically;
 - validates video, audio, and duration with FFprobe.
 

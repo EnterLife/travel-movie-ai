@@ -25,7 +25,7 @@ from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
 ARTIFACT_SCHEMA_VERSION = "rendering-v3"
-RENDERER_BEHAVIOR_VERSION = "cut-only-v1"
+RENDERER_BEHAVIOR_VERSION = "cut-only-metadata-stripped-v2"
 
 
 class RenderingStage(Stage):

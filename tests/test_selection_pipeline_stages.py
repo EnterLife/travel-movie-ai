@@ -756,6 +756,102 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
     assert (context.artifacts_dir / "rendering.cache.json").is_file()
 
 
+def test_rendering_stage_rerenders_after_renderer_behavior_change(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "clip.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    plan = _timeline_plan(asset, scene)
+    timeline_artifact = context.artifacts_dir / "quick_timeline.json"
+    timeline_artifact.write_text(plan.model_dump_json(), encoding="utf-8")
+    output_path = context.artifacts_dir / "final.mp4"
+    quality_artifact = context.artifacts_dir / "montage_quality_report.json"
+    calls = 0
+
+    class FakeRenderer:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def render(
+            self,
+            montage_plan: QuickMontagePlan,
+            output_path: Path,
+            work_dir: Path,
+        ) -> str:
+            nonlocal calls
+            calls += 1
+            output_path.write_bytes(b"fake mp4")
+            return "fake-encoder"
+
+    class FakeFFprobeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def probe(self, path: Path) -> object:
+            return type(
+                "Probe",
+                (),
+                {
+                    "duration_seconds": 3.0,
+                    "metadata": {
+                        "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                    },
+                },
+            )()
+
+    def fake_detect_resource_profile(*args: object, **kwargs: object) -> object:
+        return type("Profile", (), {"render_workers": 1, "ffmpeg_threads": 1})()
+
+    def fake_enrich(
+        report: MontageQualityReport,
+        output_path: Path,
+        **kwargs: object,
+    ) -> MontageQualityReport:
+        return report.model_copy(
+            update={
+                "rendered_path": output_path,
+                "rendered_duration_seconds": report.planned_duration_seconds,
+                "rendered_has_video": True,
+                "rendered_has_audio": True,
+            }
+        )
+
+    monkeypatch.setattr(rendering, "QuickMontageRenderer", FakeRenderer)
+    monkeypatch.setattr(rendering, "detect_resource_profile", fake_detect_resource_profile)
+    monkeypatch.setattr(rendering, "enrich_montage_quality_report_with_render", fake_enrich)
+    monkeypatch.setattr(rendering, "FFprobeClient", FakeFFprobeClient)
+
+    first = RenderingStage().run(context)
+    old_config_fingerprint = rendering.artifact_fingerprint(
+        {
+            "ffmpeg_binary": context.settings.ffmpeg_binary,
+            "ffprobe_binary": context.settings.ffprobe_binary,
+            "output_path": output_path.resolve(),
+            "workers": context.settings.workers,
+            "batch_size": context.settings.batch_size,
+            "render_timeout_seconds": context.settings.render_timeout_seconds,
+            "renderer_behavior": "cut-only-v1",
+            "schema": rendering.ARTIFACT_SCHEMA_VERSION,
+        }
+    )
+    rendering.write_stage_cache_manifest(
+        context.artifacts_dir / "rendering.cache.json",
+        stage=PipelineStage.RENDERING,
+        artifact_schema_version=rendering.ARTIFACT_SCHEMA_VERSION,
+        input_fingerprint=rendering.artifact_fingerprint(plan),
+        config_fingerprint=old_config_fingerprint,
+        artifacts=[output_path, quality_artifact],
+    )
+    second = RenderingStage().run(context)
+
+    assert first.skipped is False
+    assert second.skipped is False
+    assert calls == 2
+
+
 def test_rendering_stage_ignores_legacy_render_cache_schema(
     tmp_path: Path,
     monkeypatch,

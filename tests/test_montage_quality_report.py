@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import wave
 from datetime import UTC, datetime
@@ -313,6 +314,58 @@ def test_render_quality_report_treats_sample_timeouts_as_unavailable_metrics(
     assert report.rendered_audio_rms == {}
     assert report.rendered_video_luma == {}
     assert "render_audio_rms_unavailable" in {issue.code for issue in report.issues}
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="FFprobe is not installed")
+def test_render_quality_report_ignores_intentional_music_fade_out(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "faded-ending.mp4"
+    _generate_faded_ending_movie(output)
+    report = _render_report().model_copy(
+        update={
+            "planned_duration_seconds": 12,
+            "target_duration_seconds": 12,
+            "music_mode": "generated",
+        }
+    )
+
+    enriched = enrich_montage_quality_report_with_render(report, output)
+
+    assert enriched.rendered_audio_rms["end"] >= 50
+    assert "render_audio_fades_out_early" not in {issue.code for issue in enriched.issues}
+
+
+def _generate_faded_ending_movie(path: Path) -> None:
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=24:duration=12",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=12",
+            "-filter:a",
+            "volume=0.03,afade=t=out:st=10.5:d=1.5",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(path),
+        ],
+        check=True,
+    )
 
 
 def _render_report() -> MontageQualityReport:

@@ -240,11 +240,8 @@ def _estimated_timeline_duration(
 ) -> float:
     if not scenes:
         return 0.0
-    transition = 0.0 if settings.transition == "none" else settings.transition_duration_seconds
     durations = [_estimated_scene_duration(scene, assets_by_id, settings) for scene in scenes]
-    if durations:
-        transition = min(transition, min(durations) * 0.45)
-    return max(0.0, sum(durations) - max(0, len(durations) - 1) * transition)
+    return max(0.0, sum(durations))
 
 
 def _diversity_penalty(

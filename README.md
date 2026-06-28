@@ -24,8 +24,7 @@ Implemented:
 - explainable scene selection with `Auto`, `Include`, and `Exclude` overrides;
 - energy-aware semantic clip pacing with speech and people protection;
 - generated, library, manual, or disabled music modes with ducking;
-- cut-only default editing, optional soft transitions, quick preview, and final
-  H.264/AAC rendering;
+- cut-only editing, quick preview, and final H.264/AAC rendering;
 - NVIDIA NVENC acceleration with CPU fallback;
 - automatic CPU, RAM, GPU, and worker-profile detection;
 - global progress, per-stage progress bars, ETA, and live processing logs;
@@ -239,7 +238,7 @@ transcripts, language, and confidence data, but increases processing time.
 5. Keep semantic and OpenCV analysis enabled for AI-directed editing.
 6. Enable Faster Whisper only when speech matters.
 7. Enable quick preview for the first iteration.
-8. Configure duration, optional soft transitions, and music.
+8. Configure duration and music.
 9. Start AI montage.
 10. Monitor global progress, individual stage bars, ETA, and logs.
 11. Review scenes and set `Auto`, `Include`, or `Exclude`.
@@ -317,13 +316,10 @@ optimizer avoids adjacent repeats across location, activity, shot type, shot
 scale, camera motion, movement direction, lighting, tags, and large brightness
 jumps. `semantic_diversity_weight` controls how strongly these repeat penalties
 affect selection. Semantic
-timeline clips can also carry a per-cut transition policy so the renderer can use
-contextual fades or dissolves instead of one transition style for every scene
-change. By default the final movie uses direct cuts with no visual transition,
-because most travel footage looks cleaner and more contemporary that way. Select
-`soft` for short fades or `cinematic` for restrained dissolve/fade transitions
-between story beats. One strong but repetitive location or activity should not
-fill the whole movie when varied alternatives are available.
+timeline clips use direct cuts with no visual transition, because most travel
+footage looks cleaner and avoids dissolve artifacts that can resemble
+pixelization. One strong but repetitive location or activity should not fill the
+whole movie when varied alternatives are available.
 
 ### Generated Lounge Music
 
@@ -790,8 +786,8 @@ The renderer:
 - normalizes resolution, FPS, pixel format, and audio format;
 - creates silent audio for sources without audio;
 - prepares independent segments in parallel;
-- applies `xfade` and `acrossfade` transitions only when an optional transition
-  preset is selected;
+- joins prepared segments with direct cuts and no `xfade`/`acrossfade` visual
+  transition;
 - adds generated, library, or manual music;
 - ducks music around source audio;
 - uses `h264_nvenc` or `libx264`;

@@ -942,10 +942,7 @@ def _edge_accents(duration_seconds: float) -> list[MusicAccent]:
 
 
 def _effective_transition(plan: QuickMontagePlan) -> float:
-    if plan.settings.transition == "none" or len(plan.clips) < 2:
-        return 0.0
-    shortest = min(clip.duration_seconds for clip in plan.clips)
-    return min(plan.settings.transition_duration_seconds, shortest * 0.45)
+    return 0.0
 
 
 def _percentile(values: list[float], fraction: float) -> float:

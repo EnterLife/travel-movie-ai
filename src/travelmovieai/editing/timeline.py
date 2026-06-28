@@ -382,13 +382,7 @@ def _timeline_duration(
 
 
 def _transition_duration(settings: QuickMontageSettings) -> float:
-    if settings.transition == "none":
-        return 0.0
-    if settings.transition == "soft":
-        return min(settings.transition_duration_seconds, 0.35)
-    if settings.transition == "cinematic":
-        return min(settings.transition_duration_seconds, 0.55)
-    return settings.transition_duration_seconds
+    return 0.0
 
 
 def _clip_starts(
@@ -576,49 +570,7 @@ def _apply_transition_policy(
     scenes_by_id: dict[UUID, Scene],
     settings: QuickMontageSettings,
 ) -> list[MontageClip]:
-    if settings.transition == "none":
-        return clips
-    updated: list[MontageClip] = []
-    previous_scene: Scene | None = None
-    for index, clip in enumerate(clips):
-        scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
-        transition = (
-            None
-            if index == 0
-            else _transition_for_scene_change(
-                previous_scene,
-                scene,
-                clip,
-                settings,
-            )
-        )
-        updated.append(clip.model_copy(update={"transition": transition}))
-        previous_scene = scene
-    return updated
-
-
-def _transition_for_scene_change(
-    previous_scene: Scene | None,
-    scene: Scene | None,
-    clip: MontageClip,
-    settings: QuickMontageSettings,
-) -> str:
-    if previous_scene is None or scene is None:
-        return _default_clip_transition(settings)
-    if clip.event_id is not None and clip.event_id != _event_id(previous_scene):
-        return "dissolve"
-    role = _explicit_story_role(scene)
-    if role in {"opening", "finale"}:
-        return "fade"
-    return _default_clip_transition(settings)
-
-
-def _default_clip_transition(settings: QuickMontageSettings) -> str:
-    if settings.transition == "soft":
-        return "fade"
-    if settings.transition == "cinematic":
-        return "dissolve"
-    return settings.transition
+    return clips
 
 
 def _story_candidates(

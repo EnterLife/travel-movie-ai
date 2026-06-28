@@ -165,6 +165,9 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "Create a travel film" in page.text
     assert 'id="music-engine"' in page.text
     assert 'id="music-model"' in page.text
+    assert "Cut only" in page.text
+    assert "Simple dissolve" not in page.text
+    assert "Cinematic dissolve" not in page.text
     assert 'id="music-volume" type="range" min="0" max="100" value="100"' in page.text
     assert '<span id="music-volume-value">100%</span>' in page.text
     assert "ACE-Step only" in page.text

@@ -750,17 +750,12 @@ def _beat_alignment_ratio(plan: QuickMontagePlan) -> float | None:
 
 
 def _clip_starts(plan: QuickMontagePlan) -> list[float]:
-    transition = (
-        0.0 if plan.settings.transition == "none" else plan.settings.transition_duration_seconds
-    )
-    if plan.clips:
-        transition = min(transition, min(clip.duration_seconds for clip in plan.clips) * 0.45)
     starts: list[float] = []
     elapsed = 0.0
     for index, clip in enumerate(plan.clips):
         starts.append(elapsed)
         if index < len(plan.clips) - 1:
-            elapsed += clip.duration_seconds - transition
+            elapsed += clip.duration_seconds
     return starts
 
 

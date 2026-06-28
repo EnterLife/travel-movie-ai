@@ -448,10 +448,7 @@ def _concat_path(path: Path) -> str:
 
 
 def _transition_duration(plan: QuickMontagePlan) -> float:
-    if plan.settings.transition == "none" or len(plan.clips) < 2:
-        return 0.0
-    shortest = min(clip.duration_seconds for clip in plan.clips)
-    return min(plan.settings.transition_duration_seconds, shortest * 0.45)
+    return 0.0
 
 
 def _build_filter_graph(
@@ -466,31 +463,11 @@ def _build_filter_graph(
 
     video_label = "v0base"
     audio_label = "a0base"
-    elapsed = plan.clips[0].duration_seconds
     for index in range(1, clip_count):
         next_video = f"v{index}mix"
         next_audio = f"a{index}mix"
-        if transition_duration > 0:
-            offset = max(0.0, elapsed - transition_duration)
-            transition_name = _xfade_transition_name(
-                plan.clips[index].transition or plan.settings.transition
-            )
-            lines.append(
-                f"[{video_label}][v{index}base]"
-                f"xfade=transition={transition_name}:"
-                f"duration={transition_duration:.3f}:offset={offset:.3f}"
-                f"[{next_video}]"
-            )
-            lines.append(
-                f"[{audio_label}][a{index}base]"
-                f"acrossfade=d={transition_duration:.3f}:c1=tri:c2=tri"
-                f"[{next_audio}]"
-            )
-            elapsed += plan.clips[index].duration_seconds - transition_duration
-        else:
-            lines.append(f"[{video_label}][v{index}base]concat=n=2:v=1:a=0[{next_video}]")
-            lines.append(f"[{audio_label}][a{index}base]concat=n=2:v=0:a=1[{next_audio}]")
-            elapsed += plan.clips[index].duration_seconds
+        lines.append(f"[{video_label}][v{index}base]concat=n=2:v=1:a=0[{next_video}]")
+        lines.append(f"[{audio_label}][a{index}base]concat=n=2:v=0:a=1[{next_audio}]")
         video_label = next_video
         audio_label = next_audio
 
@@ -541,11 +518,3 @@ def _replace_video_encoder(command: list[str], encoder_args: list[str]) -> list[
             break
         end += 2
     return [*replaced[:index], *encoder_args, *replaced[end:]]
-
-
-def _xfade_transition_name(transition: str) -> str:
-    if transition == "soft":
-        return "fade"
-    if transition == "cinematic":
-        return "dissolve"
-    return transition

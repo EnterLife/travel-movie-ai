@@ -19,7 +19,11 @@ from travelmovieai.domain.models import (
     QuickMontageSettings,
     SceneUnderstanding,
 )
-from travelmovieai.editing.renderer import QuickMontageRenderer, _build_filter_graph
+from travelmovieai.editing.renderer import (
+    QuickMontageRenderer,
+    _build_filter_graph,
+    _transition_duration,
+)
 from travelmovieai.editing.timeline import build_quick_montage_plan
 
 
@@ -91,7 +95,7 @@ def test_quick_montage_plan_orders_assets_and_respects_duration(tmp_path: Path) 
     assert plan.clips[-1].duration_seconds == 2
 
 
-def test_renderer_filter_graph_uses_clip_transition_policy(tmp_path: Path) -> None:
+def test_renderer_uses_cut_only_graph_even_when_transition_is_requested(tmp_path: Path) -> None:
     settings = QuickMontageSettings(transition="fade", transition_duration_seconds=0.4)
     plan = QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -116,12 +120,16 @@ def test_renderer_filter_graph_uses_clip_transition_policy(tmp_path: Path) -> No
         total_duration_seconds=5.6,
     )
 
-    graph = _build_filter_graph(plan, transition_duration=0.4)
+    transition_duration = _transition_duration(plan)
+    graph = _build_filter_graph(plan, transition_duration=transition_duration)
 
-    assert "xfade=transition=slideright:duration=0.400" in graph
+    assert transition_duration == 0
+    assert "xfade=" not in graph
+    assert "acrossfade=" not in graph
+    assert "concat=n=2:v=1:a=0" in graph
 
 
-def test_renderer_filter_graph_maps_soft_transition_preset(tmp_path: Path) -> None:
+def test_renderer_ignores_soft_transition_preset(tmp_path: Path) -> None:
     settings = QuickMontageSettings(transition="soft", transition_duration_seconds=0.35)
     plan = QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -145,10 +153,10 @@ def test_renderer_filter_graph_maps_soft_transition_preset(tmp_path: Path) -> No
         total_duration_seconds=5.65,
     )
 
-    graph = _build_filter_graph(plan, transition_duration=0.35)
+    graph = _build_filter_graph(plan, transition_duration=_transition_duration(plan))
 
-    assert "xfade=transition=fade:duration=0.350" in graph
-    assert "xfade=transition=soft" not in graph
+    assert "xfade=" not in graph
+    assert "concat=n=2:v=1:a=0" in graph
 
 
 def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> None:

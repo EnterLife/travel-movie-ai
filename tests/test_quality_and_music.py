@@ -319,7 +319,7 @@ def test_music_cue_sheet_follows_timeline_and_scene_importance(
     beat_grid = build_music_beat_grid(plan.total_duration_seconds, 76, accents)
 
     assert accents[0].kind == "intro"
-    assert any(accent.kind == "event_change" and accent.time_seconds == 3.5 for accent in accents)
+    assert any(accent.kind == "event_change" and accent.time_seconds == 4 for accent in accents)
     assert any(
         accent.kind == "highlight"
         and accent.scene_id == clips[0].scene_id

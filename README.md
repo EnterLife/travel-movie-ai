@@ -331,7 +331,7 @@ fill the whole movie when varied alternatives are available.
 machine. The default AI engine is
 [ACE-Step 1.5](https://github.com/ACE-Step/ACE-Step-1.5), a specialized
 open-source music generation model. It generates an instrumental composition
-from the story style, BPM, duration, and music cue sheet.
+from the story style, BPM, duration budget, and music cue sheet.
 
 The unified Windows setup:
 
@@ -342,7 +342,7 @@ The first generation then:
 
 1. downloads model weights into `models/ace-step`;
 2. detects the GPU tier and enables CPU offload on low-VRAM systems;
-3. generates and normalizes a WAV file for the exact movie duration.
+3. generates a bounded base WAV and normalizes it for the exact movie duration.
 
 This does not replace packages in the main `.venv`. On a 6 GB NVIDIA GPU,
 ACE-Step uses its 2B Turbo model with low-VRAM offload. The initial installation
@@ -371,9 +371,11 @@ notes, bright bells, sharp synths, cymbal shimmer, loud hits, aggressive
 percussion, and dramatic build-ups.
 
 `Synchronize with editing` is enabled by default. The application first builds
-the final clip timeline and then requests one composition for its exact
-duration. If the model returns a shorter WAV, TravelMovieAI extends it to the
-full timeline instead of filling the remainder with silence. A cue sheet is a
+the final clip timeline and then requests one composition for the movie. For
+longer edits, ACE-Step generation is capped at 90 seconds and then normalized
+to the full timeline so 120-second and longer renders do not depend on a single
+very long model pass. If the model returns a shorter WAV, TravelMovieAI extends
+it to the full timeline instead of filling the remainder with silence. A cue sheet is a
 first-class contract with arrangement sections, BPM, intensity, and restrained
 accent points. It places musical structure at:
 

@@ -97,6 +97,66 @@ def test_ace_step_configuration_enables_low_vram_offload(tmp_path: Path) -> None
     assert "offload_dit_to_cpu = true" in config
 
 
+def test_ace_step_generation_caps_model_duration_and_extends_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    executable = runtime / ".venv" / "Scripts" / "python.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    (runtime / "cli.py").write_text("# fake cli\n", encoding="utf-8")
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=runtime,
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="auto",
+        gpu_memory_mb=6144,
+    )
+    captured_config = ""
+    normalized_duration = 0.0
+
+    def run_model(
+        command: list[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        progress: object,
+    ) -> list[str]:
+        nonlocal captured_config
+        config_path = Path(command[command.index("--config") + 1])
+        captured_config = config_path.read_text(encoding="utf-8")
+        model_output = config_path.parent / "output"
+        model_output.mkdir(exist_ok=True)
+        (model_output / "base.wav").write_bytes(b"fake wav")
+        return ["done"]
+
+    def normalize(source_path: Path, output_path: Path, duration_seconds: float) -> None:
+        nonlocal normalized_duration
+        assert source_path.name == "base.wav"
+        normalized_duration = duration_seconds
+        output_path.write_bytes(b"normalized")
+
+    monkeypatch.setattr(generator, "_run_streaming", run_model)
+    monkeypatch.setattr(generator, "_normalize", normalize)
+
+    output = tmp_path / "soundtrack.wav"
+    generator.generate(
+        output,
+        prompt="Instrumental lounge, no vocals",
+        cue_sheet=[],
+        duration_seconds=120,
+        bpm=76,
+        seed=42,
+    )
+
+    assert "duration = 90.000" in captured_config
+    assert normalized_duration == 120
+    assert output.read_bytes() == b"normalized"
+
+
 def test_ace_step_normalization_loops_short_model_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

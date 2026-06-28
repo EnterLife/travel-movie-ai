@@ -14,6 +14,7 @@ from travelmovieai.domain.models import MusicCueSection
 
 LOCAL_MUSIC_MODELS = ("ACE-Step/acestep-v15-turbo",)
 ACE_STEP_REPOSITORY = "https://github.com/ACE-Step/ACE-Step-1.5.git"
+ACE_STEP_MAX_GENERATION_SECONDS = 90.0
 
 MusicProgress = Callable[[int, int, str], None]
 
@@ -80,7 +81,10 @@ class AceStepMusicGenerator:
             model_output = temporary_dir / "output"
             model_output.mkdir()
             config_path = temporary_dir / "generation.toml"
-            generation_duration = min(600.0, max(10.0, duration_seconds))
+            generation_duration = min(
+                ACE_STEP_MAX_GENERATION_SECONDS,
+                max(10.0, duration_seconds),
+            )
             config_path.write_text(
                 self._configuration(
                     prompt=_prompt_with_cue_sheet(prompt, cue_sheet),
@@ -105,7 +109,7 @@ class AceStepMusicGenerator:
                         "HF_HUB_OFFLINE": "1",
                         "TRANSFORMERS_OFFLINE": "1",
                     }
-            )
+                )
             if progress:
                 progress(0, 4, f"ACE-Step: preparing {self.model}")
             lines = self._run_streaming(
@@ -130,9 +134,7 @@ class AceStepMusicGenerator:
             )
             if not candidates:
                 detail = " ".join(lines[-5:])[-1000:]
-                raise MusicGenerationError(
-                    f"ACE-Step did not create a WAV file. {detail}".strip()
-                )
+                raise MusicGenerationError(f"ACE-Step did not create a WAV file. {detail}".strip())
             if progress:
                 progress(3, 4, "ACE-Step: normalizing output")
             self._normalize(candidates[0], output_path, duration_seconds)
@@ -263,9 +265,7 @@ class AceStepMusicGenerator:
             raise
         if return_code != 0:
             detail = " ".join(lines[-8:])[-1500:]
-            raise MusicGenerationError(
-                f"ACE-Step exited with code {return_code}. {detail}".strip()
-            )
+            raise MusicGenerationError(f"ACE-Step exited with code {return_code}. {detail}".strip())
         return lines
 
     def _normalize(

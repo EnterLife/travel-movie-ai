@@ -427,7 +427,7 @@ class QuickMontageSettings(BaseModel):
         "energetic",
     ] = "auto"
     music_path: Path | None = None
-    music_volume: float = Field(default=0.12, ge=0, le=1)
+    music_volume: float = Field(default=1.0, ge=0, le=1)
     music_sync: bool = True
     music_engine: Literal["auto", "ace-step", "procedural"] = "auto"
     music_model: str | None = Field(default=None, max_length=300)

@@ -56,3 +56,9 @@ def test_quick_montage_settings_default_to_cut_only_transitions() -> None:
     settings = QuickMontageSettings()
 
     assert settings.transition == "none"
+
+
+def test_quick_montage_settings_use_full_music_volume_by_default() -> None:
+    settings = QuickMontageSettings()
+
+    assert settings.music_volume == 1.0

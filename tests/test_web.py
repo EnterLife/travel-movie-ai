@@ -247,6 +247,27 @@ def test_web_health_is_not_ready_without_ffprobe() -> None:
     assert health.json()["ready"] is False
 
 
+def test_web_health_is_not_ready_without_ffmpeg() -> None:
+    def unavailable(name: str) -> ExecutableStatus:
+        return ExecutableStatus(
+            name=name,
+            configured_value=name,
+            available=name != "ffmpeg",
+            error="Executable not found." if name == "ffmpeg" else None,
+        )
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            executable_checker=unavailable,
+        )
+    ) as client:
+        health = client.get("/api/health")
+
+    assert health.json()["status"] == "degraded"
+    assert health.json()["ready"] is False
+
+
 def test_web_capabilities_lists_models_and_cuda() -> None:
     with TestClient(
         create_app(

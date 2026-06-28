@@ -208,6 +208,7 @@ class TravelMovieService:
             self.settings.ffprobe_binary,
             workers=resources.render_workers,
             ffmpeg_threads=resources.ffmpeg_threads,
+            timeout_seconds=self.settings.render_timeout_seconds,
         ).render(
             plan,
             resolved_output,

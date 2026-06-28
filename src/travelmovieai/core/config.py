@@ -25,6 +25,7 @@ class Settings(BaseModel):
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     frame_extraction_timeout_seconds: float = Field(default=120, gt=0)
+    render_timeout_seconds: float = Field(default=7200, gt=0)
     vision_model: str = "auto"
     model_cache: Path = Path("models")
     allow_model_download: bool = True

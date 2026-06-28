@@ -11,6 +11,7 @@ import pytest
 
 from travelmovieai.application.service import TravelMovieService
 from travelmovieai.core.config import Settings
+from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MediaAsset,
@@ -191,6 +192,23 @@ def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> No
     assert command[command.index("-t") + 1] == "3.250"
     assert "trim=start=1.000:duration=2.000" in filter_graph
     assert "atrim=start=1.000:duration=2.000" in filter_graph
+
+
+def test_renderer_reports_ffmpeg_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[float] = []
+
+    def fake_run(*args: object, **kwargs: object) -> object:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, int | float)
+        calls.append(float(timeout))
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=timeout)
+
+    monkeypatch.setattr("travelmovieai.editing.renderer.subprocess.run", fake_run)
+
+    with pytest.raises(MontageError, match="timed out after 0.25s"):
+        QuickMontageRenderer(timeout_seconds=0.25)._run(["ffmpeg"], "Could not render")
+
+    assert calls == [0.25]
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")

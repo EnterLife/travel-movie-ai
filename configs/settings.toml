@@ -7,6 +7,7 @@ database_filename = "project.db"
 ffmpeg_binary = "ffmpeg"
 ffprobe_binary = "ffprobe"
 frame_extraction_timeout_seconds = 120
+render_timeout_seconds = 7200
 
 vision_provider = "local"
 vision_model = "auto"

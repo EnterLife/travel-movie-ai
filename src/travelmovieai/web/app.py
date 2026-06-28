@@ -102,7 +102,7 @@ def create_app(
         ffprobe = executable_checker(resolved_settings.ffprobe_binary)
         return HealthResponse(
             status="ok" if ffmpeg.available and ffprobe.available else "degraded",
-            ready=ffprobe.available,
+            ready=ffmpeg.available and ffprobe.available,
             ffmpeg=DependencyStatus.model_validate(asdict(ffmpeg)),
             ffprobe=DependencyStatus.model_validate(asdict(ffprobe)),
         )

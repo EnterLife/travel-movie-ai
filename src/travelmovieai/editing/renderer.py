@@ -24,11 +24,13 @@ class QuickMontageRenderer:
         ffprobe_binary: str = "ffprobe",
         workers: int = 1,
         ffmpeg_threads: int = 1,
+        timeout_seconds: float = 7200,
     ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
         self.ffprobe_binary = ffprobe_binary
         self.workers = max(1, workers)
         self.ffmpeg_threads = max(1, ffmpeg_threads)
+        self.timeout_seconds = timeout_seconds if timeout_seconds > 0 else 7200
         self._render_device = "cpu"
         self._encoder = "libx264"
 
@@ -58,7 +60,7 @@ class QuickMontageRenderer:
             progress(
                 len(plan.clips),
                 total_steps,
-                "Transitions, music, and final assembly",
+                "Music and final assembly",
             )
         self._compose_segments(segment_paths, plan, output_path, work_dir)
         self._validate_output(output_path)
@@ -342,10 +344,15 @@ class QuickMontageRenderer:
                 check=False,
                 encoding="utf-8",
                 errors="replace",
+                timeout=self.timeout_seconds,
             )
         except FileNotFoundError as error:
             raise DependencyUnavailableError(
                 f"FFmpeg executable was not found: {self.ffmpeg_binary}"
+            ) from error
+        except subprocess.TimeoutExpired as error:
+            raise MontageError(
+                f"{message}: FFmpeg timed out after {self.timeout_seconds:g}s."
             ) from error
 
         if completed.returncode != 0:
@@ -409,10 +416,16 @@ class QuickMontageRenderer:
                 check=False,
                 encoding="utf-8",
                 errors="replace",
+                timeout=self.timeout_seconds,
             )
         except FileNotFoundError as error:
             raise DependencyUnavailableError(
                 f"FFprobe executable was not found: {self.ffprobe_binary}"
+            ) from error
+        except subprocess.TimeoutExpired as error:
+            raise MontageError(
+                f"The final movie failed FFprobe validation: FFprobe timed out after "
+                f"{self.timeout_seconds:g}s."
             ) from error
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "unknown FFprobe error"

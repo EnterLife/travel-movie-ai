@@ -17,6 +17,7 @@ def test_load_settings_reads_toml(tmp_path: Path) -> None:
                 'vision_model = "microsoft/Florence-2-large"',
                 "allow_model_download = false",
                 "frame_extraction_timeout_seconds = 45",
+                "render_timeout_seconds = 600",
                 "web_port = 8123",
             ]
         ),
@@ -29,6 +30,7 @@ def test_load_settings_reads_toml(tmp_path: Path) -> None:
     assert settings.vision_provider == "florence"
     assert settings.allow_model_download is False
     assert settings.frame_extraction_timeout_seconds == 45
+    assert settings.render_timeout_seconds == 600
     assert settings.web_port == 8123
 
 
@@ -54,6 +56,12 @@ def test_quick_montage_settings_validate_analysis_quality_mode() -> None:
 
 def test_quick_montage_settings_default_to_cut_only_transitions() -> None:
     settings = QuickMontageSettings()
+
+    assert settings.transition == "none"
+
+
+def test_quick_montage_settings_normalize_legacy_transitions_to_cuts() -> None:
+    settings = QuickMontageSettings(transition="dissolve")
 
     assert settings.transition == "none"
 

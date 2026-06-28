@@ -24,7 +24,8 @@ from travelmovieai.infrastructure.ffmpeg import FFprobeClient
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "rendering-v2"
+ARTIFACT_SCHEMA_VERSION = "rendering-v3"
+RENDERER_BEHAVIOR_VERSION = "cut-only-v1"
 
 
 class RenderingStage(Stage):
@@ -64,6 +65,8 @@ class RenderingStage(Stage):
                 "output_path": output_path,
                 "workers": context.settings.workers,
                 "batch_size": context.settings.batch_size,
+                "render_timeout_seconds": context.settings.render_timeout_seconds,
+                "renderer_behavior": RENDERER_BEHAVIOR_VERSION,
                 "schema": ARTIFACT_SCHEMA_VERSION,
             }
         )
@@ -97,6 +100,7 @@ class RenderingStage(Stage):
             context.settings.ffprobe_binary,
             workers=resources.render_workers,
             ffmpeg_threads=resources.ffmpeg_threads,
+            timeout_seconds=context.settings.render_timeout_seconds,
         ).render(plan, output_path, context.cache_dir)
 
         repository = MediaAssetRepository(context.database_path)

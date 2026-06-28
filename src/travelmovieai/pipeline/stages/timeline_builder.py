@@ -90,9 +90,20 @@ def _read_music_plan(path: Path) -> MusicPlan | None:
     if not path.is_file():
         return None
     try:
-        return MusicPlan.model_validate_json(path.read_text(encoding="utf-8"))
+        music_plan = MusicPlan.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError) as error:
         raise MontageError("Could not read music_plan.json for the timeline.") from error
+    if (
+        music_plan.mode != "none"
+        and music_plan.source_path is not None
+        and not music_plan.source_path.is_file()
+    ):
+        raise MontageError(
+            f"Music plan references a missing soundtrack file: {music_plan.source_path}"
+        )
+    if music_plan.mode != "none" and music_plan.source_path is None:
+        raise MontageError("Music plan is missing a soundtrack file path.")
+    return music_plan
 
 
 def _semantic_montage_settings(context: ProjectContext) -> QuickMontageSettings:

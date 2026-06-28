@@ -211,6 +211,28 @@ def test_renderer_reports_ffmpeg_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
     assert calls == [0.25]
 
 
+def test_renderer_rejects_missing_soundtrack_before_ffmpeg(tmp_path: Path) -> None:
+    missing_music = tmp_path / "missing.wav"
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(),
+        clips=[
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "clip.mp4",
+                relative_path=Path("clip.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=2,
+            )
+        ],
+        total_duration_seconds=2,
+        music_path=missing_music,
+    )
+
+    with pytest.raises(MontageError, match="Soundtrack file does not exist"):
+        QuickMontageRenderer().render(plan, tmp_path / "out.mp4", tmp_path)
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
 def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     media = tmp_path / "Моя поездка"

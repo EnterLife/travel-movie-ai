@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from travelmovieai.application.context import ProjectContext
+from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.models import MusicPlan, QuickMontageSettings, StageResult
 from travelmovieai.editing.timeline import build_semantic_montage_plan
@@ -95,6 +96,11 @@ class MusicSelectionStage(Stage):
             draft_plan,
             neural_generator=None,
         )
+        if not _music_plan_source_available(music_plan):
+            raise MontageError(
+                f"Music selection produced a {music_plan.mode} plan without an available "
+                "soundtrack file."
+            )
         write_json_atomic(music_artifact, music_plan)
         write_stage_cache_manifest(
             cache_artifact,
@@ -116,9 +122,13 @@ def _cached_music_artifact_valid(music_artifact: Path) -> bool:
         music_plan = MusicPlan.model_validate_json(music_artifact.read_text(encoding="utf-8"))
     except (OSError, ValidationError):
         return False
-    if music_plan.mode == "none" or music_plan.source_path is None:
+    return _music_plan_source_available(music_plan)
+
+
+def _music_plan_source_available(music_plan: MusicPlan) -> bool:
+    if music_plan.mode == "none":
         return True
-    return music_plan.source_path.is_file()
+    return music_plan.source_path is not None and music_plan.source_path.is_file()
 
 
 def _semantic_montage_settings(context: ProjectContext) -> QuickMontageSettings:

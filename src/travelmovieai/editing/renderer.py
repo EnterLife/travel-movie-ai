@@ -41,6 +41,8 @@ class QuickMontageRenderer:
         work_dir: Path,
         progress: ProgressCallback | None = None,
     ) -> str:
+        if plan.music_path is not None and not plan.music_path.is_file():
+            raise MontageError(f"Soundtrack file does not exist: {plan.music_path}")
         self._render_device = plan.settings.render_device
         self._encoder = self._select_encoder(plan.settings.render_device)
         segments_dir = work_dir / "quick_montage_segments"

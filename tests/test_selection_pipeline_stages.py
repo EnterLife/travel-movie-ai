@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.config import Settings
 from travelmovieai.domain.enums import ActivityType, LocationType, MediaType, PipelineStage
@@ -477,9 +479,11 @@ def test_music_selection_stage_writes_music_plan_without_existing_timeline(
     def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
         montage_plan = args[5]
         assert isinstance(montage_plan, QuickMontagePlan)
+        soundtrack = context.artifacts_dir / "theme.wav"
+        soundtrack.write_bytes(b"fake wav")
         return MusicPlan(
             mode="generated",
-            source_path=context.artifacts_dir / "theme.wav",
+            source_path=soundtrack,
             duration_seconds=montage_plan.total_duration_seconds,
             reasoning="fake music",
         )
@@ -495,6 +499,33 @@ def test_music_selection_stage_writes_music_plan_without_existing_timeline(
     assert result.skipped is False
     assert music_plan.mode == "generated"
     assert not (context.artifacts_dir / "quick_timeline.json").exists()
+
+
+def test_music_selection_stage_rejects_missing_generated_soundtrack(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "clip.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+
+    def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
+        montage_plan = args[5]
+        assert isinstance(montage_plan, QuickMontagePlan)
+        return MusicPlan(
+            mode="generated",
+            source_path=context.artifacts_dir / "missing-theme.wav",
+            duration_seconds=montage_plan.total_duration_seconds,
+            reasoning="fake music",
+        )
+
+    monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
+
+    with pytest.raises(music_selection.MontageError, match="without an available soundtrack"):
+        MusicSelectionStage().run(context)
+
+    assert not (context.artifacts_dir / "music_plan.json").exists()
 
 
 def test_music_selection_stage_reuses_cached_artifacts(
@@ -540,9 +571,11 @@ def test_timeline_builder_stage_embeds_existing_music_plan(tmp_path: Path) -> No
     asset = _asset(tmp_path / "music-timeline.mp4")
     scene = _scene(asset, score=90, start=0)
     _seed_project(context, [asset], [scene])
+    soundtrack = context.artifacts_dir / "theme.wav"
+    soundtrack.write_bytes(b"fake wav")
     music_plan = MusicPlan(
         mode="generated",
-        source_path=context.artifacts_dir / "theme.wav",
+        source_path=soundtrack,
         duration_seconds=6,
         reasoning="fake music",
     )
@@ -560,6 +593,28 @@ def test_timeline_builder_stage_embeds_existing_music_plan(tmp_path: Path) -> No
     assert result.skipped is False
     assert plan.music_path == music_plan.source_path
     assert plan.music_plan == music_plan
+
+
+def test_timeline_builder_stage_rejects_missing_music_source(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "missing-music.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    music_plan = MusicPlan(
+        mode="generated",
+        source_path=context.artifacts_dir / "missing-theme.wav",
+        duration_seconds=6,
+        reasoning="fake music",
+    )
+    (context.artifacts_dir / "music_plan.json").write_text(
+        music_plan.model_dump_json(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(timeline_builder.MontageError, match="missing soundtrack file"):
+        TimelineBuilderStage().run(context)
+
+    assert not (context.artifacts_dir / "quick_timeline.json").exists()
 
 
 def test_rendering_stage_renders_timeline_and_writes_quality_report(

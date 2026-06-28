@@ -145,6 +145,34 @@ class ControlledMovieService(FakeMovieService):
         )
 
 
+class ExternalOutputMovieService(FakeMovieService):
+    def __init__(self, output_path: Path) -> None:
+        self.output_path = output_path
+
+    def create_quick_montage(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        settings: QuickMontageSettings,
+        output_path: Path | None = None,
+        progress: object | None = None,
+    ) -> QuickMontageResult:
+        assert workspace is not None
+        self.output_path.write_bytes(b"private file")
+        timeline_path = workspace / "artifacts" / "quick_timeline.json"
+        timeline_path.parent.mkdir(parents=True, exist_ok=True)
+        timeline_path.write_text("{}", encoding="utf-8")
+        if callable(progress):
+            progress(1, 1, "Film ready")
+        return QuickMontageResult(
+            output_path=self.output_path,
+            timeline_path=timeline_path,
+            clip_count=1,
+            duration_seconds=settings.target_duration_seconds,
+        )
+
+
 def test_web_interface_serves_page_and_health() -> None:
     with TestClient(
         create_app(
@@ -387,6 +415,68 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert job["logs"][-1]["message"] == "Film ready."
     assert download.status_code == 200
     assert download.content == b"fake mp4"
+
+
+def test_web_movie_download_rejects_output_outside_workspace(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    workspace = tmp_path / "workspace"
+    secret = tmp_path / "secret.mp4"
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(ExternalOutputMovieService(secret)),
+        )
+    ) as client:
+        response = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "workspace": str(workspace),
+                "settings": {"target_duration_seconds": 12},
+            },
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = _wait_for_movie_job(client, job_id)
+        download = client.get(f"/api/movies/{job_id}/download")
+
+    assert job["status"] == "completed"
+    assert secret.read_bytes() == b"private file"
+    assert download.status_code == 403
+    assert download.json()["detail"] == "Invalid movie output path."
+
+
+def test_web_movie_download_reports_missing_rendered_file(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    workspace = tmp_path / "workspace"
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(FakeMovieService()),
+        )
+    ) as client:
+        response = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "workspace": str(workspace),
+                "settings": {"target_duration_seconds": 12},
+            },
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+        job = _wait_for_movie_job(client, job_id)
+        assert isinstance(job["output_path"], str)
+        Path(job["output_path"]).unlink()
+        download = client.get(f"/api/movies/{job_id}/download")
+
+    assert job["status"] == "completed"
+    assert download.status_code == 404
+    assert download.json()["detail"] == "Rendered movie file not found."
 
 
 def test_movie_job_can_pause_resume_and_cancel(tmp_path: Path) -> None:

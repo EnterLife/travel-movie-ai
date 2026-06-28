@@ -42,6 +42,7 @@ from travelmovieai.web.schemas import (
     DirectoryDialogRequest,
     DirectoryDialogResponse,
     HealthResponse,
+    JobStatus,
     LocalAIStatus,
     ModelOption,
     MovieJobResponse,
@@ -287,13 +288,26 @@ def create_app(
 
     @app.get("/api/movies/{job_id}/download", response_class=FileResponse)
     def download_movie(job_id: UUID, request: Request) -> FileResponse:
-        output_path = _movie_manager(request).output_path(job_id)
-        if output_path is None or not output_path.is_file():
+        movie_manager_from_app = _movie_manager(request)
+        job = movie_manager_from_app.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Movie job not found.")
+        if job.status == JobStatus.FAILED:
+            raise HTTPException(status_code=409, detail=job.error or job.message)
+        if job.status != JobStatus.COMPLETED:
             raise HTTPException(status_code=409, detail="The movie is not ready yet.")
+        output_path = movie_manager_from_app.output_path(job_id)
+        if output_path is None:
+            raise HTTPException(status_code=409, detail="The movie is not ready yet.")
+        resolved_output = output_path.expanduser().resolve()
+        if not resolved_output.is_relative_to(job.workspace.expanduser().resolve()):
+            raise HTTPException(status_code=403, detail="Invalid movie output path.")
+        if not resolved_output.is_file():
+            raise HTTPException(status_code=404, detail="Rendered movie file not found.")
         return FileResponse(
-            output_path,
+            resolved_output,
             media_type="video/mp4",
-            filename=output_path.name,
+            filename=resolved_output.name,
         )
 
     @app.get("/api/scenes", response_model=SceneListResponse)

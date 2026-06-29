@@ -369,13 +369,15 @@ class QuickMontageRenderer:
 
     def _select_encoder(self, render_device: str) -> str:
         cuda = check_cuda(self.ffmpeg_binary)
-        if render_device == "cuda":
-            if not cuda.available or not cuda.ffmpeg_nvenc:
+        if not cuda.available or not cuda.ffmpeg_nvenc:
+            if render_device == "cuda":
                 raise DependencyUnavailableError(
                     "CUDA rendering was selected, but NVIDIA GPU or h264_nvenc is unavailable."
                 )
+            return "libx264"
+        if render_device == "cuda":
             return "h264_nvenc"
-        if render_device == "auto" and cuda.available and cuda.ffmpeg_nvenc:
+        if render_device == "auto":
             return "h264_nvenc"
         return "libx264"
 

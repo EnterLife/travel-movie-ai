@@ -323,6 +323,7 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     assert payload["music_ai"]["available"] is True
     assert payload["default_workspace_root"].endswith("workspace")
     assert payload["cuda"]["ffmpeg_nvenc"] is True
+    assert payload["resources"]["nvenc"] is True
     assert payload["resources"]["render_workers"] >= 1
     assert payload["resources"]["model_batch_size"] == 2
 

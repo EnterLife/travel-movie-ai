@@ -86,7 +86,7 @@ def test_local_qwen_response_normalizes_common_schema_drift() -> None:
           "location_type": "beach",
           "activity": "walking",
           "emotion": "neutral",
-          "people_count": 0,
+          "people_count": "2-4",
           "people_groups": "none",
           "landmarks": [],
           "vision_score": {"all": 60},
@@ -106,7 +106,34 @@ def test_local_qwen_response_normalizes_common_schema_drift() -> None:
         """
     )
 
+    assert result.people_count == 4
     assert result.people_groups[0].value == "none"
     assert result.vision_score == 60
     assert result.story_relevance == "Model relevance score: 70/100."
     assert result.tags == ["beach"]
+
+
+def test_local_qwen_response_normalizes_textual_people_count() -> None:
+    result = _parse_local_qwen_understanding(
+        """
+        {
+          "caption": "Empty coastline",
+          "detailed_description": "A coastline with no people visible.",
+          "location_type": "coastline",
+          "activity": "drone shot",
+          "emotion": "calm",
+          "people_count": "no people",
+          "people_groups": "none",
+          "landmarks": [],
+          "vision_score": 55,
+          "score_factors": {},
+          "story_relevance": "Useful establishing shot.",
+          "tags": ["sea"]
+        }
+        """
+    )
+
+    assert result.people_count == 0
+    assert result.location_type.value == "sea"
+    assert result.activity.value == "sightseeing"
+    assert result.emotion.value == "relaxing"

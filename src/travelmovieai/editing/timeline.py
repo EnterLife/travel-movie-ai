@@ -623,7 +623,40 @@ def _story_candidates(
         selected_ids.add(scene.id)
         event_counts[event_id] = event_counts.get(event_id, 0) + 1
         source_counts[source_id] = source_counts.get(source_id, 0) + 1
+
+    if _estimated_candidate_duration(ordered, settings) < settings.target_duration_seconds * 0.82:
+        for scene in eligible:
+            if scene.id in selected_ids:
+                continue
+            source_id = str(scene.asset_id)
+            if source_counts.get(source_id, 0) >= source_limit:
+                continue
+            event_id = str(scene.metadata.get("event_id", scene.id))
+            ordered.append(scene)
+            selected_ids.add(scene.id)
+            event_counts[event_id] = event_counts.get(event_id, 0) + 1
+            source_counts[source_id] = source_counts.get(source_id, 0) + 1
+            if _estimated_candidate_duration(ordered, settings) >= (
+                settings.target_duration_seconds - 0.05
+            ):
+                break
     return ordered
+
+
+def _estimated_candidate_duration(
+    scenes: list[Scene],
+    settings: QuickMontageSettings,
+) -> float:
+    if not scenes:
+        return 0.0
+    transition = _transition_duration(settings)
+    duration = 0.0
+    for index, scene in enumerate(scenes):
+        available = max(0.0, scene.end_seconds - scene.start_seconds)
+        duration += min(available, settings.max_video_clip_seconds)
+        if index > 0:
+            duration -= transition
+    return max(0.0, duration)
 
 
 def _include_story_role_representatives(

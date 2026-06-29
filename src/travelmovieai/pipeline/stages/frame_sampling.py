@@ -77,10 +77,12 @@ class FrameSamplingStage(Stage):
             worker_override=context.settings.workers,
             batch_override=context.settings.batch_size,
         )
+        use_cuda_decode = resources.nvenc and context.settings.device in {"auto", "cuda"}
+        frame_workers = 1 if use_cuda_decode else resources.frame_workers
         extractor = RepresentativeFrameExtractor(
             context.settings.ffmpeg_binary,
             context.settings.ffprobe_binary,
-            use_cuda_decode=resources.nvenc,
+            use_cuda_decode=use_cuda_decode,
             frame_sample_count=frame_sample_count,
             timeout_seconds=context.settings.frame_extraction_timeout_seconds,
         )
@@ -89,7 +91,7 @@ class FrameSamplingStage(Stage):
             assets,
             extractor,
             context.frames_dir,
-            resources.frame_workers,
+            frame_workers,
         )
 
         repository.synchronize_scenes(scenes)
@@ -115,7 +117,8 @@ class FrameSamplingStage(Stage):
             message=(
                 f"Frame sampling prepared {len(scenes)} scene(s): "
                 f"{extracted_count} extracted, {cached_count} cached, "
-                f"workers={min(max(1, resources.frame_workers), max(1, len(scenes)))}."
+                f"workers={min(max(1, frame_workers), max(1, len(scenes)))}, "
+                f"decode={'NVDEC serial' if use_cuda_decode else 'CPU'}."
             ),
         )
 

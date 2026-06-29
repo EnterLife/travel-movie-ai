@@ -188,6 +188,8 @@ def analyze_scene_quality(
         if isinstance(resolved_analyzer, TorchCudaQualityAnalyzer)
         else "OpenCV"
     )
+    if isinstance(resolved_analyzer, TorchCudaQualityAnalyzer):
+        workers = 1
     if workers <= 1 or len(scenes) <= 1:
         analyzed = []
         for index, scene in enumerate(scenes, start=1):

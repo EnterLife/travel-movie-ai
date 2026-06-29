@@ -261,8 +261,12 @@ setting is a strict diversity guard by default when more than one source video i
 available, so one strong roll cannot dominate the movie. Set
 `strict_source_diversity=false` only when filling the requested duration is more
 important than source variety. A single long source video can still contribute
-multiple scenes because there is no alternate source to use. Use scene overrides
-when a specific fragment must be included or excluded.
+multiple scenes because there is no alternate source to use. Event diversity is
+also applied first, but when a project has enough strong scenes and the timeline
+would otherwise fall far short of the requested duration, semantic selection can
+add more scenes from the strongest events while still respecting source limits
+and technical quality gates. Use scene overrides when a specific fragment must
+be included or excluded.
 
 Semantic mode preserves capture chronology by default. Vision AI scores scenes
 and describes their story value, but the final timeline uses deterministic
@@ -466,8 +470,8 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 | `music_library` | Local soundtrack directory | `assets/music` |
 | `music_model` | Local music model identifier or `auto` | `auto` |
 | `generated_music_filename` | Generated soundtrack filename | `generated_soundtrack.wav` |
-| `workers` | Conservative parallel worker override; `0` means auto | `0` |
-| `batch_size` | Model batch override; `0` means auto | `0` |
+| `workers` | Parallel worker limit; `0` means automatic hardware-based selection | `0` |
+| `batch_size` | Model batch limit; `0` means automatic hardware-based selection | `0` |
 | `web_host` | Web server bind address | `127.0.0.1` |
 | `web_port` | Web server port | `8000` |
 | `web_history_limit` | Saved scan-job history limit | `100` |
@@ -483,30 +487,33 @@ At the first montage, TravelMovieAI detects:
 - FFmpeg NVENC support.
 
 The resulting profile separately selects concurrency for frame extraction,
-OpenCV analysis, Vision AI batching, and segment rendering. Automatic rendering
-keeps FFmpeg segment preparation serial and caps FFmpeg threads to reduce heat,
-power spikes, and GPU-driver stress on local Windows machines. NVENC is selected
-automatically when available and falls back to `libx264` if initialization
-fails.
+OpenCV analysis, Vision AI batching, and segment rendering. Defaults are
+high-throughput: `device = "auto"`, `workers = 0`, and `batch_size = 0` let the
+application use CPU cores, CUDA-capable local AI, and NVENC final encoding when
+available.
 
-On the tested 16-thread CPU with 32 GB RAM and an RTX 3060, the automatic
-profile uses up to 10 concurrent frame jobs, 10 quality-analysis workers, a
-two-scene Vision batch, and one render worker with up to four FFmpeg threads.
-On high-memory workstations, the frame-extraction and OpenCV-analysis caps rise
-to 12 workers while remaining bounded. These stages run sequentially, so CPU,
-CUDA, NVDEC, and NVENC graphs are not expected to peak at the same time.
+On a 16-thread CPU with 32 GB RAM and a 6 GB RTX GPU, the automatic profile uses
+many CPU workers for CPU-bound stages, a two-scene Vision batch, and multiple
+parallel render workers. Higher-VRAM GPUs receive larger Vision batches.
 
 GPU usage by stage:
 
-- frame sampling: FFmpeg NVDEC with automatic CPU fallback per source and a
-  per-scene timeout;
-- quality metrics: PyTorch CUDA for dense pixel metrics, with OpenCV/Pillow fallback;
-- Vision AI: Qwen CUDA with 4-bit NF4 and hardware-sized batches;
-- rendering: NVENC encoding; audio filters can still use CPU.
+- frame sampling: `auto` uses FFmpeg CUDA decode when NVENC is available, but
+  runs that NVDEC path with one FFmpeg decode job at a time to avoid NVIDIA
+  video-scheduler driver crashes seen with many simultaneous CUDA decoders;
+  set `device = "cpu"` to use parallel CPU decoding instead;
+- quality metrics: OpenCV/Pillow by default, with CUDA analysis serialized if a
+  CUDA quality analyzer is active;
+- Vision AI: `auto` uses CUDA through the local provider when PyTorch and the
+  selected model can use it, with CPU/offload fallback where needed;
+- rendering: `auto` uses NVENC when available and falls back to `libx264` if
+  the automatic NVENC render fails.
 
-Keep `workers = 0` for automatic operation. Set a manual limit only after
-checking temperatures and system stability. Manual render parallelism is capped
-at two FFmpeg processes even when a higher worker override is configured.
+If Windows records `VIDEO_SCHEDULER_INTERNAL_ERROR` (`0x119`) or repeated
+`nvlddmkm` events during frame preparation, the likely trigger is parallel
+NVDEC/FFmpeg decoding rather than ordinary CPU or GPU load. Current builds keep
+that decode path serial while preserving aggressive CPU workers, Vision AI
+batching, and NVENC rendering.
 
 ## Supported Media
 
@@ -796,7 +803,7 @@ The renderer:
   transition;
 - adds generated, library, or manual music;
 - ducks music around source audio;
-- uses `h264_nvenc` or `libx264`;
+- uses `h264_nvenc` automatically when available and falls back to `libx264`;
 - strips source container metadata such as camera comments and GPS tags from
   rendered movies;
 - writes the final movie atomically;
@@ -853,8 +860,10 @@ processed by multiple jobs simultaneously.
 - use preview mode;
 - load a smaller Vision model;
 - disable speech analysis when unnecessary;
-- keep automatic workers enabled;
-- verify that PyTorch CUDA and FFmpeg NVENC are using the expected GPU.
+- keep `device = "auto"`, `workers = 0`, and `batch_size = 0` so the hardware
+  profile can use the available CPU and GPU resources;
+- use `device = "cpu"` only when diagnosing a GPU-driver issue or when parallel
+  CPU frame decoding is preferable to serial NVDEC frame decoding.
 
 Windows Task Manager often opens the GPU page on the `3D` graph, which does not
 represent AI inference. Change one graph to `CUDA` or `Compute_0`, or verify with:

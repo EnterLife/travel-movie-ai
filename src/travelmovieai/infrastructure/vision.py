@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import importlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -553,6 +554,41 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
             "detailed_description": str(
                 payload.get("detailed_description") or payload.get("caption") or "Travel scene."
             )[:1500],
+            "location_type": _enum_value(
+                payload.get("location_type"),
+                {item.value for item in LocationType},
+                LocationType.UNKNOWN.value,
+                {
+                    "coast": LocationType.SEA.value,
+                    "coastline": LocationType.SEA.value,
+                    "shore": LocationType.BEACH.value,
+                    "urban": LocationType.CITY.value,
+                    "drone": LocationType.OTHER.value,
+                },
+            ),
+            "activity": _enum_value(
+                payload.get("activity"),
+                {item.value for item in ActivityType},
+                ActivityType.UNKNOWN.value,
+                {
+                    "flying": ActivityType.TRAVELING.value,
+                    "driving": ActivityType.TRAVELING.value,
+                    "drone_shot": ActivityType.SIGHTSEEING.value,
+                    "aerial": ActivityType.SIGHTSEEING.value,
+                },
+            ),
+            "emotion": _enum_value(
+                payload.get("emotion"),
+                {item.value for item in EmotionType},
+                EmotionType.NEUTRAL.value,
+                {
+                    "calm": EmotionType.RELAXING.value,
+                    "peaceful": EmotionType.RELAXING.value,
+                    "serene": EmotionType.RELAXING.value,
+                    "dramatic": EmotionType.CINEMATIC.value,
+                },
+            ),
+            "people_count": _people_count(payload.get("people_count")),
             "people_groups": groups,
             "landmarks": landmarks,
             "vision_score": _score(vision_score, 50),
@@ -562,6 +598,33 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
         }
     )
     return SceneUnderstanding.model_validate(payload)
+
+
+def _enum_value(
+    value: Any,
+    allowed: set[str],
+    default: str,
+    aliases: dict[str, str] | None = None,
+) -> str:
+    aliases = aliases or {}
+    normalized = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in allowed else default
+
+
+def _people_count(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return max(0, min(50, int(round(value))))
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"", "none", "no", "no people", "n/a", "unknown"}:
+            return 0
+        numbers = [int(item) for item in re.findall(r"\d+", normalized)]
+        if numbers:
+            return max(0, min(50, max(numbers)))
+    return 0
 
 
 def _score(value: Any, default: float) -> float:

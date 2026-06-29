@@ -49,9 +49,7 @@ class ResourceProfile:
     summary: str
 
 
-_AUTOMATIC_RENDER_WORKERS = 1
-_MANUAL_RENDER_WORKER_CAP = 2
-_FFMPEG_THREAD_CAP = 4
+_MANUAL_RENDER_WORKER_CAP = 6
 
 
 class _MemoryStatus(Structure):
@@ -178,12 +176,19 @@ def detect_resource_profile(
         elif memory_mb < 16 * 1024:
             memory_factor = 0.7
 
-    frame_worker_cap = 12 if memory_mb is not None and memory_mb >= 32 * 1024 else 8
-    analysis_worker_cap = 12 if memory_mb is not None and memory_mb >= 32 * 1024 else 8
-    automatic_frames = max(1, min(frame_worker_cap, round(logical_cores * 0.6 * memory_factor)))
+    frame_worker_cap = 24 if memory_mb is not None and memory_mb >= 32 * 1024 else 16
+    analysis_worker_cap = 32 if memory_mb is not None and memory_mb >= 32 * 1024 else 16
+    automatic_frames = max(1, min(frame_worker_cap, round(logical_cores * 0.85 * memory_factor)))
     automatic_analysis = max(
         1,
-        min(analysis_worker_cap, round(logical_cores * 0.65 * memory_factor)),
+        min(analysis_worker_cap, round(logical_cores * memory_factor)),
+    )
+    automatic_render = max(
+        1,
+        min(
+            4 if resolved_cuda.ffmpeg_nvenc else 3,
+            round(logical_cores / 4 * memory_factor),
+        ),
     )
     frame_workers = min(worker_override, frame_worker_cap) if worker_override else automatic_frames
     analysis_workers = (
@@ -192,10 +197,10 @@ def detect_resource_profile(
     render_workers = (
         min(worker_override, _MANUAL_RENDER_WORKER_CAP)
         if worker_override
-        else _AUTOMATIC_RENDER_WORKERS
+        else automatic_render
     )
     render_workers = max(1, render_workers)
-    ffmpeg_threads = max(1, min(_FFMPEG_THREAD_CAP, logical_cores // render_workers))
+    ffmpeg_threads = max(1, logical_cores // render_workers)
 
     gpu_memory = resolved_cuda.memory_mb or 0
     automatic_batch = (

@@ -26,6 +26,7 @@ from travelmovieai.editing.renderer import (
     _transition_duration,
 )
 from travelmovieai.editing.timeline import build_quick_montage_plan
+from travelmovieai.infrastructure.system import CudaStatus
 
 
 class FakeVisionProvider:
@@ -209,6 +210,29 @@ def test_renderer_reports_ffmpeg_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
         QuickMontageRenderer(timeout_seconds=0.25)._run(["ffmpeg"], "Could not render")
 
     assert calls == [0.25]
+
+
+def test_renderer_auto_uses_nvenc_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "travelmovieai.editing.renderer.check_cuda",
+        lambda ffmpeg_binary: CudaStatus(available=True, ffmpeg_nvenc=True),
+    )
+
+    assert QuickMontageRenderer()._select_encoder("auto") == "h264_nvenc"
+    assert QuickMontageRenderer()._select_encoder("cpu") == "libx264"
+
+
+def test_renderer_cuda_requires_explicit_available_nvenc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "travelmovieai.editing.renderer.check_cuda",
+        lambda ffmpeg_binary: CudaStatus(available=True, ffmpeg_nvenc=True),
+    )
+
+    assert QuickMontageRenderer()._select_encoder("cuda") == "h264_nvenc"
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")

@@ -262,6 +262,34 @@ def test_semantic_selection_can_relax_source_limit_for_coverage(
     assert len(dominant_clips) > 1
 
 
+def test_semantic_selection_relaxes_event_limit_for_duration_coverage(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    event_id = uuid4()
+    assets = [
+        _asset(tmp_path / f"same-event-{index}.mp4", created_at, duration=8)
+        for index in range(5)
+    ]
+    scenes = [
+        _scene(asset, event_id, 90 - index, start=0, duration=6)
+        for index, asset in enumerate(assets)
+    ]
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=12,
+        max_video_clip_seconds=3,
+        max_scenes_per_event=2,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan(assets, scenes, settings)
+
+    assert len(plan.clips) == 4
+    assert plan.total_duration_seconds == 12
+    assert {clip.event_id for clip in plan.clips} == {event_id}
+
+
 def test_semantic_selection_relaxes_source_limit_for_few_long_videos(
     tmp_path: Path,
 ) -> None:

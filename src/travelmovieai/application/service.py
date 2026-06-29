@@ -267,25 +267,27 @@ class TravelMovieService:
             raise MontageError("Could not read scene detection results.") from error
 
         assets_by_id = {asset.id: asset for asset in report.assets}
+        use_cuda_decode = resources.nvenc and self.settings.device in {"auto", "cuda"}
+        frame_workers = 1 if use_cuda_decode else resources.frame_workers
         extractor = RepresentativeFrameExtractor(
             self.settings.ffmpeg_binary,
             self.settings.ffprobe_binary,
-            use_cuda_decode=resources.nvenc,
+            use_cuda_decode=use_cuda_decode,
             frame_sample_count=frame_sample_count_for_mode(settings.analysis_quality_mode),
             timeout_seconds=self.settings.frame_extraction_timeout_seconds,
         )
         tracker.emit(
             12,
             f"Scenes found: {len(scene_report.scenes)}. "
-            f"Extracting frames with {resources.frame_workers} worker(s), "
-            f"decode={'NVDEC' if resources.nvenc else 'CPU'}",
+            f"Extracting frames with {frame_workers} worker(s), "
+            f"decode={'NVDEC serial' if use_cuda_decode else 'CPU'}",
         )
         prepared_scenes = _extract_scene_frames(
             scene_report.scenes,
             assets_by_id,
             extractor,
             context.frames_dir,
-            resources.frame_workers,
+            frame_workers,
             tracker.range(12, 32),
         )
         tracker.emit(32, f"Frame preparation complete: {extractor.backend_summary}")

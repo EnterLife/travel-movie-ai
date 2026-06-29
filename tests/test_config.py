@@ -35,7 +35,12 @@ def test_load_settings_reads_toml(tmp_path: Path) -> None:
 
 
 def test_load_settings_uses_defaults_when_file_is_missing(tmp_path: Path) -> None:
-    assert load_settings(tmp_path / "missing.toml") == Settings()
+    settings = load_settings(tmp_path / "missing.toml")
+
+    assert settings == Settings()
+    assert settings.device == "auto"
+    assert settings.workers == 0
+    assert settings.batch_size == 0
 
 
 def test_load_settings_rejects_unknown_keys(tmp_path: Path) -> None:
@@ -70,3 +75,9 @@ def test_quick_montage_settings_use_full_music_volume_by_default() -> None:
     settings = QuickMontageSettings()
 
     assert settings.music_volume == 1.0
+
+
+def test_quick_montage_settings_default_to_auto_rendering() -> None:
+    settings = QuickMontageSettings()
+
+    assert settings.render_device == "auto"

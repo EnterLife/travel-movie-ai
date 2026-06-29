@@ -154,6 +154,92 @@ def test_frame_sampling_stage_reuses_cached_contact_sheets(
     assert (context.artifacts_dir / "frame_sampling.cache.json").is_file()
 
 
+def test_frame_sampling_stage_serializes_nvdec_decode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "cuda-source.mp4")
+    scene = _scene(asset, score=80, start=0)
+    _seed_project(context, [asset], [scene])
+    captured: dict[str, object] = {}
+
+    class FakeExtractor:
+        backend_summary = "fake"
+
+        def __init__(self, *args: object, use_cuda_decode: bool, **kwargs: object) -> None:
+            captured["use_cuda_decode"] = use_cuda_decode
+
+    def fake_extract_frames(
+        source_scenes: list[Scene],
+        assets: object,
+        extractor: object,
+        frames_dir: Path,
+        workers: int,
+    ) -> tuple[list[Scene], int, int]:
+        captured["workers"] = workers
+        frame_path = frames_dir / "cuda-source.png"
+        frame_path.parent.mkdir(parents=True, exist_ok=True)
+        frame_path.write_bytes(b"png")
+        return [source_scenes[0].model_copy(update={"keyframe_path": frame_path})], 1, 0
+
+    monkeypatch.setattr(frame_sampling, "RepresentativeFrameExtractor", FakeExtractor)
+    monkeypatch.setattr(frame_sampling, "_extract_frames", fake_extract_frames)
+    monkeypatch.setattr(
+        frame_sampling,
+        "detect_resource_profile",
+        lambda *args, **kwargs: type("Profile", (), {"nvenc": True, "frame_workers": 8})(),
+    )
+
+    result = FrameSamplingStage().run(context)
+
+    assert captured == {"use_cuda_decode": True, "workers": 1}
+    assert "decode=NVDEC serial" in result.message
+
+
+def test_frame_sampling_stage_keeps_cpu_decode_parallel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path, settings=Settings(device="cpu"))
+    asset = _asset(tmp_path / "cpu-source.mp4")
+    scene = _scene(asset, score=80, start=0)
+    _seed_project(context, [asset], [scene])
+    captured: dict[str, object] = {}
+
+    class FakeExtractor:
+        backend_summary = "fake"
+
+        def __init__(self, *args: object, use_cuda_decode: bool, **kwargs: object) -> None:
+            captured["use_cuda_decode"] = use_cuda_decode
+
+    def fake_extract_frames(
+        source_scenes: list[Scene],
+        assets: object,
+        extractor: object,
+        frames_dir: Path,
+        workers: int,
+    ) -> tuple[list[Scene], int, int]:
+        captured["workers"] = workers
+        frame_path = frames_dir / "cpu-source.png"
+        frame_path.parent.mkdir(parents=True, exist_ok=True)
+        frame_path.write_bytes(b"png")
+        return [source_scenes[0].model_copy(update={"keyframe_path": frame_path})], 1, 0
+
+    monkeypatch.setattr(frame_sampling, "RepresentativeFrameExtractor", FakeExtractor)
+    monkeypatch.setattr(frame_sampling, "_extract_frames", fake_extract_frames)
+    monkeypatch.setattr(
+        frame_sampling,
+        "detect_resource_profile",
+        lambda *args, **kwargs: type("Profile", (), {"nvenc": True, "frame_workers": 8})(),
+    )
+
+    result = FrameSamplingStage().run(context)
+
+    assert captured == {"use_cuda_decode": False, "workers": 8}
+    assert "decode=CPU" in result.message
+
+
 def test_quality_analysis_stage_reuses_cached_metrics(
     tmp_path: Path,
     monkeypatch,
@@ -1063,11 +1149,11 @@ def test_timeline_builder_stage_skips_without_assets_or_scenes(tmp_path: Path) -
     assert not (context.artifacts_dir / "quick_timeline.json").exists()
 
 
-def _context(tmp_path: Path) -> ProjectContext:
+def _context(tmp_path: Path, *, settings: Settings | None = None) -> ProjectContext:
     context = ProjectContext(
         input_path=tmp_path / "media",
         workspace=tmp_path / "workspace",
-        settings=Settings(),
+        settings=settings or Settings(),
     )
     context.prepare()
     return context

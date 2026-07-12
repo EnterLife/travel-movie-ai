@@ -8,6 +8,7 @@ import pytest
 from travelmovieai.core.exceptions import MusicGenerationError
 from travelmovieai.domain.models import QuickMontagePlan, QuickMontageSettings
 from travelmovieai.infrastructure.music_generation import (
+    ACE_STEP_REQUIRED_CONFIGS,
     AceStepMusicGenerator,
     resolve_local_music_model,
 )
@@ -65,6 +66,16 @@ class FailingMusicGenerator(FakeMusicGenerator):
         raise MusicGenerationError("model unavailable")
 
 
+def _complete_ace_cache(path: Path) -> None:
+    for relative_path in (*ACE_STEP_REQUIRED_CONFIGS, "acestep-v15-turbo/config.json"):
+        config = path / relative_path
+        config.parent.mkdir(parents=True, exist_ok=True)
+        payload = (
+            '{"model_type": "qwen3"}' if "Qwen3-Embedding" in relative_path else '{"valid": true}'
+        )
+        config.write_text(payload, encoding="utf-8")
+
+
 def test_music_model_auto_resolution() -> None:
     assert resolve_local_music_model("auto", gpu_memory_mb=6144) == "ACE-Step/acestep-v15-turbo"
     assert resolve_local_music_model("custom/model", gpu_memory_mb=6144) == "custom/model"
@@ -107,10 +118,12 @@ def test_ace_step_generation_caps_model_duration_and_extends_output(
     executable.parent.mkdir(parents=True)
     executable.touch()
     (runtime / "cli.py").write_text("# fake cli\n", encoding="utf-8")
+    model_cache = tmp_path / "models"
+    _complete_ace_cache(model_cache)
     generator = AceStepMusicGenerator(
         "ACE-Step/acestep-v15-turbo",
         runtime_dir=runtime,
-        model_cache=tmp_path / "models",
+        model_cache=model_cache,
         ffmpeg_binary="ffmpeg",
         allow_download=True,
         device="auto",
@@ -156,6 +169,70 @@ def test_ace_step_generation_caps_model_duration_and_extends_output(
     assert "duration = 90.000" in captured_config
     assert normalized_duration == 120
     assert output.read_bytes() == b"normalized"
+
+
+def test_ace_step_repairs_invalid_model_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    executable = runtime / ".venv" / "Scripts" / "python.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    model_cache = tmp_path / "models"
+    _complete_ace_cache(model_cache)
+    missing = model_cache / "Qwen3-Embedding-0.6B" / "config.json"
+    missing.write_text("{}", encoding="utf-8")
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=runtime,
+        model_cache=model_cache,
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="auto",
+        gpu_memory_mb=6144,
+    )
+    commands: list[list[str]] = []
+
+    def repair(
+        command: list[str],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        progress: object,
+    ) -> list[str]:
+        commands.append(command)
+        relative_path = command[-2]
+        repaired = model_cache / relative_path
+        repaired.parent.mkdir(parents=True, exist_ok=True)
+        repaired.write_text('{"model_type": "qwen3"}', encoding="utf-8")
+        return []
+
+    monkeypatch.setattr(generator, "_run_streaming", repair)
+
+    generator._ensure_model_configs(None)
+
+    assert missing.is_file()
+    assert commands[0][-3:-1] == ["ACE-Step/Ace-Step1.5", "Qwen3-Embedding-0.6B/config.json"]
+
+
+def test_ace_step_rejects_incomplete_offline_model_cache(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    executable = runtime / ".venv" / "Scripts" / "python.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=runtime,
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=False,
+        device="auto",
+        gpu_memory_mb=6144,
+    )
+
+    with pytest.raises(MusicGenerationError, match="cache is incomplete.*downloads are disabled"):
+        generator._ensure_model_configs(None)
 
 
 def test_ace_step_normalization_loops_short_model_output(

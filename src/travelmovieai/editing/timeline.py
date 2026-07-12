@@ -101,11 +101,25 @@ def build_semantic_montage_plan(
     transition = _transition_duration(settings)
 
     ranked = rank_scenes(scenes)
+    story_candidates = _story_candidates(ranked, settings)
     candidates = optimize_story_timeline_candidates(
-        _story_candidates(ranked, settings),
+        story_candidates,
         assets_by_id,
         settings,
     )
+    if _estimated_candidate_duration(candidates, settings) < (
+        settings.target_duration_seconds - 0.05
+    ):
+        candidate_ids = {scene.id for scene in candidates}
+        for scene in story_candidates:
+            if scene.id in candidate_ids:
+                continue
+            candidates.append(scene)
+            candidate_ids.add(scene.id)
+            if _estimated_candidate_duration(candidates, settings) >= (
+                settings.target_duration_seconds - 0.05
+            ):
+                break
     for scene in candidates:
         asset = assets_by_id.get(scene.asset_id)
         if asset is None or asset.scan_error:
@@ -655,7 +669,7 @@ def _story_candidates(
         event_counts[event_id] = event_counts.get(event_id, 0) + 1
         source_counts[source_id] = source_counts.get(source_id, 0) + 1
 
-    if _estimated_candidate_duration(ordered, settings) < settings.target_duration_seconds * 0.82:
+    if _estimated_candidate_duration(ordered, settings) < settings.target_duration_seconds - 0.05:
         for scene in eligible:
             if scene.id in selected_ids:
                 continue
@@ -684,7 +698,7 @@ def _estimated_candidate_duration(
     duration = 0.0
     for index, scene in enumerate(scenes):
         available = max(0.0, scene.end_seconds - scene.start_seconds)
-        duration += min(available, settings.max_video_clip_seconds)
+        duration += _directed_clip_duration(scene, available, settings)
         if index > 0:
             duration -= transition
     return max(0.0, duration)

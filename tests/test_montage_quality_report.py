@@ -21,10 +21,43 @@ from travelmovieai.domain.models import (
     Scene,
 )
 from travelmovieai.editing.quality_report import (
+    _rendered_audio_rms,
     build_montage_quality_report,
     enforce_montage_quality,
     enrich_montage_quality_report_with_render,
 )
+
+
+def test_render_audio_end_check_uses_multiple_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampled_starts: list[float] = []
+
+    def fake_rms(
+        output_path: Path,
+        *,
+        start_seconds: float,
+        duration_seconds: float,
+        ffmpeg_binary: str,
+        timeout_seconds: float,
+    ) -> float:
+        del output_path, duration_seconds, ffmpeg_binary, timeout_seconds
+        sampled_starts.append(start_seconds)
+        return 25 if start_seconds > 27 else 400
+
+    monkeypatch.setattr("travelmovieai.editing.quality_report._audio_rms", fake_rms)
+
+    values = _rendered_audio_rms(
+        tmp_path / "movie.mp4",
+        duration_seconds=30,
+        has_audio=True,
+        ffmpeg_binary="ffmpeg",
+        timeout_seconds=30,
+    )
+
+    assert len(sampled_starts) == 5
+    assert values["end"] == 400
 
 
 def test_quality_gate_rejects_critical_report() -> None:

@@ -268,8 +268,7 @@ def test_semantic_selection_relaxes_event_limit_for_duration_coverage(
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
     event_id = uuid4()
     assets = [
-        _asset(tmp_path / f"same-event-{index}.mp4", created_at, duration=8)
-        for index in range(5)
+        _asset(tmp_path / f"same-event-{index}.mp4", created_at, duration=8) for index in range(5)
     ]
     scenes = [
         _scene(asset, event_id, 90 - index, start=0, duration=6)
@@ -942,6 +941,42 @@ def test_story_pacing_uses_energy_and_speech_protection(tmp_path: Path) -> None:
     assert durations[calm.id] == 6
     assert "pacing: high energy" in reasons[energetic.id]
     assert "pacing: speech hold" in reasons[speech.id]
+
+
+def test_semantic_selection_backfills_after_directed_pacing_shortens_clips(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assets = [
+        _asset(tmp_path / f"paced-{index}.mp4", created_at, duration=8) for index in range(20)
+    ]
+    event_ids = [uuid4() for _ in range(4)]
+    scenes = [
+        _scene(
+            asset,
+            event_ids[index % len(event_ids)],
+            95 - index * 0.1,
+            duration=8,
+            emotion="exciting",
+            quality_metrics={"motion_score": 90},
+            story_section_role="journey",
+            story_role_order=1,
+        )
+        for index, asset in enumerate(assets)
+    ]
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=90,
+        max_video_clip_seconds=6,
+        max_scenes_per_event=4,
+        transition="cinematic",
+        transition_duration_seconds=0.45,
+    )
+
+    plan = build_semantic_montage_plan(assets, scenes, settings)
+
+    assert abs(plan.total_duration_seconds - 90) <= 0.05
+    assert len(plan.clips) > settings.max_scenes_per_event * len(event_ids)
 
 
 def test_semantic_timeline_directs_cinematic_transitions_by_event(tmp_path: Path) -> None:

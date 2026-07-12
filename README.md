@@ -253,19 +253,20 @@ speech recognition, duplicate detection, event grouping, story building, and
 ranked selection.
 
 Semantic mode is intentionally selective. It does not try to use every video in
-the folder and it does not fill the target duration with weak material.
+the folder and it does not fill the target duration with scenes that fail the
+semantic or technical gates. After story pacing shortens energetic clips, the
+selector backfills from the remaining eligible scenes until it reaches the
+requested duration or exhausts the safe candidate pool.
 `min_semantic_score` is a base quality target, but the actual threshold is
 computed from the score distribution of the current project: it rises for strong
 archives and relaxes for consistently modest material. The `max_scenes_per_source`
 setting is a strict diversity guard by default when more than one source video is
 available, so one strong roll cannot dominate the movie. Set
-`strict_source_diversity=false` only when filling the requested duration is more
-important than source variety. A single long source video can still contribute
+`strict_source_diversity=false` only when source variety is less important. A single long source video can still contribute
 multiple scenes because there is no alternate source to use. Event diversity is
-also applied first, but when a project has enough strong scenes and the timeline
-would otherwise fall far short of the requested duration, semantic selection can
-add more scenes from the strongest events while still respecting source limits
-and technical quality gates. Use scene overrides when a specific fragment must
+also applied first, but when the paced timeline remains short, semantic selection
+can add more scenes from the strongest events while still respecting source
+limits and technical quality gates. Use scene overrides when a specific fragment must
 be included or excluded.
 
 Semantic mode preserves capture chronology by default. Vision AI scores scenes
@@ -344,8 +345,10 @@ The unified Windows setup:
 The first generation then:
 
 1. downloads model weights into `models/ace-step`;
-2. detects the GPU tier and enables CPU offload on low-VRAM systems;
-3. generates a bounded base WAV and normalizes it for the exact movie duration.
+2. validates required model configuration files and repairs incomplete metadata
+   when downloads are allowed;
+3. detects the GPU tier and enables CPU offload on low-VRAM systems;
+4. generates a bounded base WAV and normalizes it for the exact movie duration.
 
 This does not replace packages in the main `.venv`. On a 6 GB NVIDIA GPU,
 ACE-Step uses its 2B Turbo model with low-VRAM offload. The initial installation
@@ -783,13 +786,18 @@ source music, or selected dark/blurred scenes.
 After rendering, the same report is enriched with FFprobe/FFmpeg checks for the
 actual MP4: rendered duration, video/audio stream presence, plan-vs-render
 duration delta, sampled audio RMS, and sampled video luma near the beginning,
-middle, and end of the movie.
+middle, and end of the movie. The end-audio check samples several windows before
+the intentional final fade so a short musical pause does not become a false
+warning.
 
 ## Cache and Reproducibility
 
 Media metadata is reused when path, size, and `modified_ns` match. Scene,
 Vision, and speech cache keys include the relevant source metadata, time
-boundaries, model, style, and prompt/schema version.
+boundaries, measured quality, model, style, and prompt/schema version. Vision AI
+also atomically checkpoints every completed inference batch. If a long run is
+interrupted, the next run validates and reuses the completed scene records from
+the partial artifact instead of restarting the whole model pass.
 
 Frame Sampling, Quality Analysis, Vision Analysis, Speech Analysis, Audio
 Analysis, Timeline Builder, Music Selection, and Rendering write typed sidecar

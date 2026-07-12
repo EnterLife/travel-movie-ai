@@ -488,7 +488,6 @@ def _rendered_audio_rms(
     starts = {
         "start": 0.0,
         "middle": max(0.0, duration_seconds * 0.5 - sample_duration / 2),
-        "end": max(0.0, duration_seconds - MUSIC_FADE_OUT_SECONDS - sample_duration - 0.05),
     }
     values: dict[str, float] = {}
     for label, start in starts.items():
@@ -501,6 +500,23 @@ def _rendered_audio_rms(
         )
         if rms is not None:
             values[label] = rms
+    end_latest = max(
+        0.0,
+        duration_seconds - MUSIC_FADE_OUT_SECONDS - sample_duration - 0.05,
+    )
+    end_samples = []
+    for start in sorted({max(0.0, end_latest - offset) for offset in (0.0, 1.5, 3.0)}):
+        rms = _audio_rms(
+            output_path,
+            start_seconds=start,
+            duration_seconds=sample_duration,
+            ffmpeg_binary=ffmpeg_binary,
+            timeout_seconds=timeout_seconds,
+        )
+        if rms is not None:
+            end_samples.append(rms)
+    if end_samples:
+        values["end"] = max(end_samples)
     return values
 
 

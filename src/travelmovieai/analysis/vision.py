@@ -17,6 +17,7 @@ from travelmovieai.domain.models import (
 from travelmovieai.infrastructure.vision import PROMPT_VERSION
 
 VisionProgress = Callable[[int, int, str], None]
+VisionCheckpoint = Callable[[VisionAnalysisReport], None]
 
 
 class VisionProvider(Protocol):
@@ -31,21 +32,29 @@ def analyze_scenes(
     provider: VisionProvider,
     style: StoryStyle,
     progress: VisionProgress | None = None,
+    *,
+    cached_report: VisionAnalysisReport | None = None,
+    checkpoint: VisionCheckpoint | None = None,
 ) -> VisionAnalysisReport:
     analyzed_by_index: dict[int, Scene] = {}
     pending: list[tuple[int, Scene, str]] = []
     total = len(scenes)
     cached_count = 0
+    analyzed_count = 0
+    cached_by_id = (
+        {scene.id: scene for scene in cached_report.scenes} if cached_report is not None else {}
+    )
     for index, scene in enumerate(scenes, start=1):
         if scene.keyframe_path is None:
             continue
         cache_key = _vision_cache_key(scene, provider.model, style)
+        cached_scene = cached_by_id.get(scene.id, scene)
         if (
-            scene.caption
-            and scene.importance_score is not None
-            and scene.metadata.get("vision_cache_key") == cache_key
+            cached_scene.caption
+            and cached_scene.importance_score is not None
+            and cached_scene.metadata.get("vision_cache_key") == cache_key
         ):
-            analyzed_by_index[index] = scene
+            analyzed_by_index[index] = cached_scene
             cached_count += 1
             if progress:
                 progress(index, total, f"AI cache: scene {index}/{total}")
@@ -81,6 +90,16 @@ def analyze_scenes(
                 cache_key,
                 provider,
             )
+            analyzed_count += 1
+        if checkpoint:
+            checkpoint(
+                _vision_report(
+                    analyzed_by_index,
+                    provider,
+                    analyzed_count=analyzed_count,
+                    cached_count=cached_count,
+                )
+            )
         if progress:
             progress(
                 min(total, offset + len(chunk)),
@@ -88,14 +107,28 @@ def analyze_scenes(
                 f"AI complete: scenes {offset + len(chunk)}/{len(pending)}, batch={len(chunk)}",
             )
 
-    analyzed = [analyzed_by_index[index] for index in sorted(analyzed_by_index)]
+    return _vision_report(
+        analyzed_by_index,
+        provider,
+        analyzed_count=analyzed_count,
+        cached_count=cached_count,
+    )
+
+
+def _vision_report(
+    analyzed_by_index: dict[int, Scene],
+    provider: VisionProvider,
+    *,
+    analyzed_count: int,
+    cached_count: int,
+) -> VisionAnalysisReport:
     return VisionAnalysisReport(
         created_at=datetime.now(UTC),
         provider=provider.name,
         model=provider.model,
         prompt_version=PROMPT_VERSION,
-        scenes=analyzed,
-        analyzed_count=len(pending),
+        scenes=[analyzed_by_index[index] for index in sorted(analyzed_by_index)],
+        analyzed_count=analyzed_count,
         cached_count=cached_count,
     )
 
@@ -116,9 +149,7 @@ def _scene_with_understanding(
         "emotion": understanding.emotion.value,
         "people_count": understanding.people_count,
         "people_groups": [group.value for group in understanding.people_groups],
-        "landmarks": [
-            landmark.model_dump(mode="json") for landmark in understanding.landmarks
-        ],
+        "landmarks": [landmark.model_dump(mode="json") for landmark in understanding.landmarks],
         "tags": understanding.tags,
         "vision_score": understanding.vision_score,
         "vision_score_factors": understanding.score_factors.model_dump(),
@@ -141,6 +172,7 @@ def _vision_cache_key(scene: Scene, model: str, style: StoryStyle) -> str:
         "scene_cache_key": scene.metadata.get("cache_key"),
         "start": scene.start_seconds,
         "end": scene.end_seconds,
+        "quality_score": scene.quality_score,
         "model": model,
         "style": style.value,
         "prompt": PROMPT_VERSION,
@@ -154,9 +186,7 @@ def _apply_measured_quality(
     quality_score: float | None,
 ) -> SceneUnderstanding:
     measured_quality = quality_score if quality_score is not None else 50.0
-    factors = understanding.score_factors.model_copy(
-        update={"visual_quality": measured_quality}
-    )
+    factors = understanding.score_factors.model_copy(update={"visual_quality": measured_quality})
     score = _weighted_vision_score(factors)
     return understanding.model_copy(
         update={

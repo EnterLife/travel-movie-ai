@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -14,7 +15,12 @@ from travelmovieai.domain.models import MusicCueSection
 
 LOCAL_MUSIC_MODELS = ("ACE-Step/acestep-v15-turbo",)
 ACE_STEP_REPOSITORY = "https://github.com/ACE-Step/ACE-Step-1.5.git"
+ACE_STEP_MODEL_REPOSITORY = "ACE-Step/Ace-Step1.5"
 ACE_STEP_MAX_GENERATION_SECONDS = 90.0
+ACE_STEP_REQUIRED_CONFIGS = (
+    "Qwen3-Embedding-0.6B/config.json",
+    "vae/config.json",
+)
 
 MusicProgress = Callable[[int, int, str], None]
 
@@ -69,6 +75,7 @@ class AceStepMusicGenerator:
         progress: MusicProgress | None = None,
     ) -> None:
         self._ensure_runtime(progress)
+        self._ensure_model_configs(progress)
         python_executable = self.runtime_dir / ".venv" / "Scripts" / "python.exe"
         cli_path = self.runtime_dir / "cli.py"
         if not python_executable.is_file() or not cli_path.is_file():
@@ -135,7 +142,7 @@ class AceStepMusicGenerator:
                 reverse=True,
             )
             if not candidates:
-                detail = " ".join(lines[-5:])[-1000:]
+                detail = _ace_step_error_detail(lines)
                 raise MusicGenerationError(f"ACE-Step did not create a WAV file. {detail}".strip())
             if progress:
                 progress(3, 4, "ACE-Step: normalizing output")
@@ -170,6 +177,57 @@ class AceStepMusicGenerator:
         )
         if not executable.is_file():
             raise MusicGenerationError("Could not install ACE-Step runtime.")
+
+    def _ensure_model_configs(self, progress: MusicProgress | None) -> None:
+        required = [*ACE_STEP_REQUIRED_CONFIGS]
+        if self.model.split("/")[-1] == "acestep-v15-turbo":
+            required.append("acestep-v15-turbo/config.json")
+        missing = [name for name in required if not _valid_ace_step_config(self.model_cache / name)]
+        if not missing:
+            return
+        if not self.allow_download:
+            joined = ", ".join(missing)
+            raise MusicGenerationError(
+                f"ACE-Step model cache is incomplete ({joined}) and downloads are disabled."
+            )
+
+        python_executable = self.runtime_dir / ".venv" / "Scripts" / "python.exe"
+        if not python_executable.is_file():
+            raise MusicGenerationError("The isolated ACE-Step Python runtime is missing.")
+        if progress:
+            progress(1, 4, "ACE-Step: repairing incomplete model metadata")
+        environment = os.environ.copy()
+        environment["PYTHONUTF8"] = "1"
+        download_script = (
+            "from huggingface_hub import hf_hub_download; import sys; "
+            "hf_hub_download(repo_id=sys.argv[1], filename=sys.argv[2], local_dir=sys.argv[3])"
+        )
+        for relative_path in missing:
+            try:
+                self._run_streaming(
+                    [
+                        str(python_executable),
+                        "-c",
+                        download_script,
+                        ACE_STEP_MODEL_REPOSITORY,
+                        relative_path,
+                        str(self.model_cache),
+                    ],
+                    cwd=self.runtime_dir,
+                    environment=environment,
+                    progress=progress,
+                )
+            except MusicGenerationError as error:
+                raise MusicGenerationError(
+                    f"Could not repair ACE-Step model metadata ({relative_path}). {error}"
+                ) from error
+        unresolved = [
+            name for name in missing if not _valid_ace_step_config(self.model_cache / name)
+        ]
+        if unresolved:
+            raise MusicGenerationError(
+                "ACE-Step model metadata is still incomplete after repair: " + ", ".join(unresolved)
+            )
 
     def _configuration(
         self,
@@ -266,7 +324,7 @@ class AceStepMusicGenerator:
                 process.kill()
             raise
         if return_code != 0:
-            detail = " ".join(lines[-8:])[-1500:]
+            detail = _ace_step_error_detail(lines)
             raise MusicGenerationError(f"ACE-Step exited with code {return_code}. {detail}".strip())
         return lines
 
@@ -331,6 +389,25 @@ def _toml_string(value: str | Path) -> str:
 
 def _toml_bool(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _ace_step_error_detail(lines: list[str]) -> str:
+    markers = ("error", "failed", "traceback", "not fully initialized", "unrecognized model")
+    diagnostic = [line for line in lines if any(marker in line.casefold() for marker in markers)]
+    selected = diagnostic[-8:] if diagnostic else lines[-8:]
+    return " ".join(selected)[-2000:]
+
+
+def _valid_ace_step_config(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or not payload:
+        return False
+    if path.parent.name == "Qwen3-Embedding-0.6B":
+        return isinstance(payload.get("model_type"), str)
+    return True
 
 
 def _prompt_with_cue_sheet(prompt: str, cue_sheet: list[MusicCueSection]) -> str:

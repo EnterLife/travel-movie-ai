@@ -33,6 +33,7 @@ from travelmovieai.domain.models import (
     Scene,
     SceneDetectionReport,
     StageResult,
+    VisionAnalysisReport,
 )
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
@@ -311,6 +312,13 @@ class TravelMovieService:
             "disabled",
         )
         tracker.emit(45, f"Quality analysis saved, backend={quality_backend}")
+        vision_path = context.artifacts_dir / "vision_analysis.json"
+        try:
+            cached_vision_report = VisionAnalysisReport.model_validate_json(
+                vision_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError):
+            cached_vision_report = None
         vision_provider = self._vision_provider(
             settings.vision_provider,
             settings.vision_model,
@@ -334,12 +342,13 @@ class TravelMovieService:
                 vision_provider,
                 settings.story_style,
                 tracker.range(45, 70),
+                cached_report=cached_vision_report,
+                checkpoint=lambda partial: write_json_atomic(vision_path, partial),
             )
         finally:
             release = getattr(vision_provider, "release", None)
             if callable(release):
                 release()
-        vision_path = context.artifacts_dir / "vision_analysis.json"
         write_json_atomic(vision_path, vision_report)
         speech_scenes = vision_report.scenes
         if settings.speech_analysis:

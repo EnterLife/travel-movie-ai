@@ -334,6 +334,7 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
         scenes: list[Scene],
         provider: object,
         style: object,
+        **kwargs: object,
     ) -> VisionAnalysisReport:
         nonlocal calls
         calls += 1

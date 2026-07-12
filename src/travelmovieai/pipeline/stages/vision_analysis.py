@@ -86,7 +86,19 @@ class VisionAnalysisStage(Stage):
             model_batch_size=resources.model_batch_size,
         )
         try:
-            report = analyze_scenes(scenes, provider, context.style)
+            cached_report = VisionAnalysisReport.model_validate_json(
+                artifact.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            cached_report = None
+        try:
+            report = analyze_scenes(
+                scenes,
+                provider,
+                context.style,
+                cached_report=cached_report,
+                checkpoint=lambda partial: write_json_atomic(artifact, partial),
+            )
         finally:
             release = getattr(provider, "release", None)
             if callable(release):

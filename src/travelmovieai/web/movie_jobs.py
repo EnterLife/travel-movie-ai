@@ -233,10 +233,7 @@ class MovieJobManager:
                 progress_percent = _progress_percent(current, total)
                 phase = _phase_from_message(message)
                 normalized_message = message.casefold()
-                reset_phase = (
-                    phase != job.phase
-                    or "starting scene analysis" in normalized_message
-                )
+                reset_phase = phase != job.phase or "starting scene analysis" in normalized_message
                 if reset_phase:
                     job.phase_started_at = now
                     job.phase_last_progress_at = None
@@ -382,6 +379,8 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         music_profile=result.music_profile if result else None,
         music_generator=result.music_generator if result else None,
         music_model=result.music_model if result else None,
+        quality_score=result.quality_score if result else None,
+        quality_issue_count=result.quality_issue_count if result else 0,
     )
 
 

@@ -15,6 +15,7 @@ from travelmovieai.domain.models import (
     MontageClip,
     MontageQualityReport,
     MusicPlan,
+    NarrationReport,
     QualityAnalysisReport,
     QuickMontagePlan,
     QuickMontageSettings,
@@ -38,6 +39,7 @@ from travelmovieai.pipeline.stages import (
 from travelmovieai.pipeline.stages.audio_analysis import AudioAnalysisStage
 from travelmovieai.pipeline.stages.frame_sampling import FrameSamplingStage
 from travelmovieai.pipeline.stages.music_selection import MusicSelectionStage
+from travelmovieai.pipeline.stages.narration import NarrationStage
 from travelmovieai.pipeline.stages.quality_analysis import QualityAnalysisStage
 from travelmovieai.pipeline.stages.rendering import RenderingStage
 from travelmovieai.pipeline.stages.scene_ranking import SceneRankingStage
@@ -55,6 +57,7 @@ def test_scene_ranking_stage_persists_ranked_scenes(tmp_path: Path) -> None:
     _seed_project(context, [asset], [weaker, stronger])
 
     result = SceneRankingStage().run(context)
+    cached = SceneRankingStage().run(context)
     report = SceneDetectionReport.model_validate_json(
         (context.artifacts_dir / "ranked_scenes.json").read_text(encoding="utf-8")
     )
@@ -64,6 +67,7 @@ def test_scene_ranking_stage_persists_ranked_scenes(tmp_path: Path) -> None:
 
     assert result.stage is PipelineStage.SCENE_RANKING
     assert result.skipped is False
+    assert cached.skipped is True
     assert [scene.id for scene in report.scenes] == [stronger.id, weaker.id]
     assert (
         stored[stronger.id].metadata["ranking_score"] > stored[weaker.id].metadata["ranking_score"]
@@ -313,8 +317,18 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
             {"gpu_memory_mb": None, "memory_mb": None, "model_batch_size": 1},
         )()
 
+    releases = 0
+
+    class FakeVisionProvider:
+        name = "fake-vision"
+        model = "fake-model"
+
+        def release(self) -> None:
+            nonlocal releases
+            releases += 1
+
     def fake_provider(*args: object, **kwargs: object) -> object:
-        return type("Provider", (), {"name": "fake-vision", "model": "fake-model"})()
+        return FakeVisionProvider()
 
     def fake_analyze(
         scenes: list[Scene],
@@ -352,6 +366,7 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
     assert first.skipped is False
     assert second.skipped is True
     assert calls == 1
+    assert releases == 1
     assert (context.artifacts_dir / "vision_analysis.cache.json").is_file()
 
 
@@ -589,6 +604,44 @@ def test_music_selection_stage_writes_music_plan_without_existing_timeline(
     assert result.skipped is False
     assert music_plan.mode == "generated"
     assert not (context.artifacts_dir / "quick_timeline.json").exists()
+
+
+def test_music_selection_stage_passes_local_ai_generator(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "clip.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    captured: dict[str, object] = {}
+
+    class FakeGenerator:
+        name = "ace-step"
+        model = "fake-ace-step"
+
+        def __init__(self, model: str, **kwargs: object) -> None:
+            captured["model"] = model
+            captured["options"] = kwargs
+
+    def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
+        captured["generator"] = kwargs.get("neural_generator")
+        soundtrack = context.artifacts_dir / "theme.wav"
+        soundtrack.write_bytes(b"fake wav")
+        return MusicPlan(mode="generated", source_path=soundtrack, duration_seconds=6)
+
+    monkeypatch.setattr(music_selection, "AceStepMusicGenerator", FakeGenerator)
+    monkeypatch.setattr(
+        music_selection,
+        "detect_resource_profile",
+        lambda *args, **kwargs: type("Profile", (), {"gpu_memory_mb": 6144})(),
+    )
+    monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
+
+    MusicSelectionStage().run(context)
+
+    assert isinstance(captured["generator"], FakeGenerator)
+    assert captured["model"] == "ACE-Step/acestep-v15-turbo"
 
 
 def test_music_selection_stage_rejects_missing_generated_soundtrack(
@@ -1134,12 +1187,45 @@ def test_story_builder_stage_applies_story_metadata_to_scenes(tmp_path: Path) ->
     _seed_project(context, [asset], [scene], [event])
 
     result = StoryBuilderStage().run(context)
+    cached = StoryBuilderStage().run(context)
     stored = MediaAssetRepository(context.database_path).list_scenes()[0]
 
     assert result.stage is PipelineStage.STORY_BUILDER
     assert result.skipped is False
+    assert cached.skipped is True
     assert stored.metadata["story_section_role"] == "opening"
     assert stored.metadata["story_role_order"] == 0
+
+
+def test_narration_stage_writes_and_reuses_story_text(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "arrival.mp4")
+    event_id = uuid4()
+    scene = _scene(asset, score=88, start=0, event_id=str(event_id))
+    event = Event(
+        id=event_id,
+        title="Arrival",
+        scene_ids=[scene.id],
+        summary="Arrival at the destination.",
+        importance_score=88,
+        start_at=datetime(2026, 1, 1, tzinfo=UTC),
+        end_at=datetime(2026, 1, 1, 0, 0, 6, tzinfo=UTC),
+        location_type=LocationType.AIRPORT,
+        activity=ActivityType.ARRIVING,
+        confidence=0.9,
+    )
+    _seed_project(context, [asset], [scene], [event])
+    StoryBuilderStage().run(context)
+
+    first = NarrationStage().run(context)
+    second = NarrationStage().run(context)
+    report = NarrationReport.model_validate_json(
+        (context.artifacts_dir / "narration.json").read_text(encoding="utf-8")
+    )
+
+    assert first.skipped is False
+    assert second.skipped is True
+    assert report.lines[0].section_role == "opening"
 
 
 def test_timeline_builder_stage_skips_without_assets_or_scenes(tmp_path: Path) -> None:

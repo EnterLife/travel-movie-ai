@@ -33,6 +33,8 @@ const visionProvider = document.querySelector("#vision-provider");
 const visionModel = document.querySelector("#vision-model");
 const visionModelSource = document.querySelector("#vision-model-source");
 const renderDevice = document.querySelector("#render-device");
+const transition = document.querySelector("#transition");
+const preserveChronology = document.querySelector("#preserve-chronology");
 const previewMode = document.querySelector("#preview-mode");
 const semanticAnalysis = document.querySelector("#semantic-analysis");
 const qualityAnalysis = document.querySelector("#quality-analysis");
@@ -524,6 +526,8 @@ movieButton.addEventListener("click", async () => {
           vision_provider: visionProvider.value,
           vision_model: visionModel.value || null,
           render_device: renderDevice.value,
+          transition: transition.value,
+          preserve_chronology: preserveChronology.checked,
           story_style: storyStyle.value,
           analysis_quality_mode: analysisQualityMode.value,
           preview_mode: previewMode.checked,
@@ -670,7 +674,9 @@ function showMovieResult(job) {
       job.selection_mode === "semantic" ? "AI selection" : "quick mode"
     } · ${job.render_encoder || "unknown encoder"} · ${
       job.music_profile || job.music_mode || "no music"
-    } · ${job.music_generator || "music file"}`;
+    } · ${job.music_generator || "music file"} · quality ${
+      job.quality_score == null ? "n/a" : Math.round(job.quality_score)
+    }/100 (${job.quality_issue_count || 0} issues)`;
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");

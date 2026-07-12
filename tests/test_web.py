@@ -194,9 +194,10 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "Create a travel film" in page.text
     assert 'id="music-engine"' in page.text
     assert 'id="music-model"' in page.text
-    assert 'id="transition-type"' not in page.text
-    assert "Simple dissolve" not in page.text
-    assert "Cinematic dissolve" not in page.text
+    assert 'id="transition"' in page.text
+    assert "Cinematic · event-aware" in page.text
+    assert 'id="preserve-chronology"' in page.text
+    assert 'id="speech-analysis" type="checkbox" checked' in page.text
     assert 'id="music-volume" type="range" min="0" max="100" value="100"' in page.text
     assert '<span id="music-volume-value">100%</span>' in page.text
     assert "ACE-Step only" in page.text
@@ -206,7 +207,8 @@ def test_web_interface_serves_page_and_health() -> None:
     assert styles.status_code == 200
     assert "--accent" in styles.text
     assert script.status_code == 200
-    assert "transition:" not in script.text
+    assert "transition: transition.value" in script.text
+    assert "preserve_chronology: preserveChronology.checked" in script.text
     assert "FFmpeg not found" in script.text
     assert "Scans ready" in script.text
     assert "The scanner is not ready. Check FFprobe." in script.text
@@ -422,6 +424,8 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert job["status"] == "completed"
     assert job["clip_count"] == 3
     assert job["selection_mode"] == "semantic"
+    assert job["quality_score"] is None
+    assert job["quality_issue_count"] == 0
     assert job["progress_percent"] == 100
     assert job["phase"] == "completed"
     assert job["resources"]["render_workers"] == 4

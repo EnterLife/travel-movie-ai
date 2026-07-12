@@ -22,8 +22,20 @@ from travelmovieai.domain.models import (
 )
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
+    enforce_montage_quality,
     enrich_montage_quality_report_with_render,
 )
+
+
+def test_quality_gate_rejects_critical_report() -> None:
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(),
+    )
+    report = build_montage_quality_report(plan, [])
+
+    with pytest.raises(MontageError, match="quality gate"):
+        enforce_montage_quality(report)
 
 
 def test_montage_quality_report_flags_timeline_risks(tmp_path: Path) -> None:

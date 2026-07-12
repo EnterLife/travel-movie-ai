@@ -5,6 +5,7 @@ from travelmovieai.domain.enums import MediaType, StoryStyle
 from travelmovieai.domain.models import MediaAsset, Scene
 from travelmovieai.story.builder import build_multimodal_descriptions, build_storyboard
 from travelmovieai.story.events import detect_events
+from travelmovieai.story.narration import build_narration
 
 
 def test_event_detection_groups_semantically_related_scenes() -> None:
@@ -40,6 +41,22 @@ def test_event_detection_splits_large_time_gap() -> None:
     assert len(report.events) == 2
 
 
+def test_event_detection_splits_different_places_with_generic_activity() -> None:
+    beach = _asset("beach.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
+    city = _asset("city.mp4", datetime(2026, 1, 1, 10, 20, tzinfo=UTC))
+
+    report, _ = detect_events(
+        [
+            _scene(beach, "beach", "walking", "Walking on the beach."),
+            _scene(city, "city", "walking", "Walking downtown."),
+        ],
+        [beach, city],
+    )
+
+    assert len(report.events) == 2
+    assert [event.title for event in report.events] == ["Beach Day", "City Exploration"]
+
+
 def test_multimodal_description_records_used_sources() -> None:
     asset = _asset("scene.mp4", datetime.now(UTC))
     scene = _scene(asset, "museum", "sightseeing", "A museum hall.").model_copy(
@@ -68,8 +85,7 @@ def test_multimodal_description_records_used_sources() -> None:
 
 def test_storyboard_builds_opening_highlight_and_finale() -> None:
     assets = [
-        _asset(f"scene-{index}.mp4", datetime(2026, 1, index + 1, tzinfo=UTC))
-        for index in range(3)
+        _asset(f"scene-{index}.mp4", datetime(2026, 1, index + 1, tzinfo=UTC)) for index in range(3)
     ]
     event_report, scenes = detect_events(
         [
@@ -92,6 +108,15 @@ def test_storyboard_builds_opening_highlight_and_finale() -> None:
         "finale",
     ]
     assert storyboard.event_ids == [event.id for event in event_report.events]
+
+    narration = build_narration(storyboard, event_report.events)
+
+    assert [line.section_role for line in narration.lines] == [
+        "opening",
+        "highlight",
+        "finale",
+    ]
+    assert narration.lines[0].text.startswith("Our journey begins")
 
 
 def _asset(name: str, created_at: datetime) -> MediaAsset:

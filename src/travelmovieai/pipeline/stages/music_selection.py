@@ -1,6 +1,7 @@
 """Pipeline stage that plans soundtrack cues for the montage."""
 
 from pathlib import Path
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -16,8 +17,13 @@ from travelmovieai.infrastructure.artifacts import (
     write_stage_cache_manifest,
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.infrastructure.music_generation import (
+    AceStepMusicGenerator,
+    resolve_local_music_model,
+)
+from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
-from travelmovieai.story.music import build_music_plan
+from travelmovieai.story.music import NeuralMusicGenerator, build_music_plan
 
 ARTIFACT_SCHEMA_VERSION = "music-selection-v1"
 
@@ -94,7 +100,7 @@ class MusicSelectionStage(Stage):
             context.settings.music_library.expanduser().resolve(),
             context.artifacts_dir / context.settings.generated_music_filename,
             draft_plan,
-            neural_generator=None,
+            neural_generator=_neural_music_generator(context, settings),
         )
         if not _music_plan_source_available(music_plan):
             raise MontageError(
@@ -136,6 +142,39 @@ def _semantic_montage_settings(context: ProjectContext) -> QuickMontageSettings:
         return QuickMontageSettings(semantic_analysis=True, story_style=context.style)
     return context.montage_settings.model_copy(
         update={"semantic_analysis": True, "story_style": context.style}
+    )
+
+
+def _neural_music_generator(
+    context: ProjectContext,
+    settings: QuickMontageSettings,
+) -> NeuralMusicGenerator | None:
+    if settings.music_mode not in {"auto", "generated"} or settings.music_engine == "procedural":
+        return None
+    resources = detect_resource_profile(
+        context.settings.ffmpeg_binary,
+        worker_override=context.settings.workers,
+        batch_override=context.settings.batch_size,
+        resource_mode=context.settings.resource_mode,
+        gpu_memory_reserve_mb=context.settings.gpu_memory_reserve_mb,
+        max_gpu_processes=context.settings.max_gpu_processes,
+    )
+    model = resolve_local_music_model(
+        settings.music_model or context.settings.music_model,
+        gpu_memory_mb=resources.gpu_memory_mb,
+    )
+    return cast(
+        NeuralMusicGenerator,
+        AceStepMusicGenerator(
+            model,
+            runtime_dir=Path(".cache/ace-step").resolve(),
+            model_cache=(context.settings.model_cache / "ace-step").expanduser().resolve(),
+            ffmpeg_binary=context.settings.ffmpeg_binary,
+            allow_download=context.settings.allow_model_download,
+            device=context.settings.device,
+            gpu_memory_mb=resources.gpu_memory_mb,
+            ffmpeg_timeout_seconds=context.settings.render_timeout_seconds,
+        ),
     )
 
 

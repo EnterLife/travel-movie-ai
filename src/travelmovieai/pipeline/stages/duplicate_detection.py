@@ -4,9 +4,16 @@ from travelmovieai.analysis.duplicates import detect_duplicate_scenes
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.models import StageResult
-from travelmovieai.infrastructure.artifacts import write_json_atomic
+from travelmovieai.infrastructure.artifacts import (
+    artifact_fingerprint,
+    stage_cache_manifest_matches,
+    write_json_atomic,
+    write_stage_cache_manifest,
+)
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
+
+ARTIFACT_SCHEMA_VERSION = "duplicate-detection-v1"
 
 
 class DuplicateDetectionStage(Stage):
@@ -30,14 +37,52 @@ class DuplicateDetectionStage(Stage):
             if context.montage_settings is not None
             else 0.92
         )
-        report, scenes = detect_duplicate_scenes(repository.list_scenes(), threshold)
-        repository.synchronize_scenes(scenes)
+        scenes = repository.list_scenes()
         artifact = context.artifacts_dir / "duplicates.json"
+        cache_artifact = context.artifacts_dir / "duplicates.cache.json"
+        input_fingerprint = artifact_fingerprint(
+            [
+                {
+                    "id": str(scene.id),
+                    "keyframe_path": scene.keyframe_path,
+                    "quality_score": scene.quality_score,
+                    "importance_score": scene.importance_score,
+                    "selection_override": scene.metadata.get("selection_override"),
+                    "embedding_backend": scene.metadata.get("embedding_backend"),
+                }
+                for scene in scenes
+            ]
+        )
+        config_fingerprint = artifact_fingerprint(threshold, ARTIFACT_SCHEMA_VERSION)
+        if stage_cache_manifest_matches(
+            cache_artifact,
+            stage=self.name,
+            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+            input_fingerprint=input_fingerprint,
+            config_fingerprint=config_fingerprint,
+            artifacts=[artifact],
+        ) and all("duplicate_status" in scene.metadata for scene in scenes):
+            return StageResult(
+                stage=self.name,
+                skipped=True,
+                artifacts=[context.database_path, artifact, cache_artifact],
+                message="Duplicate detection reused cached groups.",
+            )
+        report, scenes = detect_duplicate_scenes(scenes, threshold)
+        repository.synchronize_scenes(scenes)
         write_json_atomic(artifact, report)
+        write_stage_cache_manifest(
+            cache_artifact,
+            stage=self.name,
+            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+            input_fingerprint=input_fingerprint,
+            config_fingerprint=config_fingerprint,
+            artifacts=[artifact],
+        )
         return StageResult(
             stage=self.name,
             skipped=not report.groups,
-            artifacts=[context.database_path, artifact],
+            artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Duplicate detection found {report.duplicate_count} duplicate "
                 f"scene(s) in {len(report.groups)} group(s)."

@@ -116,6 +116,18 @@ class VisionAnalysisReport(BaseModel):
     cached_count: int = 0
 
 
+class SceneEmbedding(BaseModel):
+    scene_id: UUID
+    vector: list[float] = Field(min_length=1, max_length=256)
+
+
+class EmbeddingAnalysisReport(BaseModel):
+    created_at: datetime
+    backend: str
+    dimensions: int = Field(ge=1, le=256)
+    embeddings: list[SceneEmbedding] = Field(default_factory=list)
+
+
 class SpeechSegment(BaseModel):
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(ge=0)
@@ -362,6 +374,16 @@ class Storyboard(BaseModel):
     sections: list[StorySection] = Field(default_factory=list)
 
 
+class NarrationLine(BaseModel):
+    section_role: Literal["opening", "journey", "highlight", "finale"]
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class NarrationReport(BaseModel):
+    created_at: datetime
+    lines: list[NarrationLine] = Field(default_factory=list)
+
+
 class TimelineItem(BaseModel):
     scene_id: UUID
     source_start_seconds: float
@@ -433,6 +455,7 @@ class QuickMontageSettings(BaseModel):
     music_model: str | None = Field(default=None, max_length=300)
     preview_mode: bool = False
 
+
 class MontageClip(BaseModel):
     asset_id: UUID
     source_path: Path
@@ -470,6 +493,8 @@ class QuickMontageResult(BaseModel):
     music_profile: str | None = None
     music_generator: str | None = None
     music_model: str | None = None
+    quality_score: float | None = Field(default=None, ge=0, le=100)
+    quality_issue_count: int = Field(default=0, ge=0)
 
 
 class StageResult(BaseModel):

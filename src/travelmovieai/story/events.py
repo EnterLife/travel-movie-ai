@@ -78,18 +78,28 @@ def _same_event(
     if previous_landmarks & current_landmarks:
         return True
 
-    location_matches = _metadata_value(previous, "location_type") == _metadata_value(
-        current, "location_type"
-    )
-    activity_matches = _metadata_value(previous, "activity") == _metadata_value(
-        current, "activity"
-    )
-    meaningful_location = _metadata_value(previous, "location_type") not in {
+    previous_location = _metadata_value(previous, "location_type")
+    current_location = _metadata_value(current, "location_type")
+    location_matches = previous_location == current_location
+    meaningful_location = previous_location not in {
+        "",
+        LocationType.UNKNOWN.value,
+        LocationType.OTHER.value,
+    } and current_location not in {
         "",
         LocationType.UNKNOWN.value,
         LocationType.OTHER.value,
     }
-    return meaningful_location and (location_matches or activity_matches)
+    if meaningful_location and location_matches:
+        return True
+
+    previous_activity = _metadata_value(previous, "activity")
+    current_activity = _metadata_value(current, "activity")
+    return previous_activity == current_activity and previous_activity in {
+        ActivityType.ARRIVING.value,
+        ActivityType.DEPARTING.value,
+        ActivityType.TRAVELING.value,
+    }
 
 
 def _build_event(
@@ -106,11 +116,7 @@ def _build_event(
     )
     start_at = min(_scene_time(scene, assets) for scene in scenes)
     end_at = max(_scene_end_time(scene, assets) for scene in scenes)
-    scores = [
-        scene.importance_score
-        for scene in scenes
-        if scene.importance_score is not None
-    ]
+    scores = [scene.importance_score for scene in scenes if scene.importance_score is not None]
     importance = sum(scores) / len(scores) if scores else 50.0
     semantic_fields = int(location != LocationType.UNKNOWN)
     semantic_fields += int(activity != ActivityType.UNKNOWN)

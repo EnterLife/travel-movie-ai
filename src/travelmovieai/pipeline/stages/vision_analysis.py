@@ -85,7 +85,12 @@ class VisionAnalysisStage(Stage):
             system_memory_mb=resources.memory_mb,
             model_batch_size=resources.model_batch_size,
         )
-        report = analyze_scenes(scenes, provider, context.style)
+        try:
+            report = analyze_scenes(scenes, provider, context.style)
+        finally:
+            release = getattr(provider, "release", None)
+            if callable(release):
+                release()
         repository.synchronize_scenes(report.scenes)
         write_json_atomic(artifact, report)
         write_stage_cache_manifest(

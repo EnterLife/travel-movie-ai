@@ -442,11 +442,10 @@ travelmovieai create `
 Story styles: `cinematic`, `documentary`, `family`, `vlog`, `adventure`, and
 `romantic`.
 
-The `create --semantic` command runs the canonical pipeline through rendering.
-The `storyboard`, `render`, and `report` commands expose additional pipeline
-entry points. Some optional AI stages still contain placeholder behavior until
-narration, voice synthesis, and embeddings are promoted into the canonical
-pipeline.
+The `create --semantic` command and web AI Edit use the same movie use case, so
+they share Vision lifecycle, music generation, timeline, rendering, and quality
+gate behavior. `run_until` and the `storyboard`, `render`, and `report` commands
+retain the canonical stage pipeline for incremental and diagnostic workflows.
 
 ## Configuration
 
@@ -573,19 +572,30 @@ Media Scan
 | Vision AI | Generate structured semantic scene understanding | Implemented |
 | Speech | Transcribe scene audio with Faster Whisper | Implemented, optional |
 | Audio Analysis | Classify speech, silence, wind, music, crowds, water, transport, and ambience | Implemented |
-| Embeddings | Semantic similarity and archive search | Planned |
+| Embeddings | Deterministic local semantic feature vectors and archive similarity | Implemented |
 | Duplicate Detection | Group visually similar scenes | Implemented |
 | Scene Captioning | Merge Vision, quality, speech, and event context | Implemented |
 | Event Detection | Group scenes into trip events | Implemented |
 | Story Builder | Build opening, journey, highlights, finale, story budgets, and diverse clip ordering | Implemented |
 | Scene Ranking | Explain selection and rejection decisions | Implemented |
 | Music Selection | Generate melodic lounge music or select a local soundtrack | Implemented |
-| Narration and Voice | Generate and synthesize optional voice-over | Planned |
+| Narration | Generate deterministic local story text | Implemented |
+| Voice Synthesis | Synthesize optional voice-over | Explicitly disabled until a local provider is configured |
 | Timeline Builder | Produce a declarative edit plan with chronological and diversity constraints | Implemented |
 | Rendering | Render, atomically replace, and validate the MP4 | Implemented |
 
 Stage contract changes must update domain models, serialization, downstream
 consumers, tests, and this README together.
+
+Vision and Whisper providers are released at the end of their stages before the
+next GPU-heavy operation. AI Auto music uses the same ACE-Step adapter in the
+web use case and canonical Music Selection stage. The web defaults to speech
+analysis and cinematic event-aware transitions, while still allowing direct
+cuts and chronology-first ordering.
+
+The final render is validated with FFprobe and a typed montage quality report.
+Critical quality issues fail the job instead of returning `Film ready`; the web
+result shows the quality score and issue count for non-critical diagnostics.
 
 ## Vision AI Contract
 
@@ -931,17 +941,14 @@ MVP acceptance criteria:
 - pause and cancel movie jobs;
 - resume after process interruption;
 - persist movie-job history;
-- replace remaining placeholder stages with explicit Embeddings, Narration,
-  and Voice Synthesis implementations;
-- extend per-stage input/config/model fingerprints to the remaining lightweight
-  and optional AI stages;
+- add a local Piper or XTTS provider to the explicit Voice Synthesis stage;
 - enforce disk-cache limits and cleanup;
 - check free disk space before rendering;
 - add managed SQLite migrations.
 
 ### P1: Editing quality
 
-- semantic duplicates with embeddings and FAISS;
+- FAISS indexing and archive search over local semantic embeddings;
 - GPS and embeddings in event detection;
 - richer shot-scale and camera-motion extraction from Vision AI;
 - timeline version comparison in the web UI.

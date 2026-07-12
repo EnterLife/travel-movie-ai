@@ -240,7 +240,7 @@
                 </span>
               </label>
               <label class="toggle-row" for="speech-analysis">
-                <input id="speech-analysis" type="checkbox">
+                <input id="speech-analysis" type="checkbox" checked>
                 <span>
                   <strong>Speech recognition</strong>
                   <small>Faster Whisper; slower, but helps preserve important lines</small>
@@ -256,6 +256,24 @@
                 <option value="cuda">NVIDIA NVENC · render only</option>
                 <option value="cpu">CPU / libx264</option>
               </select>
+
+              <label for="transition">Scene transitions <span>story-aware</span></label>
+              <select id="transition">
+                <option value="cinematic" selected>Cinematic · event-aware</option>
+                <option value="soft">Soft dissolve</option>
+                <option value="none">Direct cuts</option>
+                <option value="fade">Fade</option>
+                <option value="wipeleft">Wipe left</option>
+                <option value="slideright">Slide right</option>
+              </select>
+
+              <label class="toggle-row" for="preserve-chronology">
+                <input id="preserve-chronology" type="checkbox" checked>
+                <span>
+                  <strong>Preserve capture chronology</strong>
+                  <small>Disable to prioritize opening, journey, highlight, and finale</small>
+                </span>
+              </label>
 
               <div class="compact-settings">
                 <label for="movie-duration">Film, sec.</label>

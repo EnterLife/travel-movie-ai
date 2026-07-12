@@ -180,6 +180,8 @@ class MovieJobResponse(BaseModel):
     music_profile: str | None = None
     music_generator: str | None = None
     music_model: str | None = None
+    quality_score: float | None = Field(default=None, ge=0, le=100)
+    quality_issue_count: int = Field(default=0, ge=0)
 
 
 class SceneListResponse(BaseModel):

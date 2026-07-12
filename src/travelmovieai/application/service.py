@@ -36,6 +36,7 @@ from travelmovieai.domain.models import (
 )
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
+    enforce_montage_quality,
     enrich_montage_quality_report_with_render,
 )
 from travelmovieai.editing.renderer import QuickMontageRenderer
@@ -99,22 +100,6 @@ class TravelMovieService:
         style: StoryStyle,
         semantic: bool = False,
     ) -> StageResult:
-        if semantic:
-            return self.run_until(
-                PipelineStage.RENDERING,
-                input_path=input_path,
-                output_path=output_path,
-                workspace=workspace,
-                style=style,
-                montage_settings=QuickMontageSettings(
-                    semantic_analysis=True,
-                    story_style=style,
-                    vision_provider=self.settings.vision_provider,
-                    vision_model=(
-                        None if self.settings.vision_model == "auto" else self.settings.vision_model
-                    ),
-                ),
-            )
         result = self.create_quick_montage(
             input_path=input_path,
             workspace=workspace,
@@ -227,16 +212,15 @@ class TravelMovieService:
                 quality_report = build_montage_quality_report(plan, [])
         if not quality_report_path.is_file():
             write_json_atomic(quality_report_path, quality_report)
-        write_json_atomic(
-            quality_report_path,
-            enrich_montage_quality_report_with_render(
-                quality_report,
-                resolved_output,
-                ffprobe_binary=self.settings.ffprobe_binary,
-                ffmpeg_binary=self.settings.ffmpeg_binary,
-                timeout_seconds=self.settings.render_timeout_seconds,
-            ),
+        quality_report = enrich_montage_quality_report_with_render(
+            quality_report,
+            resolved_output,
+            ffprobe_binary=self.settings.ffprobe_binary,
+            ffmpeg_binary=self.settings.ffmpeg_binary,
+            timeout_seconds=self.settings.render_timeout_seconds,
         )
+        write_json_atomic(quality_report_path, quality_report)
+        enforce_montage_quality(quality_report)
         tracker.emit(100, "Film ready and validated with FFprobe")
         return QuickMontageResult(
             output_path=resolved_output,
@@ -249,6 +233,8 @@ class TravelMovieService:
             music_profile=plan.music_plan.profile if plan.music_plan else None,
             music_generator=plan.music_plan.generator if plan.music_plan else None,
             music_model=plan.music_plan.model if plan.music_plan else None,
+            quality_score=quality_report.score,
+            quality_issue_count=len(quality_report.issues),
         )
 
     def _build_semantic_plan(
@@ -274,9 +260,7 @@ class TravelMovieService:
         frame_workers = (
             min(
                 resources.frame_workers,
-                1
-                if resources.resource_mode == "safe"
-                else self.settings.max_gpu_processes,
+                1 if resources.resource_mode == "safe" else self.settings.max_gpu_processes,
             )
             if use_cuda_decode
             else resources.frame_workers

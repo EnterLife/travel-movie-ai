@@ -10,6 +10,7 @@ from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.models import MontageQualityReport, QuickMontagePlan, StageResult
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
+    enforce_montage_quality,
     enrich_montage_quality_report_with_render,
 )
 from travelmovieai.editing.renderer import QuickMontageRenderer
@@ -25,7 +26,7 @@ from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
 ARTIFACT_SCHEMA_VERSION = "rendering-v3"
-RENDERER_BEHAVIOR_VERSION = "cut-only-metadata-stripped-v3"
+RENDERER_BEHAVIOR_VERSION = "transitions-quality-gate-v4"
 
 
 class RenderingStage(Stage):
@@ -117,6 +118,7 @@ class RenderingStage(Stage):
             timeout_seconds=context.settings.render_timeout_seconds,
         )
         write_json_atomic(quality_artifact, quality_report)
+        enforce_montage_quality(quality_report)
         write_stage_cache_manifest(
             cache_artifact,
             stage=self.name,

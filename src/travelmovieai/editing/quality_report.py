@@ -150,6 +150,14 @@ def enrich_montage_quality_report_with_render(
     )
 
 
+def enforce_montage_quality(report: MontageQualityReport) -> None:
+    critical = [issue for issue in report.issues if issue.severity == "critical"]
+    if not critical:
+        return
+    details = "; ".join(issue.message for issue in critical[:3])
+    raise MontageError(f"Rendered movie failed the quality gate: {details}")
+
+
 def _quality_issues(
     plan: QuickMontagePlan,
     selected_scenes: list[Scene],

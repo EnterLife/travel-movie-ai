@@ -44,17 +44,21 @@ def build_quick_montage_plan(
 
     clips: list[MontageClip] = []
     effective_duration = 0.0
-    transition = _transition_duration(settings)
     for asset in usable:
         remaining = settings.target_duration_seconds - effective_duration
         if remaining < 0.1:
             break
+        boundary_overlap = _planned_boundary_overlap(
+            clips[-1].event_id if clips else None,
+            None,
+            settings,
+        )
         desired_duration = (
             settings.photo_duration_seconds
             if asset.media_type is MediaType.PHOTO
             else min(asset.duration_seconds or 0, settings.max_video_clip_seconds)
         )
-        available_budget = remaining + (transition if clips else 0)
+        available_budget = remaining + (boundary_overlap if clips else 0)
         duration = min(desired_duration, available_budget)
         if duration < 0.1:
             continue
@@ -74,11 +78,12 @@ def build_quick_montage_plan(
                 has_audio=_has_audio(asset),
             )
         )
-        effective_duration += duration - (transition if len(clips) > 1 else 0)
+        effective_duration += duration - (boundary_overlap if len(clips) > 1 else 0)
 
     if not clips:
         raise MontageError("The project has no usable videos or photos to edit.")
 
+    clips = _fit_clips_to_target_duration(clips, settings)
     return QuickMontagePlan(
         created_at=datetime.now(UTC),
         settings=settings,
@@ -98,7 +103,6 @@ def build_semantic_montage_plan(
     assets_by_id = {asset.id: asset for asset in assets}
     selected: list[MontageClip] = []
     effective_duration = 0.0
-    transition = _transition_duration(settings)
 
     ranked = rank_scenes(scenes)
     story_candidates = _story_candidates(ranked, settings)
@@ -130,9 +134,15 @@ def build_semantic_montage_plan(
             else scene.end_seconds - scene.start_seconds
         )
         duration = _directed_clip_duration(scene, available, settings)
+        event_id = _event_id(scene)
+        boundary_overlap = _planned_boundary_overlap(
+            selected[-1].event_id if selected else None,
+            event_id,
+            settings,
+        )
         remaining = settings.target_duration_seconds - effective_duration
         if selected:
-            remaining += transition
+            remaining += boundary_overlap
         duration = min(duration, remaining)
         if duration < 0.5:
             continue
@@ -160,11 +170,11 @@ def build_semantic_montage_plan(
                 has_audio=_has_audio(asset),
                 caption=scene.caption,
                 semantic_score=float(scene.metadata.get("ranking_score", 50)),
-                event_id=_event_id(scene),
+                event_id=event_id,
                 selection_reason=selection_reason,
             )
         )
-        effective_duration += duration - (transition if len(selected) > 1 else 0)
+        effective_duration += duration - (boundary_overlap if len(selected) > 1 else 0)
         if effective_duration >= settings.target_duration_seconds - 0.05:
             break
 
@@ -184,6 +194,13 @@ def build_semantic_montage_plan(
     else:
         selected.sort(key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id))
     selected = _apply_transition_policy(selected, scenes_by_id, settings)
+    selected = _fit_clips_to_target_duration(
+        selected,
+        settings,
+        protected_scene_ids={
+            scene.id for scene in scenes if scene.metadata.get("selection_override") == "include"
+        },
+    )
     return QuickMontagePlan(
         created_at=datetime.now(UTC),
         settings=settings,
@@ -388,10 +405,10 @@ def _timeline_duration(
     clips: list[MontageClip],
     settings: QuickMontageSettings,
 ) -> float:
-    transition = _transition_duration(settings)
-    if clips:
-        transition = min(transition, min(clip.duration_seconds for clip in clips) * 0.45)
-    overlaps = max(0, len(clips) - 1) * transition
+    transition = _bounded_transition_duration(clips, settings)
+    overlaps = sum(
+        transition for clip in clips[1:] if _resolved_clip_transition(clip, settings) is not None
+    )
     return max(0.0, sum(clip.duration_seconds for clip in clips) - overlaps)
 
 
@@ -401,19 +418,44 @@ def _transition_duration(settings: QuickMontageSettings) -> float:
     return settings.transition_duration_seconds
 
 
+def _bounded_transition_duration(
+    clips: list[MontageClip],
+    settings: QuickMontageSettings,
+) -> float:
+    transition = _transition_duration(settings)
+    if not clips:
+        return transition
+    return min(transition, min(clip.duration_seconds for clip in clips) * 0.45)
+
+
+def _resolved_clip_transition(
+    clip: MontageClip,
+    settings: QuickMontageSettings,
+) -> str | None:
+    if settings.transition == "none" or settings.transition_duration_seconds <= 0:
+        return None
+    if settings.transition == "cinematic":
+        return "fade" if clip.transition == "fade" else None
+    if settings.transition in {"fade", "wipeleft", "slideright"}:
+        return settings.transition
+    return None
+
+
 def _clip_starts(
     clips: list[MontageClip],
     settings: QuickMontageSettings,
 ) -> list[float]:
-    transition = _transition_duration(settings)
-    if clips:
-        transition = min(transition, min(clip.duration_seconds for clip in clips) * 0.45)
+    transition = _bounded_transition_duration(clips, settings)
     starts: list[float] = []
     elapsed = 0.0
     for index, clip in enumerate(clips):
         starts.append(elapsed)
         if index < len(clips) - 1:
-            elapsed += clip.duration_seconds - transition
+            next_clip = clips[index + 1]
+            overlap = (
+                transition if _resolved_clip_transition(next_clip, settings) is not None else 0.0
+            )
+            elapsed += clip.duration_seconds - overlap
     return starts
 
 
@@ -586,36 +628,96 @@ def _apply_transition_policy(
     scenes_by_id: dict[UUID, Scene],
     settings: QuickMontageSettings,
 ) -> list[MontageClip]:
-    if settings.transition == "none" or settings.transition_duration_seconds <= 0:
-        return clips
-    explicit = {
-        "fade": "fade",
-        "dissolve": "dissolve",
-        "wipeleft": "wipeleft",
-        "slideright": "slideright",
-        "soft": "dissolve",
-    }
     updated = [clips[0]] if clips else []
     for previous, current in zip(clips, clips[1:], strict=False):
-        transition = explicit.get(settings.transition)
-        if transition is None:
-            previous_scene = (
-                scenes_by_id.get(previous.scene_id) if previous.scene_id is not None else None
-            )
-            current_scene = (
-                scenes_by_id.get(current.scene_id) if current.scene_id is not None else None
-            )
-            previous_event = _event_id(previous_scene) if previous_scene is not None else None
-            current_event = _event_id(current_scene) if current_scene is not None else None
-            transition = (
-                "fade"
-                if previous_event is not None
-                and current_event is not None
-                and previous_event != current_event
-                else "dissolve"
-            )
+        previous_event = _clip_event_id(previous, scenes_by_id)
+        current_event = _clip_event_id(current, scenes_by_id)
+        transition = _transition_for_events(previous_event, current_event, settings) or "cut"
         updated.append(current.model_copy(update={"transition": transition}))
     return updated
+
+
+def _clip_event_id(
+    clip: MontageClip,
+    scenes_by_id: dict[UUID, Scene],
+) -> UUID | None:
+    if clip.event_id is not None:
+        return clip.event_id
+    scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
+    return _event_id(scene) if scene is not None else None
+
+
+def _transition_for_events(
+    previous_event: UUID | None,
+    current_event: UUID | None,
+    settings: QuickMontageSettings,
+) -> str | None:
+    if settings.transition == "none" or settings.transition_duration_seconds <= 0:
+        return None
+    if settings.transition == "cinematic":
+        if (
+            previous_event is not None
+            and current_event is not None
+            and previous_event != current_event
+        ):
+            return "fade"
+        return None
+    if settings.transition in {"fade", "wipeleft", "slideright"}:
+        return settings.transition
+    return None
+
+
+def _planned_boundary_overlap(
+    previous_event: UUID | None,
+    current_event: UUID | None,
+    settings: QuickMontageSettings,
+) -> float:
+    if _transition_for_events(previous_event, current_event, settings) is None:
+        return 0.0
+    return _transition_duration(settings)
+
+
+def _fit_clips_to_target_duration(
+    clips: list[MontageClip],
+    settings: QuickMontageSettings,
+    *,
+    protected_scene_ids: set[UUID] | None = None,
+) -> list[MontageClip]:
+    adjusted = list(clips)
+    protected = protected_scene_ids or set()
+    for index in range(len(adjusted) - 1, -1, -1):
+        excess = _timeline_duration(adjusted, settings) - settings.target_duration_seconds
+        if excess <= 0.05:
+            break
+        transition = _bounded_transition_duration(adjusted, settings)
+        minimum_duration = max(
+            0.5,
+            transition / 0.45 + 0.01 if transition > 0 else 0.5,
+        )
+        reducible = adjusted[index].duration_seconds - minimum_duration
+        if reducible <= 0:
+            continue
+        adjusted[index] = _clip_with_duration(
+            adjusted[index],
+            adjusted[index].duration_seconds - min(excess, reducible),
+        )
+    while (
+        len(adjusted) > 1
+        and _timeline_duration(adjusted, settings) - settings.target_duration_seconds > 0.05
+    ):
+        removable_index = next(
+            (
+                index
+                for index in range(len(adjusted) - 1, -1, -1)
+                if adjusted[index].scene_id not in protected
+            ),
+            None,
+        )
+        if removable_index is None:
+            break
+        adjusted.pop(removable_index)
+        adjusted = _apply_transition_policy(adjusted, {}, settings)
+    return adjusted
 
 
 def _story_candidates(
@@ -694,13 +796,18 @@ def _estimated_candidate_duration(
 ) -> float:
     if not scenes:
         return 0.0
-    transition = _transition_duration(settings)
     duration = 0.0
+    previous_event: UUID | None = None
     for index, scene in enumerate(scenes):
         available = max(0.0, scene.end_seconds - scene.start_seconds)
         duration += _directed_clip_duration(scene, available, settings)
         if index > 0:
-            duration -= transition
+            duration -= _planned_boundary_overlap(
+                previous_event,
+                _event_id(scene),
+                settings,
+            )
+        previous_event = _event_id(scene)
     return max(0.0, duration)
 
 

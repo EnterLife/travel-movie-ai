@@ -388,7 +388,7 @@ class TimelineItem(BaseModel):
     scene_id: UUID
     source_start_seconds: float
     source_end_seconds: float
-    transition: str | None = None
+    transition: Literal["cut", "fade", "wipeleft", "slideright"] | None = None
     title: str | None = None
 
 
@@ -430,13 +430,11 @@ class QuickMontageSettings(BaseModel):
     max_scene_duration_seconds: float = Field(default=12, ge=2, le=120)
     transition: Literal[
         "none",
-        "soft",
         "cinematic",
         "fade",
-        "dissolve",
         "wipeleft",
         "slideright",
-    ] = "none"
+    ] = "cinematic"
     transition_duration_seconds: float = Field(default=0.5, ge=0, le=3)
     music_enabled: bool = True
     music_mode: Literal["auto", "generated", "library", "manual", "none"] = "auto"
@@ -469,7 +467,7 @@ class MontageClip(BaseModel):
     semantic_score: float | None = Field(default=None, ge=0, le=100)
     event_id: UUID | None = None
     selection_reason: str = ""
-    transition: Literal["fade", "dissolve", "wipeleft", "slideright"] | None = None
+    transition: Literal["cut", "fade", "wipeleft", "slideright"] | None = None
 
 
 class QuickMontagePlan(BaseModel):

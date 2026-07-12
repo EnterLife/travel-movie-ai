@@ -1025,9 +1025,45 @@ def test_semantic_timeline_directs_cinematic_transitions_by_event(tmp_path: Path
     transitions = {clip.scene_id: clip.transition for clip in plan.clips}
 
     assert transitions[opening.id] is None
-    assert transitions[journey.id] == "dissolve"
+    assert transitions[journey.id] == "cut"
     assert transitions[finale.id] == "fade"
-    assert round(plan.total_duration_seconds, 3) == 14.2
+    assert round(plan.total_duration_seconds, 3) == 14.6
+
+
+def test_transition_budget_never_drops_user_required_scene(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    automatic_assets = [
+        _asset(tmp_path / f"auto-{index}.mp4", created_at, duration=3) for index in range(5)
+    ]
+    required_asset = _asset(tmp_path / "z-required.mp4", created_at, duration=10)
+    automatic_scenes = [
+        _scene(asset, uuid4(), 95 - index, duration=3)
+        for index, asset in enumerate(automatic_assets)
+    ]
+    required_scene = _scene(
+        required_asset,
+        uuid4(),
+        90,
+        duration=10,
+        selection_override="include",
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="fade",
+        transition_duration_seconds=3,
+    )
+
+    plan = build_semantic_montage_plan(
+        [*automatic_assets, required_asset],
+        [*automatic_scenes, required_scene],
+        settings,
+    )
+
+    selected_ids = {clip.scene_id for clip in plan.clips}
+    assert required_scene.id in selected_ids
+    assert plan.total_duration_seconds <= settings.target_duration_seconds + 0.05
 
 
 def test_music_directing_moves_cut_to_strong_beat_without_changing_total_duration(

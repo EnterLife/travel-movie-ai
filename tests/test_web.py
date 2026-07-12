@@ -195,7 +195,13 @@ def test_web_interface_serves_page_and_health() -> None:
     assert 'id="music-engine"' in page.text
     assert 'id="music-model"' in page.text
     assert 'id="transition"' in page.text
-    assert "Cinematic · event-aware" in page.text
+    assert (
+        '<option value="cinematic" selected>Cuts + fade to black · event-aware</option>'
+        in page.text
+    )
+    assert '<option value="fade">Fade through black</option>' in page.text
+    assert "Soft dissolve" not in page.text
+    assert 'value="soft"' not in page.text
     assert 'id="preserve-chronology"' in page.text
     assert 'id="speech-analysis" type="checkbox" checked' in page.text
     assert 'id="music-volume" type="range" min="0" max="100" value="100"' in page.text
@@ -412,7 +418,7 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
                 "settings": {
                     "target_duration_seconds": 12,
                     "semantic_analysis": True,
-                    "transition": "dissolve",
+                    "transition": "cinematic",
                 },
             },
         )
@@ -441,6 +447,34 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert job["logs"][-1]["message"] == "Film ready."
     assert download.status_code == 200
     assert download.content == b"fake mp4"
+
+
+@pytest.mark.parametrize("transition", ["dissolve", "soft"])
+def test_web_movie_request_rejects_prohibited_transition(
+    tmp_path: Path,
+    transition: str,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(FakeMovieService()),
+        )
+    ) as client:
+        response = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "settings": {"transition": transition},
+            },
+        )
+
+    assert response.status_code == 422
+    assert any(
+        error["loc"] == ["body", "settings", "transition"] for error in response.json()["detail"]
+    )
 
 
 def test_web_movie_download_rejects_output_outside_workspace(tmp_path: Path) -> None:

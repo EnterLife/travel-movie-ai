@@ -220,6 +220,45 @@ def test_montage_quality_report_flags_unsynced_music_cuts(tmp_path: Path) -> Non
     assert "unsynced_music_cuts" in {issue.code for issue in report.issues}
 
 
+def test_montage_quality_report_accounts_for_transition_overlaps_in_music_sync(
+    tmp_path: Path,
+) -> None:
+    settings = QuickMontageSettings(
+        target_duration_seconds=11,
+        transition="fade",
+        transition_duration_seconds=0.5,
+    )
+    clips = [
+        MontageClip(
+            asset_id=uuid4(),
+            source_path=tmp_path / f"clip-{index}.mp4",
+            relative_path=Path(f"clip-{index}.mp4"),
+            media_type=MediaType.VIDEO,
+            duration_seconds=4,
+            selection_reason="vision 80",
+        )
+        for index in range(3)
+    ]
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=clips,
+        total_duration_seconds=11,
+        music_plan=MusicPlan(
+            mode="generated",
+            duration_seconds=11,
+            beat_grid=[
+                MusicBeat(time_seconds=3.5, beat_index=4, bar_index=1, strength=0.9),
+                MusicBeat(time_seconds=7.0, beat_index=8, bar_index=2, strength=0.9),
+            ],
+        ),
+    )
+
+    report = build_montage_quality_report(plan, [])
+
+    assert "unsynced_music_cuts" not in {issue.code for issue in report.issues}
+
+
 def test_montage_quality_report_flags_speech_boundary_cuts(tmp_path: Path) -> None:
     asset_id = uuid4()
     scene = Scene(

@@ -25,7 +25,7 @@ from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 from travelmovieai.story.music import NeuralMusicGenerator, build_music_plan
 
-ARTIFACT_SCHEMA_VERSION = "music-selection-v1"
+ARTIFACT_SCHEMA_VERSION = "music-selection-v2"
 
 
 class MusicSelectionStage(Stage):

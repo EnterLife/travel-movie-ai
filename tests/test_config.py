@@ -1,10 +1,11 @@
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from travelmovieai.core.config import Settings, load_settings
 from travelmovieai.core.exceptions import ConfigurationError
-from travelmovieai.domain.models import QuickMontageSettings
+from travelmovieai.domain.models import QuickMontageSettings, TimelineItem
 
 
 def test_load_settings_reads_toml(tmp_path: Path) -> None:
@@ -69,16 +70,39 @@ def test_quick_montage_settings_validate_analysis_quality_mode() -> None:
         QuickMontageSettings(analysis_quality_mode="extreme")
 
 
-def test_quick_montage_settings_default_to_cut_only_transitions() -> None:
+def test_quick_montage_settings_default_to_safe_cinematic_transitions() -> None:
     settings = QuickMontageSettings()
 
-    assert settings.transition == "none"
+    assert settings.transition == "cinematic"
 
 
-def test_quick_montage_settings_preserve_requested_transition() -> None:
-    settings = QuickMontageSettings(transition="dissolve")
+@pytest.mark.parametrize("transition", ["cinematic", "fade", "wipeleft", "slideright"])
+def test_quick_montage_settings_preserve_safe_requested_transition(
+    transition: str,
+) -> None:
+    settings = QuickMontageSettings.model_validate({"transition": transition})
 
-    assert settings.transition == "dissolve"
+    assert settings.transition == transition
+
+
+@pytest.mark.parametrize("transition", ["dissolve", "soft"])
+def test_quick_montage_settings_reject_pixel_dissolve_presets(transition: str) -> None:
+    with pytest.raises(ValueError, match="transition"):
+        QuickMontageSettings.model_validate({"transition": transition})
+
+
+def test_timeline_item_accepts_fade_and_rejects_pixel_dissolve() -> None:
+    payload = {
+        "scene_id": uuid4(),
+        "source_start_seconds": 0,
+        "source_end_seconds": 1,
+    }
+
+    item = TimelineItem.model_validate({**payload, "transition": "fade"})
+
+    assert item.transition == "fade"
+    with pytest.raises(ValueError, match="transition"):
+        TimelineItem.model_validate({**payload, "transition": "dissolve"})
 
 
 def test_quick_montage_settings_use_full_music_volume_by_default() -> None:

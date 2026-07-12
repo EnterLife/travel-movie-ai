@@ -97,8 +97,36 @@ def test_quick_montage_plan_orders_assets_and_respects_duration(tmp_path: Path) 
     assert plan.clips[-1].duration_seconds == 2
 
 
-def test_renderer_builds_requested_transition_graph(tmp_path: Path) -> None:
-    settings = QuickMontageSettings(transition="fade", transition_duration_seconds=0.4)
+def test_quick_montage_caps_target_with_long_transition_and_short_clips(
+    tmp_path: Path,
+) -> None:
+    assets = [
+        _asset(
+            tmp_path / f"photo-{index}.jpg",
+            created_at=datetime(2026, 1, index + 1, tzinfo=UTC),
+            media_type=MediaType.PHOTO,
+        )
+        for index in range(10)
+    ]
+    settings = QuickMontageSettings(
+        target_duration_seconds=5,
+        photo_duration_seconds=3,
+        transition="fade",
+        transition_duration_seconds=3,
+    )
+
+    plan = build_quick_montage_plan(assets, settings)
+
+    assert len(plan.clips) == 2
+    assert plan.total_duration_seconds == pytest.approx(4.65)
+    assert plan.total_duration_seconds <= settings.target_duration_seconds + 0.05
+
+
+def test_renderer_builds_explicitly_requested_transition_graph(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(
+        transition="slideright",
+        transition_duration_seconds=0.4,
+    )
     plan = QuickMontagePlan(
         created_at=datetime.now(UTC),
         settings=settings,
@@ -116,7 +144,7 @@ def test_renderer_builds_requested_transition_graph(tmp_path: Path) -> None:
                 relative_path=Path("second.mp4"),
                 media_type=MediaType.VIDEO,
                 duration_seconds=3,
-                transition="slideright",
+                transition="fade",
             ),
         ],
         total_duration_seconds=5.6,
@@ -131,8 +159,86 @@ def test_renderer_builds_requested_transition_graph(tmp_path: Path) -> None:
     assert "concat=n=2:v=1:a=0" not in graph
 
 
-def test_renderer_maps_soft_transition_preset_to_dissolve(tmp_path: Path) -> None:
-    settings = QuickMontageSettings(transition="soft", transition_duration_seconds=0.35)
+def test_renderer_builds_cut_and_fade_graph_for_cinematic_policy(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(
+        transition="cinematic",
+        transition_duration_seconds=0.4,
+    )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "first.mp4",
+                relative_path=Path("first.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+            ),
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "second.mp4",
+                relative_path=Path("second.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+                transition="cut",
+            ),
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "third.mp4",
+                relative_path=Path("third.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+                transition="fade",
+            ),
+        ],
+        total_duration_seconds=8.6,
+    )
+
+    graph = _build_filter_graph(plan, transition_duration=_transition_duration(plan))
+
+    assert "concat=n=2:v=1:a=0" in graph
+    assert "concat=n=2:v=0:a=1" in graph
+    assert "xfade=transition=fadeblack:duration=0.400:offset=5.600" in graph
+    assert "acrossfade=d=0.400" in graph
+    assert "transition=dissolve" not in graph
+
+
+def test_renderer_requires_explicit_opt_in_for_stylized_transition(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(transition="cinematic")
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "first.mp4",
+                relative_path=Path("first.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+            ),
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=tmp_path / "second.mp4",
+                relative_path=Path("second.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=3,
+                transition="wipeleft",
+            ),
+        ],
+        total_duration_seconds=6,
+    )
+
+    transition_duration = _transition_duration(plan)
+    graph = _build_filter_graph(plan, transition_duration=transition_duration)
+
+    assert transition_duration == 0
+    assert "xfade=" not in graph
+    assert "concat=n=2:v=1:a=0" in graph
+
+
+def test_renderer_never_emits_unvalidated_pixel_dissolve(tmp_path: Path) -> None:
+    settings = QuickMontageSettings.model_construct(transition="dissolve")
     plan = QuickMontagePlan(
         created_at=datetime.now(UTC),
         settings=settings,
@@ -152,13 +258,15 @@ def test_renderer_maps_soft_transition_preset_to_dissolve(tmp_path: Path) -> Non
                 duration_seconds=3,
             ),
         ],
-        total_duration_seconds=5.65,
+        total_duration_seconds=6,
     )
 
-    graph = _build_filter_graph(plan, transition_duration=_transition_duration(plan))
+    transition_duration = _transition_duration(plan)
+    graph = _build_filter_graph(plan, transition_duration=transition_duration)
 
-    assert "xfade=transition=dissolve:duration=0.350:offset=2.650" in graph
-    assert "concat=n=2:v=1:a=0" not in graph
+    assert transition_duration == 0
+    assert "transition=dissolve" not in graph
+    assert "concat=n=2:v=1:a=0" in graph
 
 
 def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> None:
@@ -282,9 +390,7 @@ def test_renderer_strips_source_metadata_from_outputs(tmp_path: Path) -> None:
     payload = json.loads(probe.stdout)
     format_tags = payload.get("format", {}).get("tags", {})
     stream_tags = [
-        stream.get("tags", {})
-        for stream in payload.get("streams", [])
-        if isinstance(stream, dict)
+        stream.get("tags", {}) for stream in payload.get("streams", []) if isinstance(stream, dict)
     ]
 
     assert "location" not in format_tags
@@ -411,7 +517,7 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
         fps=24,
         semantic_analysis=True,
         music_mode="library",
-        transition="dissolve",
+        transition="cinematic",
         transition_duration_seconds=0.25,
     )
 
@@ -449,6 +555,7 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     assert timeline["selection_mode"] == "semantic"
     assert timeline["music_path"].endswith("cinematic theme.wav")
     assert all(clip["semantic_score"] is not None for clip in timeline["clips"])
+    assert {clip["transition"] for clip in timeline["clips"]} <= {None, "cut", "fade"}
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")

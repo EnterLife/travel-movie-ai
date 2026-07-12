@@ -471,7 +471,13 @@ def _concat_path(path: Path) -> str:
 
 
 def _transition_duration(plan: QuickMontagePlan) -> float:
-    if plan.settings.transition == "none" or len(plan.clips) < 2:
+    if (
+        plan.settings.transition == "none"
+        or len(plan.clips) < 2
+        or not any(
+            _selected_transition(plan, index) is not None for index in range(1, len(plan.clips))
+        )
+    ):
         return 0.0
     return min(
         plan.settings.transition_duration_seconds,
@@ -495,8 +501,8 @@ def _build_filter_graph(
     for index in range(1, clip_count):
         next_video = f"v{index}mix"
         next_audio = f"a{index}mix"
-        if transition_duration > 0:
-            transition = plan.clips[index].transition or _default_transition(plan)
+        transition = _selected_transition(plan, index)
+        if transition_duration > 0 and transition is not None:
             offset = max(0.0, elapsed - transition_duration)
             lines.append(
                 f"[{video_label}][v{index}base]"
@@ -553,11 +559,17 @@ def _build_filter_graph(
     return ";\n".join(lines)
 
 
-def _default_transition(plan: QuickMontagePlan) -> str:
-    return {
-        "soft": "dissolve",
-        "cinematic": "fade",
-    }.get(plan.settings.transition, plan.settings.transition)
+def _selected_transition(plan: QuickMontagePlan, clip_index: int) -> str | None:
+    settings = plan.settings
+    if settings.transition == "none" or settings.transition_duration_seconds <= 0:
+        return None
+    if settings.transition == "cinematic":
+        return "fadeblack" if plan.clips[clip_index].transition == "fade" else None
+    if settings.transition == "fade":
+        return "fadeblack"
+    if settings.transition in {"wipeleft", "slideright"}:
+        return settings.transition
+    return None
 
 
 def _replace_video_encoder(command: list[str], encoder_args: list[str]) -> list[str]:

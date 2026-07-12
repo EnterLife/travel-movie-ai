@@ -23,6 +23,7 @@ from travelmovieai.domain.models import (
     SceneDetectionReport,
     SceneSelectionReport,
     SpeechAnalysisReport,
+    StageCacheManifest,
     VisionAnalysisReport,
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
@@ -537,6 +538,42 @@ def test_timeline_builder_stage_reuses_cached_artifacts(
     assert (context.artifacts_dir / "quick_timeline.cache.json").is_file()
 
 
+def test_timeline_builder_stage_rejects_pre_safe_transition_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "legacy-transition.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    TimelineBuilderStage().run(context)
+    cache_path = context.artifacts_dir / "quick_timeline.cache.json"
+    manifest = StageCacheManifest.model_validate_json(cache_path.read_text(encoding="utf-8"))
+    timeline_builder.write_json_atomic(
+        cache_path,
+        manifest.model_copy(update={"artifact_schema_version": "timeline-builder-v3"}),
+    )
+    build = timeline_builder.build_semantic_montage_plan
+    calls = 0
+
+    def counting_build(
+        assets: list[MediaAsset],
+        scenes: list[Scene],
+        settings: QuickMontageSettings,
+        music_plan: MusicPlan | None = None,
+    ) -> QuickMontagePlan:
+        nonlocal calls
+        calls += 1
+        return build(assets, scenes, settings, music_plan)
+
+    monkeypatch.setattr(timeline_builder, "build_semantic_montage_plan", counting_build)
+
+    result = TimelineBuilderStage().run(context)
+
+    assert result.skipped is False
+    assert calls == 1
+
+
 def test_timeline_builder_stage_invalidates_cache_when_scenes_change(
     tmp_path: Path,
     monkeypatch,
@@ -672,7 +709,7 @@ def test_music_selection_stage_rejects_missing_generated_soundtrack(
     assert not (context.artifacts_dir / "music_plan.json").exists()
 
 
-def test_music_selection_stage_reuses_cached_artifacts(
+def test_music_selection_stage_reuses_current_cache_and_rejects_legacy_schema(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -697,7 +734,17 @@ def test_music_selection_stage_reuses_cached_artifacts(
     assert first.skipped is False
     assert second.skipped is True
     assert calls == 1
-    assert (context.artifacts_dir / "music_plan.cache.json").is_file()
+    cache_path = context.artifacts_dir / "music_plan.cache.json"
+    manifest = StageCacheManifest.model_validate_json(cache_path.read_text(encoding="utf-8"))
+    music_selection.write_json_atomic(
+        cache_path,
+        manifest.model_copy(update={"artifact_schema_version": "music-selection-v1"}),
+    )
+
+    legacy = MusicSelectionStage().run(context)
+
+    assert legacy.skipped is False
+    assert calls == 2
 
 
 def test_music_selection_stage_skips_without_assets_or_scenes(tmp_path: Path) -> None:
@@ -977,7 +1024,7 @@ def test_rendering_stage_rerenders_after_renderer_behavior_change(
             "workers": context.settings.workers,
             "batch_size": context.settings.batch_size,
             "render_timeout_seconds": context.settings.render_timeout_seconds,
-            "renderer_behavior": "cut-only-v1",
+            "renderer_behavior": "transitions-quality-gate-v4",
             "schema": rendering.ARTIFACT_SCHEMA_VERSION,
         }
     )

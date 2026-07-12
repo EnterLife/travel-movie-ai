@@ -420,7 +420,12 @@ def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:
                 )
             )
         if clip.semantic_score is not None and clip.semantic_score >= highlight_threshold:
-            visible_duration = max(0.2, clip.duration_seconds - transition)
+            end_overlap = (
+                transition
+                if index < len(plan.clips) - 1 and _clip_uses_transition(plan, index + 1)
+                else 0.0
+            )
+            visible_duration = max(0.2, clip.duration_seconds - end_overlap)
             accent_time = start + min(visible_duration * 0.48, visible_duration - 0.1)
             accents.append(
                 MusicAccent(
@@ -957,7 +962,23 @@ def _edge_accents(duration_seconds: float) -> list[MusicAccent]:
 
 
 def _effective_transition(plan: QuickMontagePlan) -> float:
-    return 0.0
+    if len(plan.clips) < 2 or not any(
+        _clip_uses_transition(plan, index) for index in range(1, len(plan.clips))
+    ):
+        return 0.0
+    return min(
+        plan.settings.transition_duration_seconds,
+        min(clip.duration_seconds for clip in plan.clips) * 0.45,
+    )
+
+
+def _clip_uses_transition(plan: QuickMontagePlan, clip_index: int) -> bool:
+    settings = plan.settings
+    if settings.transition == "none" or settings.transition_duration_seconds <= 0:
+        return False
+    if settings.transition == "cinematic":
+        return plan.clips[clip_index].transition == "fade"
+    return settings.transition in {"fade", "wipeleft", "slideright"}
 
 
 def _percentile(values: list[float], fraction: float) -> float:
@@ -1006,7 +1027,8 @@ def _clip_starts(plan: QuickMontagePlan) -> list[float]:
     for index, clip in enumerate(plan.clips):
         starts.append(elapsed)
         if index < len(plan.clips) - 1:
-            elapsed += clip.duration_seconds - transition
+            overlap = transition if _clip_uses_transition(plan, index + 1) else 0.0
+            elapsed += clip.duration_seconds - overlap
     return starts
 
 

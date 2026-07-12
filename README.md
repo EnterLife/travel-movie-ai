@@ -24,7 +24,7 @@ Implemented:
 - explainable scene selection with `Auto`, `Include`, and `Exclude` overrides;
 - energy-aware semantic clip pacing with speech and people protection;
 - generated, library, manual, or disabled music modes with ducking;
-- cut-only editing, quick preview, and final H.264/AAC rendering;
+- safe cut-and-fade editing, quick preview, and final H.264/AAC rendering;
 - NVIDIA NVENC acceleration with CPU fallback;
 - automatic CPU, RAM, GPU, and worker-profile detection;
 - global progress, per-stage progress bars, ETA, and live processing logs;
@@ -322,12 +322,13 @@ audio context, and the reason is written into the selection explanation. The
 optimizer avoids adjacent repeats across location, activity, shot type, shot
 scale, camera motion, movement direction, lighting, tags, and large brightness
 jumps. `semantic_diversity_weight` controls how strongly these repeat penalties
-affect selection. Direct cuts remain the default. When a transition is selected,
-the timeline uses real video `xfade` and audio `acrossfade` overlaps and accounts
-for those overlaps in its duration and beat-sync calculations. The `cinematic`
-preset uses a stronger fade between events and a dissolve inside an event. One
-strong but repetitive location or activity should not fill the whole movie when
-varied alternatives are available.
+affect selection. The safe `cinematic` default uses hard cuts within an event
+and a fade through black between events. Pixel dissolve is prohibited. Wipes,
+slides, and other non-default transitions are used only when explicitly selected.
+When a transition is selected, the timeline uses real video `xfade` and audio
+`acrossfade` overlaps and accounts for those overlaps in its duration and
+beat-sync calculations. One strong but repetitive location or activity should
+not fill the whole movie when varied alternatives are available.
 
 ### Generated Lounge Music
 
@@ -592,9 +593,10 @@ consumers, tests, and this README together.
 
 Vision and Whisper providers are released at the end of their stages before the
 next GPU-heavy operation. AI Auto music uses the same ACE-Step adapter in the
-web use case and canonical Music Selection stage. The web defaults to speech
-analysis and cinematic event-aware transitions, while still allowing direct
-cuts and chronology-first ordering.
+web use case and canonical Music Selection stage. Editing defaults to safe,
+event-aware hard cuts inside events and fades through black between events; the
+web also defaults to speech analysis. Pixel dissolve is not supported;
+additional transition styles must be selected explicitly.
 
 The final render is validated with FFprobe and a typed montage quality report.
 Critical quality issues fail the job instead of returning `Film ready`; the web

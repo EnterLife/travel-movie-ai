@@ -26,7 +26,7 @@ from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
 ARTIFACT_SCHEMA_VERSION = "rendering-v3"
-RENDERER_BEHAVIOR_VERSION = "transitions-quality-gate-v4"
+RENDERER_BEHAVIOR_VERSION = "safe-transitions-quality-gate-v5"
 
 
 class RenderingStage(Stage):

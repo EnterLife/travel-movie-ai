@@ -797,13 +797,35 @@ def _beat_alignment_ratio(plan: QuickMontagePlan) -> float | None:
 
 
 def _clip_starts(plan: QuickMontagePlan) -> list[float]:
+    transition = _effective_transition_duration(plan)
     starts: list[float] = []
     elapsed = 0.0
     for index, clip in enumerate(plan.clips):
         starts.append(elapsed)
         if index < len(plan.clips) - 1:
-            elapsed += clip.duration_seconds
+            overlap = transition if _clip_uses_transition(plan, index + 1) else 0.0
+            elapsed += clip.duration_seconds - overlap
     return starts
+
+
+def _effective_transition_duration(plan: QuickMontagePlan) -> float:
+    if len(plan.clips) < 2 or not any(
+        _clip_uses_transition(plan, index) for index in range(1, len(plan.clips))
+    ):
+        return 0.0
+    return min(
+        plan.settings.transition_duration_seconds,
+        min(clip.duration_seconds for clip in plan.clips) * 0.45,
+    )
+
+
+def _clip_uses_transition(plan: QuickMontagePlan, clip_index: int) -> bool:
+    settings = plan.settings
+    if settings.transition == "none" or settings.transition_duration_seconds <= 0:
+        return False
+    if settings.transition == "cinematic":
+        return plan.clips[clip_index].transition == "fade"
+    return settings.transition in {"fade", "wipeleft", "slideright"}
 
 
 def _event_id(scene: Scene) -> str | None:

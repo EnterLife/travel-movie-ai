@@ -468,7 +468,7 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 | `allow_model_download` | Download missing models on first use | `true` |
 | `whisper_model` | `medium` or `large-v3` | `medium` |
 | `device` | `auto`, `cuda`, `directml`, or `cpu` | `auto` |
-| `resource_mode` | Automatic load profile: `safe`, `balanced`, or `performance` | `balanced` |
+| `resource_mode` | Load profile: `auto`, `safe`, `balanced`, or `performance` | `auto` |
 | `gpu_memory_reserve_mb` | VRAM kept free for Windows, the driver, and stage handoff | `1536` |
 | `max_gpu_processes` | Maximum simultaneous NVDEC/NVENC FFmpeg processes | `2` |
 | `music_library` | Local soundtrack directory | `assets/music` |
@@ -491,9 +491,13 @@ At each montage start, TravelMovieAI detects:
 - FFmpeg NVENC support.
 
 The resulting profile separately selects concurrency for frame extraction,
-OpenCV analysis, Vision AI batching, and segment rendering. Defaults are
-balanced: `device = "auto"`, `workers = 0`, and `batch_size = 0` use CPU cores,
-CUDA-capable local AI, and NVENC final encoding while preserving a VRAM reserve.
+OpenCV analysis, Vision AI batching, and segment rendering. The defaults
+`device = "auto"`, `resource_mode = "auto"`, `workers = 0`, and
+`batch_size = 0` select CUDA and NVENC when they are usable. With at least 16 GB
+RAM and sufficient free VRAM, `auto` resolves to `performance` and uses the
+maximum bounded CPU concurrency. Low RAM or heavily occupied VRAM resolves to a
+more conservative profile. The web form selects NVIDIA NVENC by default when it
+is available, otherwise CPU/libx264.
 Vision batching is based on free VRAM at job start rather than total installed
 VRAM. Explicit `workers` and `batch_size` overrides remain available, but the
 NVENC process count still respects `max_gpu_processes`.

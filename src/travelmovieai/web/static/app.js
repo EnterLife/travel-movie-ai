@@ -200,9 +200,7 @@ async function loadCapabilities() {
     updateAutomaticWorkspace();
     renderCapabilities(capabilities);
     populateModels(capabilities);
-    if (!capabilities.cuda.ffmpeg_nvenc && renderDevice.value === "cuda") {
-      renderDevice.value = "auto";
-    }
+    renderDevice.value = capabilities.recommended_render_device || "cpu";
   } catch {
     capabilityList.replaceChildren(capabilityChip("AI/GPU: unavailable", false));
     visionModel.replaceChildren(new Option("Models unavailable", ""));
@@ -249,6 +247,10 @@ function renderCapabilities(capabilities) {
     ),
     capabilityChip(
       `${capabilities.resources.logical_cores} CPU · frames ${capabilities.resources.frame_workers}x · render ${capabilities.resources.render_workers}x`,
+      true,
+    ),
+    capabilityChip(
+      `Default · ${capabilities.resources.device.toUpperCase()} / ${capabilities.recommended_resource_mode}`,
       true,
     ),
   );

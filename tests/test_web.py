@@ -326,6 +326,22 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     assert payload["resources"]["nvenc"] is True
     assert payload["resources"]["render_workers"] >= 1
     assert payload["resources"]["model_batch_size"] == 2
+    assert payload["resources"]["resource_mode"] == "performance"
+    assert payload["recommended_render_device"] == "cuda"
+    assert payload["recommended_resource_mode"] == "performance"
+
+
+def test_web_capabilities_recommends_cpu_when_nvenc_is_unavailable() -> None:
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            cuda_checker=lambda ffmpeg: CudaStatus(available=False),
+        )
+    ) as client:
+        payload = client.get("/api/capabilities").json()
+
+    assert payload["recommended_render_device"] == "cpu"
+    assert payload["resources"]["device"] == "cpu"
 
 
 def test_web_scan_job_reaches_completed_result(tmp_path: Path) -> None:

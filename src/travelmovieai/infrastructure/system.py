@@ -8,6 +8,7 @@ import sys
 from ctypes import Structure, byref, c_ulong, c_ulonglong, sizeof
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,8 @@ class ResourceProfile:
     ffmpeg_threads: int
     model_batch_size: int
     summary: str
+    device: Literal["cuda", "cpu"] = "cpu"
+    resource_mode: Literal["safe", "balanced", "performance"] = "balanced"
 
 
 _MANUAL_RENDER_WORKER_CAP = 6
@@ -166,20 +169,26 @@ def detect_resource_profile(
     cuda: CudaStatus | None = None,
     worker_override: int = 0,
     batch_override: int = 0,
-    resource_mode: str = "balanced",
+    resource_mode: str = "auto",
     gpu_memory_reserve_mb: int = 1536,
     max_gpu_processes: int = 2,
 ) -> ResourceProfile:
     logical_cores = max(1, os.cpu_count() or 1)
     memory_mb = _system_memory_mb()
     resolved_cuda = cuda or check_cuda(ffmpeg_binary)
-    effective_gpu_processes = 1 if resource_mode == "safe" else max(1, max_gpu_processes)
+    resolved_mode = _resolve_resource_mode(resource_mode, resolved_cuda, memory_mb)
+    resolved_device: Literal["cuda", "cpu"] = (
+        "cuda" if resolved_cuda.torch_cuda else "cpu"
+    )
+    effective_gpu_processes = (
+        1 if resolved_mode == "safe" else max(1, max_gpu_processes)
+    )
 
     memory_factor = {
         "safe": 0.65,
         "balanced": 0.85,
         "performance": 1.0,
-    }.get(resource_mode, 0.85)
+    }[resolved_mode]
     if memory_mb is not None:
         if memory_mb < 8 * 1024:
             memory_factor *= 0.45
@@ -250,7 +259,7 @@ def detect_resource_profile(
         f"{logical_cores} CPU threads, {memory_label}, {accelerator}; "
         f"frames {frame_workers}x, analysis {analysis_workers}x, "
         f"vision batch {model_batch_size}, render {render_workers}x/{ffmpeg_threads} threads"
-        f"{gpu_memory_label}, mode {resource_mode}"
+        f"{gpu_memory_label}, device {resolved_device}, mode {resolved_mode}"
     )
     return ResourceProfile(
         logical_cores=logical_cores,
@@ -264,7 +273,37 @@ def detect_resource_profile(
         ffmpeg_threads=ffmpeg_threads,
         model_batch_size=model_batch_size,
         summary=summary,
+        device=resolved_device,
+        resource_mode=resolved_mode,
     )
+
+
+def _resolve_resource_mode(
+    configured_mode: str,
+    cuda: CudaStatus,
+    memory_mb: int | None,
+) -> Literal["safe", "balanced", "performance"]:
+    if configured_mode == "safe":
+        return "safe"
+    if configured_mode == "balanced":
+        return "balanced"
+    if configured_mode == "performance":
+        return "performance"
+    if memory_mb is not None and memory_mb < 8 * 1024:
+        return "safe"
+    if memory_mb is not None and memory_mb < 16 * 1024:
+        return "balanced"
+    if not cuda.available:
+        return "performance"
+    total_gpu_memory = cuda.memory_mb or 0
+    free_gpu_memory = cuda.free_memory_mb
+    if (
+        free_gpu_memory is not None
+        and total_gpu_memory > 0
+        and (free_gpu_memory < 3 * 1024 or free_gpu_memory / total_gpu_memory < 0.4)
+    ):
+        return "balanced"
+    return "performance"
 
 
 def _system_memory_mb() -> int | None:

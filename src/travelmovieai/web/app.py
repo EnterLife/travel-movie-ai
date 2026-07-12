@@ -171,6 +171,8 @@ def create_app(
             scenedetect_available=find_spec("scenedetect") is not None,
             music_modes=["auto", "generated", "library", "manual", "none"],
             render_devices=["auto", "cuda", "cpu"],
+            recommended_render_device=("cuda" if cuda_status.ffmpeg_nvenc else "cpu"),
+            recommended_resource_mode=resources.resource_mode,
         )
 
     @app.post("/api/dialogs/directory", response_model=DirectoryDialogResponse)

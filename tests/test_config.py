@@ -39,7 +39,7 @@ def test_load_settings_uses_defaults_when_file_is_missing(tmp_path: Path) -> Non
 
     assert settings == Settings()
     assert settings.device == "auto"
-    assert settings.resource_mode == "balanced"
+    assert settings.resource_mode == "auto"
     assert settings.gpu_memory_reserve_mb == 1536
     assert settings.max_gpu_processes == 2
     assert settings.workers == 0

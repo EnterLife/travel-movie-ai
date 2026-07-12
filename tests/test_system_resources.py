@@ -12,15 +12,18 @@ def test_resource_profile_uses_available_cpu_memory_and_gpu(monkeypatch) -> None
             gpu_name="RTX Test",
             memory_mb=12 * 1024,
             ffmpeg_nvenc=True,
+            torch_cuda=True,
         )
     )
 
-    assert profile.frame_workers == 14
-    assert profile.analysis_workers == 14
+    assert profile.frame_workers == 16
+    assert profile.analysis_workers == 16
     assert profile.render_workers == 2
     assert profile.ffmpeg_threads == 8
     assert profile.model_batch_size == 4
     assert profile.nvenc is True
+    assert profile.device == "cuda"
+    assert profile.resource_mode == "performance"
     assert "NVENC" in profile.summary
 
 
@@ -87,7 +90,7 @@ def test_high_memory_workstation_uses_more_analysis_workers(monkeypatch) -> None
     )
 
     assert profile.frame_workers == 24
-    assert profile.analysis_workers == 27
+    assert profile.analysis_workers == 32
     assert profile.model_batch_size == 8
 
 
@@ -106,6 +109,7 @@ def test_resource_profile_uses_free_vram_and_keeps_driver_reserve(monkeypatch) -
     )
 
     assert profile.model_batch_size == 1
+    assert profile.resource_mode == "balanced"
     assert "1964 MB usable VRAM" in profile.summary
 
 
@@ -124,3 +128,26 @@ def test_safe_resource_mode_reduces_automatic_cpu_pressure(monkeypatch) -> None:
     assert safe.analysis_workers < balanced.analysis_workers
     assert safe.render_workers == 1
     assert safe.model_batch_size == 4
+
+
+def test_auto_resource_mode_uses_cpu_performance_without_gpu(monkeypatch) -> None:
+    monkeypatch.setattr(system.os, "cpu_count", lambda: 12)
+    monkeypatch.setattr(system, "_system_memory_mb", lambda: 32 * 1024)
+
+    profile = detect_resource_profile(cuda=CudaStatus(available=False))
+
+    assert profile.device == "cpu"
+    assert profile.resource_mode == "performance"
+    assert profile.analysis_workers == 12
+
+
+def test_auto_resource_mode_protects_low_memory_system(monkeypatch) -> None:
+    monkeypatch.setattr(system.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(system, "_system_memory_mb", lambda: 6 * 1024)
+
+    profile = detect_resource_profile(
+        cuda=CudaStatus(available=True, memory_mb=4 * 1024, ffmpeg_nvenc=True),
+    )
+
+    assert profile.resource_mode == "safe"
+    assert profile.render_workers == 1

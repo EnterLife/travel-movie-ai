@@ -112,6 +112,8 @@ class ResourceProfileResponse(BaseModel):
     ffmpeg_threads: int
     model_batch_size: int
     summary: str
+    device: str = "cpu"
+    resource_mode: str = "balanced"
 
 
 class CapabilitiesResponse(BaseModel):
@@ -124,6 +126,8 @@ class CapabilitiesResponse(BaseModel):
     scenedetect_available: bool
     music_modes: list[str]
     render_devices: list[str]
+    recommended_render_device: Literal["cuda", "cpu"]
+    recommended_resource_mode: Literal["safe", "balanced", "performance"]
 
 
 class MovieRequest(BaseModel):

@@ -188,7 +188,11 @@ def test_frame_sampling_stage_bounds_parallel_nvdec_decode(
     monkeypatch.setattr(
         frame_sampling,
         "detect_resource_profile",
-        lambda *args, **kwargs: type("Profile", (), {"nvenc": True, "frame_workers": 8})(),
+        lambda *args, **kwargs: type(
+            "Profile",
+            (),
+            {"nvenc": True, "frame_workers": 8, "resource_mode": "performance"},
+        )(),
     )
 
     result = FrameSamplingStage().run(context)

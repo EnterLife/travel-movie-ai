@@ -39,7 +39,7 @@ class Settings(BaseModel):
     )
     whisper_model: Literal["medium", "large-v3"] = "medium"
     device: Literal["auto", "cuda", "directml", "cpu"] = "auto"
-    resource_mode: Literal["safe", "balanced", "performance"] = "balanced"
+    resource_mode: Literal["auto", "safe", "balanced", "performance"] = "auto"
     gpu_memory_reserve_mb: int = Field(default=1536, ge=512, le=16384)
     max_gpu_processes: int = Field(default=2, ge=1, le=8)
     batch_size: int = Field(default=0, ge=0)

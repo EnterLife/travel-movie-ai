@@ -275,7 +275,7 @@ class TravelMovieService:
             min(
                 resources.frame_workers,
                 1
-                if self.settings.resource_mode == "safe"
+                if resources.resource_mode == "safe"
                 else self.settings.max_gpu_processes,
             )
             if use_cuda_decode

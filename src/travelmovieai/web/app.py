@@ -116,6 +116,9 @@ def create_app(
             cuda=cuda_status,
             worker_override=resolved_settings.workers,
             batch_override=resolved_settings.batch_size,
+            resource_mode=resolved_settings.resource_mode,
+            gpu_memory_reserve_mb=resolved_settings.gpu_memory_reserve_mb,
+            max_gpu_processes=resolved_settings.max_gpu_processes,
         )
         local_model = resolve_local_vision_model(
             resolved_settings.vision_model,

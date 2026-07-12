@@ -382,7 +382,9 @@ def _timeline_duration(
 
 
 def _transition_duration(settings: QuickMontageSettings) -> float:
-    return 0.0
+    if settings.transition == "none":
+        return 0.0
+    return settings.transition_duration_seconds
 
 
 def _clip_starts(
@@ -570,7 +572,36 @@ def _apply_transition_policy(
     scenes_by_id: dict[UUID, Scene],
     settings: QuickMontageSettings,
 ) -> list[MontageClip]:
-    return clips
+    if settings.transition == "none" or settings.transition_duration_seconds <= 0:
+        return clips
+    explicit = {
+        "fade": "fade",
+        "dissolve": "dissolve",
+        "wipeleft": "wipeleft",
+        "slideright": "slideright",
+        "soft": "dissolve",
+    }
+    updated = [clips[0]] if clips else []
+    for previous, current in zip(clips, clips[1:], strict=False):
+        transition = explicit.get(settings.transition)
+        if transition is None:
+            previous_scene = (
+                scenes_by_id.get(previous.scene_id) if previous.scene_id is not None else None
+            )
+            current_scene = (
+                scenes_by_id.get(current.scene_id) if current.scene_id is not None else None
+            )
+            previous_event = _event_id(previous_scene) if previous_scene is not None else None
+            current_event = _event_id(current_scene) if current_scene is not None else None
+            transition = (
+                "fade"
+                if previous_event is not None
+                and current_event is not None
+                and previous_event != current_event
+                else "dissolve"
+            )
+        updated.append(current.model_copy(update={"transition": transition}))
+    return updated
 
 
 def _story_candidates(

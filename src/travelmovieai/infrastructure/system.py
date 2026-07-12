@@ -26,6 +26,7 @@ class CudaStatus:
     gpu_name: str | None = None
     driver_version: str | None = None
     memory_mb: int | None = None
+    free_memory_mb: int | None = None
     compute_capability: str | None = None
     ffmpeg_nvenc: bool = False
     opencv_cuda_devices: int = 0
@@ -149,6 +150,7 @@ def check_cuda(ffmpeg_binary: str = "ffmpeg") -> CudaStatus:
         gpu_name=gpu.get("name") if gpu else None,
         driver_version=gpu.get("driver") if gpu else None,
         memory_mb=int(gpu["memory"]) if gpu else None,
+        free_memory_mb=int(gpu["free_memory"]) if gpu else None,
         compute_capability=gpu.get("compute") if gpu else None,
         ffmpeg_nvenc=nvenc,
         opencv_cuda_devices=opencv_devices,
@@ -164,21 +166,29 @@ def detect_resource_profile(
     cuda: CudaStatus | None = None,
     worker_override: int = 0,
     batch_override: int = 0,
+    resource_mode: str = "balanced",
+    gpu_memory_reserve_mb: int = 1536,
+    max_gpu_processes: int = 2,
 ) -> ResourceProfile:
     logical_cores = max(1, os.cpu_count() or 1)
     memory_mb = _system_memory_mb()
     resolved_cuda = cuda or check_cuda(ffmpeg_binary)
+    effective_gpu_processes = 1 if resource_mode == "safe" else max(1, max_gpu_processes)
 
-    memory_factor = 1.0
+    memory_factor = {
+        "safe": 0.65,
+        "balanced": 0.85,
+        "performance": 1.0,
+    }.get(resource_mode, 0.85)
     if memory_mb is not None:
         if memory_mb < 8 * 1024:
-            memory_factor = 0.45
+            memory_factor *= 0.45
         elif memory_mb < 16 * 1024:
-            memory_factor = 0.7
+            memory_factor *= 0.7
 
     frame_worker_cap = 24 if memory_mb is not None and memory_mb >= 32 * 1024 else 16
     analysis_worker_cap = 32 if memory_mb is not None and memory_mb >= 32 * 1024 else 16
-    automatic_frames = max(1, min(frame_worker_cap, round(logical_cores * 0.85 * memory_factor)))
+    automatic_frames = max(1, min(frame_worker_cap, round(logical_cores * memory_factor)))
     automatic_analysis = max(
         1,
         min(analysis_worker_cap, round(logical_cores * memory_factor)),
@@ -186,7 +196,7 @@ def detect_resource_profile(
     automatic_render = max(
         1,
         min(
-            4 if resolved_cuda.ffmpeg_nvenc else 3,
+            min(effective_gpu_processes, 3) if resolved_cuda.ffmpeg_nvenc else 3,
             round(logical_cores / 4 * memory_factor),
         ),
     )
@@ -194,25 +204,39 @@ def detect_resource_profile(
     analysis_workers = (
         min(worker_override, analysis_worker_cap) if worker_override else automatic_analysis
     )
+    manual_render_cap = (
+        min(_MANUAL_RENDER_WORKER_CAP, effective_gpu_processes)
+        if resolved_cuda.ffmpeg_nvenc
+        else _MANUAL_RENDER_WORKER_CAP
+    )
     render_workers = (
-        min(worker_override, _MANUAL_RENDER_WORKER_CAP)
-        if worker_override
-        else automatic_render
+        min(worker_override, manual_render_cap) if worker_override else automatic_render
     )
     render_workers = max(1, render_workers)
     ffmpeg_threads = max(1, logical_cores // render_workers)
 
     gpu_memory = resolved_cuda.memory_mb or 0
-    automatic_batch = (
-        16
-        if gpu_memory >= 16 * 1024
-        else 8
-        if gpu_memory >= 10 * 1024
-        else 2
-        if gpu_memory >= 6 * 1024
-        else max(1, min(4, logical_cores // 4))
+    usable_gpu_memory = max(
+        0,
+        (resolved_cuda.free_memory_mb if resolved_cuda.free_memory_mb is not None else gpu_memory)
+        - gpu_memory_reserve_mb,
     )
-    model_batch_size = batch_override or automatic_batch
+    automatic_batch = (
+        8
+        if usable_gpu_memory >= 14 * 1024
+        else 4
+        if usable_gpu_memory >= 8 * 1024
+        else 2
+        if usable_gpu_memory >= 4 * 1024
+        else max(1, min(4, logical_cores // 4))
+        if not resolved_cuda.available
+        else 1
+    )
+    model_batch_size = (
+        min(batch_override, automatic_batch)
+        if batch_override and resolved_cuda.available
+        else batch_override or automatic_batch
+    )
     accelerator = (
         f"{resolved_cuda.gpu_name}, NVENC"
         if resolved_cuda.available and resolved_cuda.ffmpeg_nvenc
@@ -221,10 +245,12 @@ def detect_resource_profile(
         else "CPU"
     )
     memory_label = f"{memory_mb // 1024} GB RAM" if memory_mb else "RAM unknown"
+    gpu_memory_label = f", {usable_gpu_memory} MB usable VRAM" if resolved_cuda.available else ""
     summary = (
         f"{logical_cores} CPU threads, {memory_label}, {accelerator}; "
         f"frames {frame_workers}x, analysis {analysis_workers}x, "
         f"vision batch {model_batch_size}, render {render_workers}x/{ffmpeg_threads} threads"
+        f"{gpu_memory_label}, mode {resource_mode}"
     )
     return ResourceProfile(
         logical_cores=logical_cores,
@@ -264,7 +290,7 @@ def _nvidia_gpu() -> dict[str, str] | None:
         completed = subprocess.run(
             [
                 executable,
-                "--query-gpu=name,driver_version,memory.total,compute_cap",
+                "--query-gpu=name,driver_version,memory.total,memory.free,compute_cap",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -278,9 +304,15 @@ def _nvidia_gpu() -> dict[str, str] | None:
     if completed.returncode != 0 or not completed.stdout.strip():
         return None
     values = [value.strip() for value in completed.stdout.splitlines()[0].split(",")]
-    if len(values) != 4:
+    if len(values) != 5:
         return None
-    return dict(zip(("name", "driver", "memory", "compute"), values, strict=True))
+    return dict(
+        zip(
+            ("name", "driver", "memory", "free_memory", "compute"),
+            values,
+            strict=True,
+        )
+    )
 
 
 def _ffmpeg_has_nvenc(ffmpeg_binary: str) -> bool:

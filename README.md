@@ -321,11 +321,12 @@ audio context, and the reason is written into the selection explanation. The
 optimizer avoids adjacent repeats across location, activity, shot type, shot
 scale, camera motion, movement direction, lighting, tags, and large brightness
 jumps. `semantic_diversity_weight` controls how strongly these repeat penalties
-affect selection. Semantic
-timeline clips use direct cuts with no visual transition, because most travel
-footage looks cleaner and avoids dissolve artifacts that can resemble
-pixelization. One strong but repetitive location or activity should not fill the
-whole movie when varied alternatives are available.
+affect selection. Direct cuts remain the default. When a transition is selected,
+the timeline uses real video `xfade` and audio `acrossfade` overlaps and accounts
+for those overlaps in its duration and beat-sync calculations. The `cinematic`
+preset uses a stronger fade between events and a dissolve inside an event. One
+strong but repetitive location or activity should not fill the whole movie when
+varied alternatives are available.
 
 ### Generated Lounge Music
 
@@ -467,6 +468,9 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 | `allow_model_download` | Download missing models on first use | `true` |
 | `whisper_model` | `medium` or `large-v3` | `medium` |
 | `device` | `auto`, `cuda`, `directml`, or `cpu` | `auto` |
+| `resource_mode` | Automatic load profile: `safe`, `balanced`, or `performance` | `balanced` |
+| `gpu_memory_reserve_mb` | VRAM kept free for Windows, the driver, and stage handoff | `1536` |
+| `max_gpu_processes` | Maximum simultaneous NVDEC/NVENC FFmpeg processes | `2` |
 | `music_library` | Local soundtrack directory | `assets/music` |
 | `music_model` | Local music model identifier or `auto` | `auto` |
 | `generated_music_filename` | Generated soundtrack filename | `generated_soundtrack.wav` |
@@ -478,42 +482,47 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 
 ## Automatic Hardware Utilization
 
-At the first montage, TravelMovieAI detects:
+At each montage start, TravelMovieAI detects:
 
 - logical CPU count;
 - installed RAM;
-- NVIDIA GPU and VRAM;
+- NVIDIA GPU plus total and currently free VRAM;
 - CUDA availability in PyTorch and OpenCV;
 - FFmpeg NVENC support.
 
 The resulting profile separately selects concurrency for frame extraction,
 OpenCV analysis, Vision AI batching, and segment rendering. Defaults are
-high-throughput: `device = "auto"`, `workers = 0`, and `batch_size = 0` let the
-application use CPU cores, CUDA-capable local AI, and NVENC final encoding when
-available.
+balanced: `device = "auto"`, `workers = 0`, and `batch_size = 0` use CPU cores,
+CUDA-capable local AI, and NVENC final encoding while preserving a VRAM reserve.
+Vision batching is based on free VRAM at job start rather than total installed
+VRAM. Explicit `workers` and `batch_size` overrides remain available, but the
+NVENC process count still respects `max_gpu_processes`.
 
 On a 16-thread CPU with 32 GB RAM and a 6 GB RTX GPU, the automatic profile uses
-many CPU workers for CPU-bound stages, a two-scene Vision batch, and multiple
-parallel render workers. Higher-VRAM GPUs receive larger Vision batches.
+many CPU workers for CPU-bound stages, up to two concurrent NVDEC/NVENC jobs,
+and a Vision batch sized from the remaining safe VRAM. Higher-VRAM GPUs receive
+larger Vision batches only when that memory is actually free.
 
 GPU usage by stage:
 
-- frame sampling: `auto` uses FFmpeg CUDA decode when NVENC is available, but
-  runs that NVDEC path with one FFmpeg decode job at a time to avoid NVIDIA
-  video-scheduler driver crashes seen with many simultaneous CUDA decoders;
-  set `device = "cpu"` to use parallel CPU decoding instead;
+- frame sampling: `auto` uses bounded parallel FFmpeg CUDA decode when NVENC is
+  available; the default limit is two NVDEC jobs, while `safe` mode or
+  `max_gpu_processes = 1` provides serialized GPU decode;
 - quality metrics: OpenCV/Pillow by default, with CUDA analysis serialized if a
   CUDA quality analyzer is active;
 - Vision AI: `auto` uses CUDA through the local provider when PyTorch and the
   selected model can use it, with CPU/offload fallback where needed;
+- Speech AI: Faster Whisper releases its CTranslate2 model immediately after
+  transcription so its VRAM is available to later stages;
 - rendering: `auto` uses NVENC when available and falls back to `libx264` if
   the automatic NVENC render fails.
 
 If Windows records `VIDEO_SCHEDULER_INTERNAL_ERROR` (`0x119`) or repeated
-`nvlddmkm` events during frame preparation, the likely trigger is parallel
-NVDEC/FFmpeg decoding rather than ordinary CPU or GPU load. Current builds keep
-that decode path serial while preserving aggressive CPU workers, Vision AI
-batching, and NVENC rendering.
+`nvlddmkm` events, first set `resource_mode = "safe"`,
+`max_gpu_processes = 1`, and increase `gpu_memory_reserve_mb`. If resets still
+occur with `device = "cpu"`, the likely cause is outside the application (driver,
+overclock/undervolt, temperature, PSU, or hardware stability); software cannot
+guarantee protection from a machine-level reset.
 
 ## Supported Media
 
@@ -799,8 +808,8 @@ The renderer:
 - normalizes resolution, FPS, pixel format, and audio format;
 - creates silent audio for sources without audio;
 - prepares independent segments with bounded parallelism;
-- joins prepared segments with direct cuts and no `xfade`/`acrossfade` visual
-  transition;
+- joins prepared segments with direct cuts by default, or real `xfade` and
+  `acrossfade` overlaps when a transition is requested;
 - adds generated, library, or manual music;
 - ducks music around source audio;
 - uses `h264_nvenc` automatically when available and falls back to `libx264`;
@@ -862,8 +871,10 @@ processed by multiple jobs simultaneously.
 - disable speech analysis when unnecessary;
 - keep `device = "auto"`, `workers = 0`, and `batch_size = 0` so the hardware
   profile can use the available CPU and GPU resources;
-- use `device = "cpu"` only when diagnosing a GPU-driver issue or when parallel
-  CPU frame decoding is preferable to serial NVDEC frame decoding.
+- choose `resource_mode = "performance"` for more CPU pressure, or `safe` when
+  diagnosing instability;
+- use `device = "cpu"` to isolate a GPU-driver issue; use
+  `max_gpu_processes = 1` to retain CUDA with serialized FFmpeg GPU work.
 
 Windows Task Manager often opens the GPU page on the `3D` graph, which does not
 represent AI inference. Change one graph to `CUDA` or `Compute_0`, or verify with:

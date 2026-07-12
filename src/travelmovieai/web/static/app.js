@@ -225,7 +225,7 @@ function renderCapabilities(capabilities) {
     ),
     capabilityChip(
       capabilities.cuda.available
-        ? `${capabilities.cuda.gpu_name} · ${capabilities.cuda.memory_mb} MB`
+        ? `${capabilities.cuda.gpu_name} · ${capabilities.cuda.free_memory_mb ?? "?"} / ${capabilities.cuda.memory_mb} MB free`
         : "NVIDIA GPU not found",
       capabilities.cuda.available,
     ),

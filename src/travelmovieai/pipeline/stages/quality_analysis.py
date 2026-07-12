@@ -56,6 +56,9 @@ class QualityAnalysisStage(Stage):
             context.settings.ffmpeg_binary,
             worker_override=context.settings.workers,
             batch_override=context.settings.batch_size,
+            resource_mode=context.settings.resource_mode,
+            gpu_memory_reserve_mb=context.settings.gpu_memory_reserve_mb,
+            max_gpu_processes=context.settings.max_gpu_processes,
         )
         report = analyze_scene_quality(scenes, workers=resources.analysis_workers)
         repository.synchronize_scenes(report.scenes)

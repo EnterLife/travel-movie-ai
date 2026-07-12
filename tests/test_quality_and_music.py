@@ -115,7 +115,7 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
     assert plan.source_path == output
     assert plan.generated is True
     assert plan.duration_seconds == 8
-    assert plan.arrangement_version == "adaptive-lounge-v5"
+    assert plan.arrangement_version == "adaptive-lounge-v6"
     assert plan.cue_sections
     assert plan.cue_sections[0].bpm == 60
     assert plan.beat_grid
@@ -123,6 +123,24 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
     with wave.open(str(output), "rb") as soundtrack:
         assert soundtrack.getnchannels() == 2
         assert soundtrack.getnframes() / soundtrack.getframerate() == 8
+
+
+def test_music_beat_grid_adds_markers_for_off_grid_scene_accents() -> None:
+    accents = [
+        MusicAccent(
+            time_seconds=5.274,
+            kind="scene_change",
+            strength=0.16,
+            label="Scene change",
+        )
+    ]
+
+    beat_grid = build_music_beat_grid(12, 60, accents)
+
+    marker = min(beat_grid, key=lambda beat: abs(beat.time_seconds - 5.274))
+    assert marker.time_seconds == 5.274
+    assert marker.nearest_accent_kind == "scene_change"
+    assert marker.strength >= 0.68
 
 
 def test_lounge_music_is_melodic_stereo_and_deterministic(tmp_path: Path) -> None:

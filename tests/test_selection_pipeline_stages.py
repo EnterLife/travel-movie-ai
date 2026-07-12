@@ -154,7 +154,7 @@ def test_frame_sampling_stage_reuses_cached_contact_sheets(
     assert (context.artifacts_dir / "frame_sampling.cache.json").is_file()
 
 
-def test_frame_sampling_stage_serializes_nvdec_decode(
+def test_frame_sampling_stage_bounds_parallel_nvdec_decode(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -193,8 +193,8 @@ def test_frame_sampling_stage_serializes_nvdec_decode(
 
     result = FrameSamplingStage().run(context)
 
-    assert captured == {"use_cuda_decode": True, "workers": 1}
-    assert "decode=NVDEC serial" in result.message
+    assert captured == {"use_cuda_decode": True, "workers": 2}
+    assert "decode=NVDEC" in result.message
 
 
 def test_frame_sampling_stage_keeps_cpu_decode_parallel(

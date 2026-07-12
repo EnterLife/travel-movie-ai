@@ -30,7 +30,7 @@ type MusicProfile = Literal["calm", "lounge", "cinematic", "warm", "energetic"]
 type FloatArray = NDArray[np.float64]
 type NeuralGeneratorName = Literal["ace-step", "musicgen"]
 type MusicGeneratorName = Literal["procedural", "ace-step", "musicgen"]
-ARRANGEMENT_VERSION = "adaptive-lounge-v5"
+ARRANGEMENT_VERSION = "adaptive-lounge-v6"
 MusicProgress = Callable[[int, int, str], None]
 
 
@@ -377,7 +377,22 @@ def build_music_beat_grid(
                 nearest_accent_kind=nearest.kind if nearest is not None else None,
             )
         )
-    return grid
+    for accent in accents:
+        if not 0 <= accent.time_seconds <= duration_seconds:
+            continue
+        if any(abs(beat.time_seconds - accent.time_seconds) <= 0.1 for beat in grid):
+            continue
+        beat_index = max(0, round(accent.time_seconds / beat_seconds))
+        grid.append(
+            MusicBeat(
+                time_seconds=round(accent.time_seconds, 3),
+                beat_index=beat_index,
+                bar_index=beat_index // 4,
+                strength=min(1.0, max(0.68, accent.strength + 0.52)),
+                nearest_accent_kind=accent.kind,
+            )
+        )
+    return sorted(grid, key=lambda beat: (beat.time_seconds, beat.beat_index))
 
 
 def build_music_accents(plan: QuickMontagePlan) -> list[MusicAccent]:

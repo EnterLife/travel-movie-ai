@@ -63,17 +63,21 @@ class SpeechAnalysisStage(Stage):
                 message="Speech analysis reused cached transcripts.",
             )
 
-        report = analyze_speech(
-            scenes,
-            assets,
-            FasterWhisperProvider(
-                context.settings.whisper_model,
-                context.settings.device,
-            ),
-            context.settings.ffmpeg_binary,
-            context.cache_dir / "speech",
-            timeout_seconds=context.settings.frame_extraction_timeout_seconds,
+        provider = FasterWhisperProvider(
+            context.settings.whisper_model,
+            context.settings.device,
         )
+        try:
+            report = analyze_speech(
+                scenes,
+                assets,
+                provider,
+                context.settings.ffmpeg_binary,
+                context.cache_dir / "speech",
+                timeout_seconds=context.settings.frame_extraction_timeout_seconds,
+            )
+        finally:
+            provider.release()
         repository.synchronize_scenes(report.scenes)
         write_json_atomic(artifact, report)
         write_stage_cache_manifest(

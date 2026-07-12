@@ -471,7 +471,12 @@ def _concat_path(path: Path) -> str:
 
 
 def _transition_duration(plan: QuickMontagePlan) -> float:
-    return 0.0
+    if plan.settings.transition == "none" or len(plan.clips) < 2:
+        return 0.0
+    return min(
+        plan.settings.transition_duration_seconds,
+        min(clip.duration_seconds for clip in plan.clips) * 0.45,
+    )
 
 
 def _build_filter_graph(
@@ -486,11 +491,27 @@ def _build_filter_graph(
 
     video_label = "v0base"
     audio_label = "a0base"
+    elapsed = plan.clips[0].duration_seconds
     for index in range(1, clip_count):
         next_video = f"v{index}mix"
         next_audio = f"a{index}mix"
-        lines.append(f"[{video_label}][v{index}base]concat=n=2:v=1:a=0[{next_video}]")
-        lines.append(f"[{audio_label}][a{index}base]concat=n=2:v=0:a=1[{next_audio}]")
+        if transition_duration > 0:
+            transition = plan.clips[index].transition or _default_transition(plan)
+            offset = max(0.0, elapsed - transition_duration)
+            lines.append(
+                f"[{video_label}][v{index}base]"
+                f"xfade=transition={transition}:duration={transition_duration:.3f}:"
+                f"offset={offset:.3f}[{next_video}]"
+            )
+            lines.append(
+                f"[{audio_label}][a{index}base]"
+                f"acrossfade=d={transition_duration:.3f}:c1=tri:c2=tri[{next_audio}]"
+            )
+            elapsed += plan.clips[index].duration_seconds - transition_duration
+        else:
+            lines.append(f"[{video_label}][v{index}base]concat=n=2:v=1:a=0[{next_video}]")
+            lines.append(f"[{audio_label}][a{index}base]concat=n=2:v=0:a=1[{next_audio}]")
+            elapsed += plan.clips[index].duration_seconds
         video_label = next_video
         audio_label = next_audio
 
@@ -530,6 +551,13 @@ def _build_filter_graph(
             "alimiter=limit=0.95[aout]"
         )
     return ";\n".join(lines)
+
+
+def _default_transition(plan: QuickMontagePlan) -> str:
+    return {
+        "soft": "dissolve",
+        "cinematic": "fade",
+    }.get(plan.settings.transition, plan.settings.transition)
 
 
 def _replace_video_encoder(command: list[str], encoder_args: list[str]) -> list[str]:

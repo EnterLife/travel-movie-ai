@@ -1,5 +1,6 @@
 """Lazy Faster Whisper provider adapter."""
 
+import gc
 import importlib
 import math
 from pathlib import Path
@@ -57,6 +58,16 @@ class FasterWhisperProvider:
                 if segment.text.strip()
             ],
         )
+
+    def release(self) -> None:
+        """Release CTranslate2 model memory before another GPU-heavy stage."""
+
+        model = self._loaded_model
+        self._loaded_model = None
+        unload = getattr(model, "unload_model", None)
+        if callable(unload):
+            unload()
+        gc.collect()
 
     def _ensure_loaded(self) -> Any:
         if self._loaded_model is not None:

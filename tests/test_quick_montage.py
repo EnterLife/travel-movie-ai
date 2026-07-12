@@ -97,7 +97,7 @@ def test_quick_montage_plan_orders_assets_and_respects_duration(tmp_path: Path) 
     assert plan.clips[-1].duration_seconds == 2
 
 
-def test_renderer_uses_cut_only_graph_even_when_transition_is_requested(tmp_path: Path) -> None:
+def test_renderer_builds_requested_transition_graph(tmp_path: Path) -> None:
     settings = QuickMontageSettings(transition="fade", transition_duration_seconds=0.4)
     plan = QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -125,13 +125,13 @@ def test_renderer_uses_cut_only_graph_even_when_transition_is_requested(tmp_path
     transition_duration = _transition_duration(plan)
     graph = _build_filter_graph(plan, transition_duration=transition_duration)
 
-    assert transition_duration == 0
-    assert "xfade=" not in graph
-    assert "acrossfade=" not in graph
-    assert "concat=n=2:v=1:a=0" in graph
+    assert transition_duration == 0.4
+    assert "xfade=transition=slideright:duration=0.400:offset=2.600" in graph
+    assert "acrossfade=d=0.400" in graph
+    assert "concat=n=2:v=1:a=0" not in graph
 
 
-def test_renderer_ignores_soft_transition_preset(tmp_path: Path) -> None:
+def test_renderer_maps_soft_transition_preset_to_dissolve(tmp_path: Path) -> None:
     settings = QuickMontageSettings(transition="soft", transition_duration_seconds=0.35)
     plan = QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -157,8 +157,8 @@ def test_renderer_ignores_soft_transition_preset(tmp_path: Path) -> None:
 
     graph = _build_filter_graph(plan, transition_duration=_transition_duration(plan))
 
-    assert "xfade=" not in graph
-    assert "concat=n=2:v=1:a=0" in graph
+    assert "xfade=transition=dissolve:duration=0.350:offset=2.650" in graph
+    assert "concat=n=2:v=1:a=0" not in graph
 
 
 def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> None:
@@ -361,7 +361,7 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     music_plan = timeline["music_plan"]
     assert music_plan["generated"] is True
     assert music_plan["duration_seconds"] == pytest.approx(result.duration_seconds)
-    assert music_plan["arrangement_version"] == "adaptive-lounge-v5"
+    assert music_plan["arrangement_version"] == "adaptive-lounge-v6"
     assert music_plan["accents"][0]["kind"] == "intro"
     assert music_plan["accents"][-1]["kind"] == "finale"
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from travelmovieai.domain.enums import (
     ActivityType,
@@ -432,21 +432,6 @@ class QuickMontageSettings(BaseModel):
     music_engine: Literal["auto", "ace-step", "procedural"] = "auto"
     music_model: str | None = Field(default=None, max_length=300)
     preview_mode: bool = False
-
-    @field_validator("transition", mode="before")
-    @classmethod
-    def _force_cut_only_transition(cls, value: object) -> object:
-        if value in {
-            "soft",
-            "cinematic",
-            "fade",
-            "dissolve",
-            "wipeleft",
-            "slideright",
-        }:
-            return "none"
-        return value
-
 
 class MontageClip(BaseModel):
     asset_id: UUID

@@ -944,7 +944,7 @@ def test_story_pacing_uses_energy_and_speech_protection(tmp_path: Path) -> None:
     assert "pacing: speech hold" in reasons[speech.id]
 
 
-def test_semantic_timeline_uses_cut_only_scene_changes(tmp_path: Path) -> None:
+def test_semantic_timeline_directs_cinematic_transitions_by_event(tmp_path: Path) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
     assets = [
         _asset(tmp_path / f"transition-{index}.mp4", created_at, duration=8) for index in range(3)
@@ -990,8 +990,9 @@ def test_semantic_timeline_uses_cut_only_scene_changes(tmp_path: Path) -> None:
     transitions = {clip.scene_id: clip.transition for clip in plan.clips}
 
     assert transitions[opening.id] is None
-    assert transitions[journey.id] is None
-    assert transitions[finale.id] is None
+    assert transitions[journey.id] == "dissolve"
+    assert transitions[finale.id] == "fade"
+    assert round(plan.total_duration_seconds, 3) == 14.2
 
 
 def test_music_directing_moves_cut_to_strong_beat_without_changing_total_duration(

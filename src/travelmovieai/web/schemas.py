@@ -91,6 +91,7 @@ class CudaStatusResponse(BaseModel):
     gpu_name: str | None = None
     driver_version: str | None = None
     memory_mb: int | None = None
+    free_memory_mb: int | None = None
     compute_capability: str | None = None
     ffmpeg_nvenc: bool = False
     opencv_cuda_devices: int = 0

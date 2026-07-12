@@ -15,6 +15,12 @@ model_cache = "models"
 allow_model_download = true
 device = "auto"
 
+# Resource safety controls. "balanced" keeps the machine busy while reserving
+# GPU memory for the driver, desktop compositor, and the next pipeline stage.
+resource_mode = "balanced" # safe | balanced | performance
+gpu_memory_reserve_mb = 1536
+max_gpu_processes = 2
+
 music_library = "assets/music"
 music_model = "auto"
 generated_music_filename = "generated_soundtrack.wav"

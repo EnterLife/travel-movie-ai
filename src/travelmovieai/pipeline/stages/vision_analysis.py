@@ -43,6 +43,9 @@ class VisionAnalysisStage(Stage):
             context.settings.ffmpeg_binary,
             worker_override=context.settings.workers,
             batch_override=context.settings.batch_size,
+            resource_mode=context.settings.resource_mode,
+            gpu_memory_reserve_mb=context.settings.gpu_memory_reserve_mb,
+            max_gpu_processes=context.settings.max_gpu_processes,
         )
         input_fingerprint = artifact_fingerprint(_vision_inputs(scenes))
         config_fingerprint = artifact_fingerprint(

@@ -39,6 +39,9 @@ def test_load_settings_uses_defaults_when_file_is_missing(tmp_path: Path) -> Non
 
     assert settings == Settings()
     assert settings.device == "auto"
+    assert settings.resource_mode == "balanced"
+    assert settings.gpu_memory_reserve_mb == 1536
+    assert settings.max_gpu_processes == 2
     assert settings.workers == 0
     assert settings.batch_size == 0
 
@@ -49,6 +52,13 @@ def test_load_settings_rejects_unknown_keys(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="remote_api_key"):
         load_settings(config_path)
+
+
+def test_settings_reject_unsafe_gpu_resource_limits() -> None:
+    with pytest.raises(ValueError, match="gpu_memory_reserve_mb"):
+        Settings(gpu_memory_reserve_mb=128)
+    with pytest.raises(ValueError, match="max_gpu_processes"):
+        Settings(max_gpu_processes=0)
 
 
 def test_quick_montage_settings_validate_analysis_quality_mode() -> None:
@@ -65,10 +75,10 @@ def test_quick_montage_settings_default_to_cut_only_transitions() -> None:
     assert settings.transition == "none"
 
 
-def test_quick_montage_settings_normalize_legacy_transitions_to_cuts() -> None:
+def test_quick_montage_settings_preserve_requested_transition() -> None:
     settings = QuickMontageSettings(transition="dissolve")
 
-    assert settings.transition == "none"
+    assert settings.transition == "dissolve"
 
 
 def test_quick_montage_settings_use_full_music_volume_by_default() -> None:

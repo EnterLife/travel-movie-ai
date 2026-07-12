@@ -78,12 +78,15 @@ class TravelMovieService:
         self._music_generator_factory = music_generator_factory
         self._resource_profile: ResourceProfile | None = None
 
-    def get_resource_profile(self) -> ResourceProfile:
-        if self._resource_profile is None:
+    def get_resource_profile(self, *, refresh: bool = False) -> ResourceProfile:
+        if self._resource_profile is None or refresh:
             self._resource_profile = detect_resource_profile(
                 self.settings.ffmpeg_binary,
                 worker_override=self.settings.workers,
                 batch_override=self.settings.batch_size,
+                resource_mode=self.settings.resource_mode,
+                gpu_memory_reserve_mb=self.settings.gpu_memory_reserve_mb,
+                max_gpu_processes=self.settings.max_gpu_processes,
             )
         return self._resource_profile
 
@@ -152,7 +155,7 @@ class TravelMovieService:
         progress: Callable[[int, int, str], None] | None = None,
     ) -> QuickMontageResult:
         settings = _effective_montage_settings(settings)
-        resources = self.get_resource_profile()
+        resources = self.get_resource_profile(refresh=True)
         tracker = _ProgressTracker(progress)
         tracker.emit(0, f"Resource profile: {resources.summary}")
         context = self._context(input_path=input_path, workspace=workspace)
@@ -268,7 +271,16 @@ class TravelMovieService:
 
         assets_by_id = {asset.id: asset for asset in report.assets}
         use_cuda_decode = resources.nvenc and self.settings.device in {"auto", "cuda"}
-        frame_workers = 1 if use_cuda_decode else resources.frame_workers
+        frame_workers = (
+            min(
+                resources.frame_workers,
+                1
+                if self.settings.resource_mode == "safe"
+                else self.settings.max_gpu_processes,
+            )
+            if use_cuda_decode
+            else resources.frame_workers
+        )
         extractor = RepresentativeFrameExtractor(
             self.settings.ffmpeg_binary,
             self.settings.ffprobe_binary,
@@ -280,7 +292,7 @@ class TravelMovieService:
             12,
             f"Scenes found: {len(scene_report.scenes)}. "
             f"Extracting frames with {frame_workers} worker(s), "
-            f"decode={'NVDEC serial' if use_cuda_decode else 'CPU'}",
+            f"decode={'NVDEC' if use_cuda_decode else 'CPU'}",
         )
         prepared_scenes = _extract_scene_frames(
             scene_report.scenes,
@@ -348,18 +360,22 @@ class TravelMovieService:
         speech_scenes = vision_report.scenes
         if settings.speech_analysis:
             tracker.emit(70, "Whisper: transcribing speech and important lines")
-            speech_report = analyze_speech(
-                vision_report.scenes,
-                report.assets,
-                FasterWhisperProvider(
-                    self.settings.whisper_model,
-                    self.settings.device,
-                ),
-                self.settings.ffmpeg_binary,
-                context.cache_dir / "speech",
-                timeout_seconds=self.settings.frame_extraction_timeout_seconds,
-                progress=tracker.range(70, 74),
+            whisper_provider = FasterWhisperProvider(
+                self.settings.whisper_model,
+                self.settings.device,
             )
+            try:
+                speech_report = analyze_speech(
+                    vision_report.scenes,
+                    report.assets,
+                    whisper_provider,
+                    self.settings.ffmpeg_binary,
+                    context.cache_dir / "speech",
+                    timeout_seconds=self.settings.frame_extraction_timeout_seconds,
+                    progress=tracker.range(70, 74),
+                )
+            finally:
+                whisper_provider.release()
             speech_scenes = speech_report.scenes
             write_json_atomic(
                 context.artifacts_dir / "speech_analysis.json",

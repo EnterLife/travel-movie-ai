@@ -9,6 +9,7 @@ from travelmovieai.analysis.speech import analyze_speech
 from travelmovieai.core.exceptions import PipelineStageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MediaAsset, Scene, SpeechSegment, SpeechTranscript
+from travelmovieai.infrastructure.whisper import FasterWhisperProvider
 
 
 class FakeSpeechProvider:
@@ -34,6 +35,22 @@ class FakeSpeechProvider:
                 )
             ],
         )
+
+
+def test_whisper_provider_releases_loaded_model() -> None:
+    released: list[bool] = []
+
+    class LoadedModel:
+        def unload_model(self) -> None:
+            released.append(True)
+
+    provider = FasterWhisperProvider("medium")
+    provider._loaded_model = LoadedModel()
+
+    provider.release()
+
+    assert released == [True]
+    assert provider._loaded_model is None
 
 
 def test_speech_analysis_transcribes_and_reuses_cache(

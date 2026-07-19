@@ -143,13 +143,20 @@ def _scene_with_understanding(
     provider: VisionProvider,
 ) -> Scene:
     understanding = _apply_measured_quality(understanding, scene.quality_score)
+    base_metadata = {
+        key: value
+        for key, value in scene.metadata.items()
+        if key not in {"focus_point", "focus_source"}
+    }
     metadata = {
-        **scene.metadata,
+        **base_metadata,
         "vision_cache_key": cache_key,
         "detailed_description": understanding.detailed_description,
         "location_type": understanding.location_type.value,
         "activity": understanding.activity.value,
         "emotion": understanding.emotion.value,
+        "shot_scale": understanding.shot_scale,
+        "camera_motion": understanding.camera_motion,
         "people_count": understanding.people_count,
         "people_groups": [group.value for group in understanding.people_groups],
         "landmarks": [landmark.model_dump(mode="json") for landmark in understanding.landmarks],
@@ -161,6 +168,12 @@ def _scene_with_understanding(
         "vision_model": provider.model,
         "prompt_version": PROMPT_VERSION,
     }
+    if understanding.focus_x is not None and understanding.focus_y is not None:
+        metadata["focus_point"] = {
+            "x": understanding.focus_x,
+            "y": understanding.focus_y,
+        }
+        metadata["focus_source"] = understanding.focus_source
     return scene.model_copy(
         update={
             "caption": understanding.caption,

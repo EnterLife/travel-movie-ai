@@ -6,7 +6,13 @@ import pytest
 
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.config import Settings
-from travelmovieai.domain.enums import ActivityType, LocationType, MediaType, PipelineStage
+from travelmovieai.domain.enums import (
+    ActivityType,
+    LocationType,
+    MediaType,
+    PipelineStage,
+    StageStatus,
+)
 from travelmovieai.domain.models import (
     AudioAnalysisReport,
     AudioSceneAnalysis,
@@ -39,6 +45,7 @@ from travelmovieai.pipeline.stages import (
     vision_analysis,
 )
 from travelmovieai.pipeline.stages.audio_analysis import AudioAnalysisStage
+from travelmovieai.pipeline.stages.duplicate_detection import DuplicateDetectionStage
 from travelmovieai.pipeline.stages.frame_sampling import FrameSamplingStage
 from travelmovieai.pipeline.stages.music_selection import MusicSelectionStage
 from travelmovieai.pipeline.stages.narration import NarrationStage
@@ -156,6 +163,8 @@ def test_frame_sampling_stage_reuses_cached_contact_sheets(
 
     assert first.skipped is False
     assert second.skipped is True
+    assert first.status is StageStatus.COMPLETED
+    assert second.status is StageStatus.CACHED
     assert calls == 1
     assert (context.artifacts_dir / "frame_sampling.cache.json").is_file()
 
@@ -182,7 +191,10 @@ def test_frame_sampling_stage_bounds_parallel_nvdec_decode(
         extractor: object,
         frames_dir: Path,
         workers: int,
+        *,
+        progress: object | None = None,
     ) -> tuple[list[Scene], int, int]:
+        del progress
         captured["workers"] = workers
         frame_path = frames_dir / "cuda-source.png"
         frame_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,7 +241,10 @@ def test_frame_sampling_stage_keeps_cpu_decode_parallel(
         extractor: object,
         frames_dir: Path,
         workers: int,
+        *,
+        progress: object | None = None,
     ) -> tuple[list[Scene], int, int]:
+        del progress
         captured["workers"] = workers
         frame_path = frames_dir / "cpu-source.png"
         frame_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,8 +280,11 @@ def test_quality_analysis_stage_reuses_cached_metrics(
     def fake_analyze(
         scenes: list[Scene],
         *,
+        analyzer: object | None = None,
         workers: int = 1,
+        progress: object | None = None,
     ) -> QualityAnalysisReport:
+        del analyzer, progress
         nonlocal calls
         calls += 1
         assert workers == 3
@@ -296,6 +314,8 @@ def test_quality_analysis_stage_reuses_cached_metrics(
 
     assert first.skipped is False
     assert second.skipped is True
+    assert first.status is StageStatus.COMPLETED
+    assert second.status is StageStatus.CACHED
     assert calls == 1
     assert (context.artifacts_dir / "quality_analysis.cache.json").is_file()
 
@@ -376,10 +396,20 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
             )
         ]
     )
-    second = VisionAnalysisStage().run(context)
+    context_with_larger_pool = ProjectContext(
+        input_path=context.input_path,
+        workspace=context.workspace,
+        settings=context.settings.model_copy(update={"vision_model_pool_size": 2}),
+        output_path=context.output_path,
+        style=context.style,
+        montage_settings=context.montage_settings,
+    )
+    second = VisionAnalysisStage().run(context_with_larger_pool)
 
     assert first.skipped is False
     assert second.skipped is True
+    assert first.status is StageStatus.COMPLETED
+    assert second.status is StageStatus.CACHED
     assert calls == 1
     assert releases == 1
     assert repository.list_scenes()[0].transcript == "Later speech result"
@@ -406,7 +436,9 @@ def test_speech_analysis_stage_reuses_cached_transcripts(
         audio_dir: Path,
         *,
         timeout_seconds: float = 120,
+        progress: object | None = None,
     ) -> SpeechAnalysisReport:
+        del assets, provider, ffmpeg_binary, audio_dir, progress
         nonlocal calls
         calls += 1
         assert timeout_seconds == context.settings.frame_extraction_timeout_seconds
@@ -434,6 +466,8 @@ def test_speech_analysis_stage_reuses_cached_transcripts(
 
     assert first.skipped is False
     assert second.skipped is True
+    assert first.status is StageStatus.COMPLETED
+    assert second.status is StageStatus.CACHED
     assert calls == 1
     assert (context.artifacts_dir / "speech_analysis.cache.json").is_file()
 
@@ -452,6 +486,26 @@ def test_speech_analysis_stage_respects_disabled_montage_setting(
         ),
     )
     context.prepare()
+    asset = _asset(tmp_path / "speech-source.mp4").model_copy(
+        update={"probe_metadata": {"streams": [{"codec_type": "audio"}]}}
+    )
+    scene = _scene(asset, score=80, start=0).model_copy(
+        update={
+            "transcript": "stale transcript",
+            "metadata": {
+                "speech_cache_key": "stale",
+                "speech_provider": "stale",
+                "speech_model": "stale",
+                "speech_language": "en",
+                "speech_confidence": 0.9,
+                "speech_segments": [],
+                "unrelated": "preserved",
+            },
+        }
+    )
+    _seed_project(context, [asset], [scene])
+    for name in ("speech_analysis.json", "speech_analysis.cache.json"):
+        (context.artifacts_dir / name).write_text("stale", encoding="utf-8")
 
     def fail_analyze(*args: object, **kwargs: object) -> SpeechAnalysisReport:
         raise AssertionError("speech analysis should be skipped")
@@ -459,10 +513,16 @@ def test_speech_analysis_stage_respects_disabled_montage_setting(
     monkeypatch.setattr(speech_analysis, "analyze_speech", fail_analyze)
 
     result = SpeechAnalysisStage().run(context)
+    stored = MediaAssetRepository(context.database_path).list_scenes()[0]
 
     assert result.stage is PipelineStage.SPEECH_ANALYSIS
     assert result.skipped is True
+    assert result.status is StageStatus.DISABLED
     assert "disabled" in result.message
+    assert stored.transcript is None
+    assert stored.metadata == {"unrelated": "preserved"}
+    assert not (context.artifacts_dir / "speech_analysis.json").exists()
+    assert not (context.artifacts_dir / "speech_analysis.cache.json").exists()
 
 
 def test_audio_analysis_stage_reuses_cached_scene_audio_metadata(
@@ -483,7 +543,9 @@ def test_audio_analysis_stage_reuses_cached_scene_audio_metadata(
         ffmpeg_binary: str,
         *,
         timeout_seconds: float = 120,
+        progress: object | None = None,
     ) -> AudioAnalysisReport:
+        del assets, ffmpeg_binary, progress
         nonlocal calls
         calls += 1
         assert timeout_seconds == context.settings.frame_extraction_timeout_seconds
@@ -526,8 +588,177 @@ def test_audio_analysis_stage_reuses_cached_scene_audio_metadata(
 
     assert first.skipped is False
     assert second.skipped is True
+    assert first.status is StageStatus.COMPLETED
+    assert second.status is StageStatus.CACHED
     assert calls == 1
     assert (context.artifacts_dir / "audio_analysis.cache.json").is_file()
+
+
+def test_quality_analysis_disabled_clears_only_owned_scene_state(tmp_path: Path) -> None:
+    context = ProjectContext(
+        input_path=tmp_path / "media",
+        workspace=tmp_path / "workspace",
+        settings=Settings(),
+        montage_settings=QuickMontageSettings(
+            semantic_analysis=True,
+            quality_analysis=False,
+        ),
+    )
+    context.prepare()
+    asset = _asset(tmp_path / "quality-source.mp4")
+    scene = _scene(asset, score=83, start=0).model_copy(
+        update={
+            "metadata": {
+                "quality_metrics": {"quality_score": 83},
+                "technical_rejection_reasons": ["blur"],
+                "unrelated": "preserved",
+            }
+        }
+    )
+    _seed_project(context, [asset], [scene])
+    for name in ("quality_analysis.json", "quality_analysis.cache.json"):
+        (context.artifacts_dir / name).write_text("stale", encoding="utf-8")
+
+    result = QualityAnalysisStage().run(context)
+    stored = MediaAssetRepository(context.database_path).list_scenes()[0]
+
+    assert result.status is StageStatus.DISABLED
+    assert stored.quality_score is None
+    assert stored.metadata == {"unrelated": "preserved"}
+    assert not (context.artifacts_dir / "quality_analysis.json").exists()
+    assert not (context.artifacts_dir / "quality_analysis.cache.json").exists()
+
+
+def test_quality_analysis_no_frames_clears_stale_owned_scene_state(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "quality-source.mp4")
+    scene = _scene(asset, score=83, start=0).model_copy(
+        update={
+            "keyframe_path": None,
+            "metadata": {
+                "quality_metrics": {"quality_score": 83},
+                "technical_rejection_reasons": ["blur"],
+                "unrelated": "preserved",
+            },
+        }
+    )
+    _seed_project(context, [asset], [scene])
+    (context.artifacts_dir / "quality_analysis.json").write_text("stale", encoding="utf-8")
+
+    result = QualityAnalysisStage().run(context)
+    stored = MediaAssetRepository(context.database_path).list_scenes()[0]
+
+    assert result.status is StageStatus.NO_INPUT
+    assert stored.quality_score is None
+    assert stored.metadata == {"unrelated": "preserved"}
+    assert not (context.artifacts_dir / "quality_analysis.json").exists()
+
+
+def test_audio_analysis_disabled_preserves_non_owned_candidate_windows(tmp_path: Path) -> None:
+    context = ProjectContext(
+        input_path=tmp_path / "media",
+        workspace=tmp_path / "workspace",
+        settings=Settings(),
+        montage_settings=QuickMontageSettings(
+            semantic_analysis=True,
+            audio_analysis=False,
+        ),
+    )
+    context.prepare()
+    asset = _asset(tmp_path / "audio-source.mp4")
+    scene = _scene(asset, score=80, start=0).model_copy(
+        update={
+            "metadata": {
+                "audio_analysis": {"primary_label": "speech"},
+                "audio_context": ["speech"],
+                "audio_features": {"speech_likelihood": 0.9},
+                "candidate_windows": [
+                    {"source": "audio_analysis", "start_ratio": 0.1},
+                    {"source": "manual", "start_ratio": 0.4},
+                ],
+                "unrelated": "preserved",
+            }
+        }
+    )
+    _seed_project(context, [asset], [scene])
+
+    result = AudioAnalysisStage().run(context)
+    stored = MediaAssetRepository(context.database_path).list_scenes()[0]
+
+    assert result.status is StageStatus.DISABLED
+    assert stored.metadata == {
+        "candidate_windows": [{"source": "manual", "start_ratio": 0.4}],
+        "unrelated": "preserved",
+    }
+
+
+def test_duplicate_detection_disabled_clears_owned_scene_state(tmp_path: Path) -> None:
+    context = ProjectContext(
+        input_path=tmp_path / "media",
+        workspace=tmp_path / "workspace",
+        settings=Settings(),
+        montage_settings=QuickMontageSettings(
+            semantic_analysis=True,
+            duplicate_detection=False,
+        ),
+    )
+    context.prepare()
+    asset = _asset(tmp_path / "duplicate-source.mp4")
+    scene = _scene(asset, score=80, start=0).model_copy(
+        update={
+            "metadata": {
+                "perceptual_hash": "0123456789abcdef",
+                "duplicate_of": None,
+                "duplicate_similarity": 1.0,
+                "duplicate_status": "keeper",
+                "unrelated": "preserved",
+            }
+        }
+    )
+    _seed_project(context, [asset], [scene])
+
+    result = DuplicateDetectionStage().run(context)
+    stored = MediaAssetRepository(context.database_path).list_scenes()[0]
+
+    assert result.status is StageStatus.DISABLED
+    assert stored.metadata == {"unrelated": "preserved"}
+
+
+@pytest.mark.parametrize(
+    ("stage", "artifact_names"),
+    [
+        (
+            QualityAnalysisStage(),
+            ("quality_analysis.json", "quality_analysis.cache.json"),
+        ),
+        (
+            SpeechAnalysisStage(),
+            ("speech_analysis.json", "speech_analysis.cache.json"),
+        ),
+        (
+            AudioAnalysisStage(),
+            ("audio_analysis.json", "audio_analysis.cache.json"),
+        ),
+        (
+            DuplicateDetectionStage(),
+            ("duplicates.json", "duplicates.cache.json"),
+        ),
+    ],
+)
+def test_optional_analysis_no_input_removes_stale_artifacts(
+    tmp_path: Path,
+    stage: object,
+    artifact_names: tuple[str, str],
+) -> None:
+    context = _context(tmp_path)
+    for name in artifact_names:
+        (context.artifacts_dir / name).write_text("stale", encoding="utf-8")
+
+    result = stage.run(context)
+
+    assert result.status is StageStatus.NO_INPUT
+    assert result.skipped is True
+    assert all(not (context.artifacts_dir / name).exists() for name in artifact_names)
 
 
 def test_timeline_builder_stage_reuses_cached_artifacts(
@@ -858,6 +1089,30 @@ def test_timeline_builder_stage_embeds_existing_music_plan(tmp_path: Path) -> No
     assert plan.music_plan == music_plan
 
 
+def test_timeline_builder_invalidates_cache_when_music_file_is_replaced(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "music-revision.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    soundtrack = context.artifacts_dir / "replaceable-theme.wav"
+    soundtrack.write_bytes(b"first soundtrack")
+    timeline_builder.write_json_atomic(
+        context.artifacts_dir / "music_plan.json",
+        MusicPlan(mode="manual", source_path=soundtrack, duration_seconds=6),
+    )
+
+    first = TimelineBuilderStage().run(context)
+    cached = TimelineBuilderStage().run(context)
+    soundtrack.write_bytes(b"a different soundtrack revision")
+    changed = TimelineBuilderStage().run(context)
+
+    assert first.skipped is False
+    assert cached.skipped is True
+    assert changed.skipped is False
+
+
 def test_timeline_builder_stage_rejects_missing_music_source(tmp_path: Path) -> None:
     context = _context(tmp_path)
     asset = _asset(tmp_path / "missing-music.mp4")
@@ -950,7 +1205,9 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
     asset = _asset(tmp_path / "clip.mp4")
     scene = _scene(asset, score=90, start=0)
     _seed_project(context, [asset], [scene])
-    plan = _timeline_plan(asset, scene)
+    soundtrack = context.artifacts_dir / "render-theme.wav"
+    soundtrack.write_bytes(b"first soundtrack")
+    plan = _timeline_plan(asset, scene).model_copy(update={"music_path": soundtrack})
     (context.artifacts_dir / "quick_timeline.json").write_text(
         plan.model_dump_json(),
         encoding="utf-8",
@@ -1012,10 +1269,13 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
 
     first = RenderingStage().run(context)
     second = RenderingStage().run(context)
+    soundtrack.write_bytes(b"replacement soundtrack with another revision")
+    third = RenderingStage().run(context)
 
     assert first.skipped is False
     assert second.skipped is True
-    assert calls == 1
+    assert third.skipped is False
+    assert calls == 2
     assert (context.artifacts_dir / "rendering.cache.json").is_file()
 
 
@@ -1284,6 +1544,36 @@ def test_rendering_stage_skips_empty_timeline(tmp_path: Path) -> None:
 
     assert result.stage is PipelineStage.RENDERING
     assert result.skipped is True
+    assert not (context.artifacts_dir / "final.mp4").exists()
+
+
+def test_rendering_stage_checks_disk_space_before_starting_renderer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "clip.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    plan = _timeline_plan(asset, scene)
+    (context.artifacts_dir / "quick_timeline.json").write_text(
+        plan.model_dump_json(),
+        encoding="utf-8",
+    )
+
+    def reject_render(**kwargs: object) -> None:
+        raise rendering.MontageError("Not enough free disk space for rendering.")
+
+    class UnexpectedRenderer:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("renderer must not start after a failed disk preflight")
+
+    monkeypatch.setattr(rendering, "ensure_render_disk_space", reject_render)
+    monkeypatch.setattr(rendering, "QuickMontageRenderer", UnexpectedRenderer)
+
+    with pytest.raises(rendering.MontageError, match="Not enough free disk space"):
+        RenderingStage().run(context)
+
     assert not (context.artifacts_dir / "final.mp4").exists()
 
 

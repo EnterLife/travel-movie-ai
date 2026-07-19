@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import MultimodalDescriptionReport, StageResult
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -51,7 +51,7 @@ class SceneCaptioningStage(Stage):
         ) and _cached_descriptions_valid(artifact):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[artifact, cache_artifact],
                 message="Story builder reused cached multimodal descriptions.",
             )
@@ -67,7 +67,7 @@ class SceneCaptioningStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=not report.descriptions,
+            status=StageStatus.COMPLETED if report.descriptions else StageStatus.NO_INPUT,
             artifacts=[artifact, cache_artifact],
             message=(
                 f"Story builder prepared {len(report.descriptions)} "

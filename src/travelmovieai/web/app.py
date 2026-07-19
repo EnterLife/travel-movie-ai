@@ -1,22 +1,32 @@
 """FastAPI application for the local TravelMovieAI web interface."""
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from importlib.util import find_spec
 from pathlib import Path
+from threading import RLock
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from travelmovieai.application.service import TravelMovieService
 from travelmovieai.application.validation import ProjectPaths
 from travelmovieai.core.config import Settings, load_settings
 from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusyError
-from travelmovieai.domain.models import MediaScanReport
-from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.domain.manual_editing import (
+    compare_timeline_versions,
+    summarize_timeline_version,
+)
+from travelmovieai.domain.models import MediaScanReport, QuickMontageSettings
+from travelmovieai.infrastructure.database import (
+    EditConflictError,
+    EditValidationError,
+    MediaAssetRepository,
+)
 from travelmovieai.infrastructure.directory_dialog import select_directory
 from travelmovieai.infrastructure.music_generation import (
     LOCAL_MUSIC_MODELS,
@@ -41,19 +51,27 @@ from travelmovieai.web.schemas import (
     DependencyStatus,
     DirectoryDialogRequest,
     DirectoryDialogResponse,
+    EventListResponse,
+    EventPatchRequest,
+    FeatureCapability,
     HealthResponse,
     JobStatus,
     LocalAIStatus,
     ModelOption,
+    MovieJobHistory,
     MovieJobResponse,
     MovieRequest,
     MusicAIStatus,
+    ReorderRequest,
     ResourceProfileResponse,
     ScanJobHistory,
     ScanJobResponse,
     ScanRequest,
     SceneListResponse,
     SceneOverrideRequest,
+    TimelineVersionCompareResponse,
+    TimelineVersionListResponse,
+    TimelineVersionResponse,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -65,16 +83,25 @@ def create_app(
     movie_job_manager: MovieJobManager | None = None,
     executable_checker: Callable[[str], ExecutableStatus] = check_executable,
     cuda_checker: Callable[[str], CudaStatus] = check_cuda,
+    package_checker: Callable[[str], bool] | None = None,
     directory_selector: Callable[[Path | None, str, bool], Path | None] = (select_directory),
 ) -> FastAPI:
     resolved_settings = settings or load_settings()
+    has_package = package_checker or _package_available
     service = TravelMovieService(resolved_settings)
     manager = job_manager or ScanJobManager(
         service,
         state_path=resolved_settings.workspace.resolve() / ".web" / "jobs.json",
         history_limit=resolved_settings.web_history_limit,
     )
-    movie_manager = movie_job_manager or MovieJobManager(service)
+    movie_manager = movie_job_manager or MovieJobManager(
+        service,
+        state_path=resolved_settings.workspace.resolve() / ".web" / "movie_jobs.json",
+        history_limit=resolved_settings.web_history_limit,
+        render_disk_reserve_mb=resolved_settings.render_disk_reserve_mb,
+        render_disk_safety_factor=resolved_settings.render_disk_safety_factor,
+    )
+    workspace_mutation_lock = RLock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -89,6 +116,26 @@ def create_app(
         docs_url="/api/docs",
         redoc_url=None,
     )
+
+    @app.middleware("http")
+    async def enforce_local_request_boundaries(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if not _is_allowed_host(request.headers.get("host", "")):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"detail": "Requests require a loopback Host header."},
+            )
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin and not _is_loopback_origin(origin):
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "Mutating requests require a loopback browser origin."},
+                )
+        return await call_next(request)
+
     app.state.job_manager = manager
     app.state.movie_job_manager = movie_manager
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -130,13 +177,16 @@ def create_app(
             gpu_memory_mb=resources.gpu_memory_mb,
         )
         music_runtime = Path(".cache/ace-step/.venv/Scripts/python.exe").resolve()
+        semantic_capability = _semantic_capability(has_package)
+        speech_capability = _speech_capability(has_package)
+        narration_capability = _narration_capability(
+            resolved_settings,
+            executable_checker,
+        )
         return CapabilitiesResponse(
             default_workspace_root=str(resolved_settings.workspace.expanduser().resolve()),
             local_ai=LocalAIStatus(
-                available=all(
-                    find_spec(package) is not None
-                    for package in ("accelerate", "torch", "transformers")
-                ),
+                available=semantic_capability.available,
                 configured_model=resolved_settings.vision_model,
                 resolved_model=local_model,
                 cache_dir=str(resolved_settings.model_cache.expanduser().resolve()),
@@ -149,6 +199,8 @@ def create_app(
                     )
                     for model in LOCAL_QWEN_MODELS
                 ],
+                reason=semantic_capability.reason,
+                action=semantic_capability.action,
             ),
             music_ai=MusicAIStatus(
                 available=(music_runtime.is_file() or resolved_settings.allow_model_download),
@@ -165,6 +217,8 @@ def create_app(
                     for model in LOCAL_MUSIC_MODELS
                 ],
             ),
+            speech=speech_capability,
+            narration=narration_capability,
             cuda=CudaStatusResponse.model_validate(asdict(cuda_status)),
             resources=ResourceProfileResponse.model_validate(asdict(resources)),
             opencv_available=find_spec("cv2") is not None,
@@ -202,9 +256,10 @@ def create_app(
         manager_from_app = _manager(request)
         try:
             paths = manager_from_app.resolve_project_paths(Path(payload.input_path), workspace)
-            if _movie_manager(request).is_workspace_active(paths.workspace):
-                raise WorkspaceBusyError("A movie edit is already running for this workspace.")
-            return manager_from_app.submit(paths.input_path, paths.workspace)
+            with workspace_mutation_lock:
+                if _movie_manager(request).is_workspace_active(paths.workspace):
+                    raise WorkspaceBusyError("A movie edit is already running for this workspace.")
+                return manager_from_app.submit(paths.input_path, paths.workspace)
         except InvalidProjectPathError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except WorkspaceBusyError as error:
@@ -248,16 +303,32 @@ def create_app(
         )
         movie_manager_from_app = _movie_manager(request)
         try:
+            _validate_requested_capabilities(
+                payload.settings,
+                semantic=_semantic_capability(has_package),
+                speech=_speech_capability(has_package),
+                narration=_narration_capability(
+                    resolved_settings,
+                    executable_checker,
+                ),
+                render_cuda=_render_cuda_capability(
+                    payload.settings,
+                    resolved_settings,
+                    cuda_checker,
+                ),
+            )
             paths = movie_manager_from_app.resolve_project_paths(
                 Path(payload.input_path), workspace
             )
-            if _manager(request).is_workspace_active(paths.workspace):
-                raise WorkspaceBusyError("A media scan is already running for this workspace.")
-            return movie_manager_from_app.submit(
-                paths.input_path,
-                paths.workspace,
-                payload.settings,
-            )
+            with workspace_mutation_lock:
+                if _manager(request).is_workspace_active(paths.workspace):
+                    raise WorkspaceBusyError("A media scan is already running for this workspace.")
+                return movie_manager_from_app.submit(
+                    paths.input_path,
+                    paths.workspace,
+                    payload.settings,
+                    payload.variant_name,
+                )
         except InvalidProjectPathError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except WorkspaceBusyError as error:
@@ -269,6 +340,13 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="Movie job not found.")
         return job
+
+    @app.get("/api/movies", response_model=MovieJobHistory)
+    def list_movies(
+        request: Request,
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> MovieJobHistory:
+        return MovieJobHistory(jobs=_movie_manager(request).list(limit))
 
     @app.post("/api/movies/{job_id}/pause", response_model=MovieJobResponse)
     def pause_movie(job_id: UUID, request: Request) -> MovieJobResponse:
@@ -319,24 +397,207 @@ def create_app(
     def list_scenes(
         input_path: str = Query(min_length=1),
         workspace: str | None = Query(default=None),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=120, ge=1, le=500),
+        event_id: UUID | None = None,
     ) -> SceneListResponse:
         paths = _validated_paths(service, input_path, workspace)
         repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
         repository.initialize()
-        return SceneListResponse(scenes=repository.list_scenes())
+        page = repository.list_editable_scenes_page(
+            offset=offset,
+            limit=limit,
+            event_id=event_id,
+        )
+        if page is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        scenes, total = page
+        return SceneListResponse(
+            scenes=scenes,
+            total=total,
+            offset=offset,
+            limit=limit,
+        )
 
     @app.patch("/api/scenes/{scene_id}", response_model=SceneListResponse)
     def update_scene_override(
         scene_id: UUID,
         payload: SceneOverrideRequest,
+        request: Request,
     ) -> SceneListResponse:
         paths = _validated_paths(service, payload.input_path, payload.workspace)
+        with workspace_mutation_lock:
+            _ensure_workspace_editable(request, paths.workspace)
+            repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
+            repository.initialize()
+            try:
+                if payload.decision is not None:
+                    scene = repository.set_scene_selection_override(scene_id, payload.decision)
+                    if scene is None:
+                        raise HTTPException(status_code=404, detail="Scene not found.")
+                edit_fields = {
+                    "caption",
+                    "transcript",
+                    "landmarks",
+                } & payload.model_fields_set
+                if edit_fields:
+                    edited = repository.update_scene(
+                        scene_id,
+                        expected_version=payload.expected_version or 1,
+                        caption=payload.caption,
+                        transcript=payload.transcript,
+                        landmarks=payload.landmarks,
+                        update_caption="caption" in edit_fields,
+                        update_transcript="transcript" in edit_fields,
+                        update_landmarks="landmarks" in edit_fields,
+                    )
+                    if edited is None:
+                        raise HTTPException(status_code=404, detail="Scene not found.")
+                    return SceneListResponse(scenes=[edited], total=1, limit=1)
+            except EditConflictError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            current = repository.get_editable_scene(scene_id)
+            if current is None:
+                raise HTTPException(status_code=404, detail="Scene not found.")
+            return SceneListResponse(scenes=[current], total=1, limit=1)
+
+    @app.get("/api/events", response_model=EventListResponse)
+    def list_events(
+        input_path: str = Query(min_length=1),
+        workspace: str | None = Query(default=None),
+    ) -> EventListResponse:
+        paths = _validated_paths(service, input_path, workspace)
         repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
         repository.initialize()
-        scene = repository.set_scene_selection_override(scene_id, payload.decision)
-        if scene is None:
-            raise HTTPException(status_code=404, detail="Scene not found.")
-        return SceneListResponse(scenes=[scene])
+        return EventListResponse(events=repository.list_editable_events())
+
+    @app.put("/api/events/order", response_model=EventListResponse)
+    def reorder_events(payload: ReorderRequest, request: Request) -> EventListResponse:
+        paths = _validated_paths(service, payload.input_path, payload.workspace)
+        with workspace_mutation_lock:
+            _ensure_workspace_editable(request, paths.workspace)
+            repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
+            repository.initialize()
+            try:
+                events = repository.reorder_events(
+                    payload.ordered_ids,
+                    payload.expected_versions,
+                )
+            except EditConflictError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            except EditValidationError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            return EventListResponse(events=events)
+
+    @app.patch("/api/events/{event_id}", response_model=EventListResponse)
+    def update_event(
+        event_id: UUID,
+        payload: EventPatchRequest,
+        request: Request,
+    ) -> EventListResponse:
+        paths = _validated_paths(service, payload.input_path, payload.workspace)
+        with workspace_mutation_lock:
+            _ensure_workspace_editable(request, paths.workspace)
+            repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
+            repository.initialize()
+            fields = {"title", "summary", "landmarks"} & payload.model_fields_set
+            try:
+                event = repository.update_event(
+                    event_id,
+                    expected_version=payload.expected_version,
+                    title=payload.title,
+                    summary=payload.summary,
+                    landmarks=payload.landmarks,
+                    update_title="title" in fields,
+                    update_summary="summary" in fields,
+                    update_landmarks="landmarks" in fields,
+                )
+            except EditConflictError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            return EventListResponse(events=[event])
+
+    @app.put("/api/events/{event_id}/scenes/order", response_model=SceneListResponse)
+    def reorder_event_scenes(
+        event_id: UUID,
+        payload: ReorderRequest,
+        request: Request,
+    ) -> SceneListResponse:
+        paths = _validated_paths(service, payload.input_path, payload.workspace)
+        with workspace_mutation_lock:
+            _ensure_workspace_editable(request, paths.workspace)
+            repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
+            repository.initialize()
+            try:
+                scenes = repository.reorder_scenes(
+                    event_id,
+                    payload.ordered_ids,
+                    payload.expected_versions,
+                )
+            except EditConflictError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            except EditValidationError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            if scenes is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            return SceneListResponse(
+                scenes=scenes,
+                total=len(scenes),
+                limit=max(1, len(scenes)),
+            )
+
+    @app.get("/api/timeline-versions", response_model=TimelineVersionListResponse)
+    def list_timeline_versions(
+        input_path: str = Query(min_length=1),
+        workspace: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> TimelineVersionListResponse:
+        paths = _validated_paths(service, input_path, workspace)
+        repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
+        repository.initialize()
+        return TimelineVersionListResponse(
+            versions=[
+                summarize_timeline_version(version)
+                for version in repository.list_timeline_versions(limit)
+            ]
+        )
+
+    @app.get(
+        "/api/timeline-versions/compare",
+        response_model=TimelineVersionCompareResponse,
+    )
+    def compare_versions(
+        before_id: UUID,
+        after_id: UUID,
+        input_path: str = Query(min_length=1),
+        workspace: str | None = Query(default=None),
+    ) -> TimelineVersionCompareResponse:
+        paths = _validated_paths(service, input_path, workspace)
+        repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
+        repository.initialize()
+        before = repository.get_timeline_version(before_id)
+        after = repository.get_timeline_version(after_id)
+        if before is None or after is None:
+            raise HTTPException(status_code=404, detail="Timeline version not found.")
+        return TimelineVersionCompareResponse(comparison=compare_timeline_versions(before, after))
+
+    @app.get(
+        "/api/timeline-versions/{version_id}",
+        response_model=TimelineVersionResponse,
+    )
+    def get_timeline_version(
+        version_id: UUID,
+        input_path: str = Query(min_length=1),
+        workspace: str | None = Query(default=None),
+    ) -> TimelineVersionResponse:
+        paths = _validated_paths(service, input_path, workspace)
+        repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
+        repository.initialize()
+        version = repository.get_timeline_version(version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="Timeline version not found.")
+        return TimelineVersionResponse(version=version)
 
     @app.get("/api/scenes/{scene_id}/thumbnail", response_class=FileResponse)
     def scene_thumbnail(
@@ -347,10 +608,7 @@ def create_app(
         paths = _validated_paths(service, input_path, workspace)
         repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
         repository.initialize()
-        scene = next(
-            (item for item in repository.list_scenes() if item.id == scene_id),
-            None,
-        )
+        scene = repository.get_scene(scene_id)
         if scene is None or scene.keyframe_path is None or not scene.keyframe_path.is_file():
             raise HTTPException(status_code=404, detail="Scene thumbnail not found.")
         frame_path = scene.keyframe_path.resolve()
@@ -374,6 +632,16 @@ def _movie_manager(request: Request) -> MovieJobManager:
     return manager
 
 
+def _ensure_workspace_editable(request: Request, workspace: Path) -> None:
+    if _manager(request).is_workspace_active(workspace) or _movie_manager(
+        request
+    ).is_workspace_active(workspace):
+        raise HTTPException(
+            status_code=409,
+            detail="Manual edits are locked while this project has an active job.",
+        )
+
+
 def _validated_paths(
     service: TravelMovieService,
     input_path: str,
@@ -384,3 +652,167 @@ def _validated_paths(
         return service.resolve_project_paths(Path(input_path), resolved_workspace)
     except InvalidProjectPathError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def _package_available(package: str) -> bool:
+    return find_spec(package) is not None
+
+
+def _semantic_capability(
+    package_checker: Callable[[str], bool],
+) -> FeatureCapability:
+    required = ("accelerate", "torch", "transformers")
+    missing = [package for package in required if not package_checker(package)]
+    if not missing:
+        return FeatureCapability(available=True)
+    return FeatureCapability(
+        available=False,
+        reason=f"Missing local vision dependencies: {', '.join(missing)}.",
+        action='Install them with python -m pip install -e ".[vision]".',
+    )
+
+
+def _speech_capability(
+    package_checker: Callable[[str], bool],
+) -> FeatureCapability:
+    if package_checker("faster_whisper"):
+        return FeatureCapability(available=True)
+    return FeatureCapability(
+        available=False,
+        reason="Faster Whisper is not installed.",
+        action='Install it with python -m pip install -e ".[speech]".',
+    )
+
+
+def _narration_capability(
+    settings: Settings,
+    executable_checker: Callable[[str], ExecutableStatus],
+) -> FeatureCapability:
+    if settings.voice_provider != "piper":
+        return FeatureCapability(
+            available=False,
+            reason="Local narration is disabled in settings.toml.",
+            action="Set voice_provider to piper and configure piper_model.",
+        )
+    if settings.piper_model is None:
+        return FeatureCapability(
+            available=False,
+            reason="No local Piper voice model is configured.",
+            action="Set piper_model to a local .onnx voice file.",
+        )
+    model_path = settings.piper_model.expanduser().resolve()
+    if not model_path.is_file():
+        return FeatureCapability(
+            available=False,
+            reason="The configured local Piper voice model was not found.",
+            action="Check piper_model in settings.toml.",
+        )
+    piper = executable_checker(settings.piper_binary)
+    if not piper.available:
+        return FeatureCapability(
+            available=False,
+            reason=piper.error or "The Piper executable was not found.",
+            action="Install Piper or configure piper_binary in settings.toml.",
+        )
+    return FeatureCapability(available=True)
+
+
+def _validate_requested_capabilities(
+    settings: QuickMontageSettings,
+    *,
+    semantic: FeatureCapability,
+    speech: FeatureCapability,
+    narration: FeatureCapability,
+    render_cuda: FeatureCapability,
+) -> None:
+    semantic_render_features = []
+    if settings.framing_mode == "smart":
+        semantic_render_features.append("smart crop")
+    if settings.color_normalization:
+        semantic_render_features.append("color normalization")
+    if settings.event_titles_enabled:
+        semantic_render_features.append("event titles")
+    if settings.scene_subtitles_enabled:
+        semantic_render_features.append("scene subtitles")
+    if semantic_render_features and not settings.semantic_analysis:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{', '.join(semantic_render_features)} require semantic scene analysis "
+                "for movie creation."
+            ),
+        )
+    if settings.speech_analysis and not settings.semantic_analysis:
+        raise HTTPException(
+            status_code=422,
+            detail="Speech recognition requires semantic scene selection for movie creation.",
+        )
+    if settings.narration_enabled and not settings.semantic_analysis:
+        raise HTTPException(
+            status_code=422,
+            detail="Local narration requires semantic scene selection for movie creation.",
+        )
+    requested = (
+        (settings.semantic_analysis, "Semantic scene selection", semantic),
+        (settings.speech_analysis, "Speech recognition", speech),
+        (settings.narration_enabled, "Local narration", narration),
+        (settings.render_device == "cuda", "CUDA rendering", render_cuda),
+    )
+    for enabled, label, capability in requested:
+        if enabled and not capability.available:
+            detail = capability.reason or "The required local runtime is unavailable."
+            if capability.action:
+                detail = f"{detail} {capability.action}"
+            raise HTTPException(status_code=422, detail=f"{label} is unavailable: {detail}")
+
+
+def _render_cuda_capability(
+    settings: QuickMontageSettings,
+    application_settings: Settings,
+    cuda_checker: Callable[[str], CudaStatus],
+) -> FeatureCapability:
+    if settings.render_device != "cuda":
+        return FeatureCapability(available=True)
+    cuda = cuda_checker(application_settings.ffmpeg_binary)
+    if cuda.available and cuda.ffmpeg_nvenc:
+        return FeatureCapability(available=True)
+    return FeatureCapability(
+        available=False,
+        reason="NVIDIA h264_nvenc encoding is unavailable.",
+        action="Choose Auto or CPU rendering, or configure an FFmpeg build with NVENC.",
+    )
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    try:
+        parsed = urlsplit(origin)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.hostname.casefold() in {"127.0.0.1", "localhost", "::1"}
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _is_allowed_host(host_header: str) -> bool:
+    try:
+        parsed = urlsplit(f"//{host_header}")
+        _ = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.hostname is not None
+        and parsed.hostname.casefold() in {"127.0.0.1", "localhost", "::1", "testserver"}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.path
+        and not parsed.query
+        and not parsed.fragment
+    )

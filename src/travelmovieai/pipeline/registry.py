@@ -8,7 +8,10 @@ from travelmovieai.pipeline.stages.embeddings import EmbeddingsStage
 from travelmovieai.pipeline.stages.event_detection import EventDetectionStage
 from travelmovieai.pipeline.stages.frame_sampling import FrameSamplingStage
 from travelmovieai.pipeline.stages.media_scan import MediaScanStage
-from travelmovieai.pipeline.stages.music_selection import MusicSelectionStage
+from travelmovieai.pipeline.stages.music_selection import (
+    MusicGeneratorFactory,
+    MusicSelectionStage,
+)
 from travelmovieai.pipeline.stages.narration import NarrationStage
 from travelmovieai.pipeline.stages.quality_analysis import QualityAnalysisStage
 from travelmovieai.pipeline.stages.rendering import RenderingStage
@@ -18,18 +21,25 @@ from travelmovieai.pipeline.stages.speech_analysis import SpeechAnalysisStage
 from travelmovieai.pipeline.stages.story_builder import SceneCaptioningStage
 from travelmovieai.pipeline.stages.storyboard import StoryBuilderStage
 from travelmovieai.pipeline.stages.timeline_builder import TimelineBuilderStage
-from travelmovieai.pipeline.stages.vision_analysis import VisionAnalysisStage
+from travelmovieai.pipeline.stages.vision_analysis import (
+    VisionAnalysisStage,
+    VisionProviderFactory,
+)
 from travelmovieai.pipeline.stages.voice_synthesis import VoiceSynthesisStage
 
 
-def build_default_pipeline() -> list[Stage]:
+def build_default_pipeline(
+    *,
+    vision_provider_factory: VisionProviderFactory | None = None,
+    music_generator_factory: MusicGeneratorFactory | None = None,
+) -> list[Stage]:
     """Return stages in the order defined by the technical specification."""
     implemented: list[Stage] = [
         MediaScanStage(),
         SceneDetectionStage(),
         FrameSamplingStage(),
         QualityAnalysisStage(),
-        VisionAnalysisStage(),
+        VisionAnalysisStage(provider_factory=vision_provider_factory),
         SpeechAnalysisStage(),
         AudioAnalysisStage(),
         EmbeddingsStage(),
@@ -38,7 +48,7 @@ def build_default_pipeline() -> list[Stage]:
         EventDetectionStage(),
         StoryBuilderStage(),
         SceneRankingStage(),
-        MusicSelectionStage(),
+        MusicSelectionStage(generator_factory=music_generator_factory),
         NarrationStage(),
         VoiceSynthesisStage(),
         TimelineBuilderStage(),

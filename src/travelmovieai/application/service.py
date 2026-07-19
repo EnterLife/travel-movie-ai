@@ -3,41 +3,50 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import cast
-from uuid import UUID
+from typing import Literal, cast
 
 from pydantic import ValidationError
 
-from travelmovieai.analysis.audio import analyze_audio
-from travelmovieai.analysis.duplicates import detect_duplicate_scenes
-from travelmovieai.analysis.quality import analyze_scene_quality
-from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, frame_sample_count_for_mode
-from travelmovieai.analysis.speech import analyze_speech
-from travelmovieai.analysis.vision import VisionProvider, analyze_scenes
+from travelmovieai.analysis.vision import VisionProvider
 from travelmovieai.application.context import ProjectContext
+from travelmovieai.application.diagnostics import SystemDiagnosticReport, run_system_diagnostics
+from travelmovieai.application.disk_space import ensure_render_disk_space
+from travelmovieai.application.project_archive import (
+    export_project_archive,
+    restore_project_archive,
+)
+from travelmovieai.application.reporting import generate_project_report
+from travelmovieai.application.resource_estimates import (
+    ProjectResourceEstimate,
+    estimate_project_resources,
+)
+from travelmovieai.application.semantic_search import search_project_scenes
 from travelmovieai.application.validation import (
     ProjectPaths,
     validate_output_path,
     validate_project_paths,
 )
+from travelmovieai.application.variants import safe_variant_slug, validate_variant_name
+from travelmovieai.application.workspace_identity import (
+    default_workspace_path,
+    legacy_workspace_path,
+    validate_existing_workspace_identity,
+    workspace_proves_source,
+)
 from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import MontageError
-from travelmovieai.domain.enums import PipelineStage, StoryStyle
+from travelmovieai.domain.enums import PipelineStage, StageStatus, StoryStyle
 from travelmovieai.domain.models import (
-    MediaAsset,
     MediaScanReport,
     MontageQualityReport,
     MusicPlan,
-    QualityAnalysisReport,
     QuickMontagePlan,
     QuickMontageResult,
     QuickMontageSettings,
     Scene,
-    SceneDetectionReport,
+    SemanticSearchReport,
     StageResult,
-    VisionAnalysisReport,
 )
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
@@ -48,8 +57,6 @@ from travelmovieai.editing.renderer import QuickMontageRenderer
 from travelmovieai.editing.timeline import (
     apply_music_directing,
     build_quick_montage_plan,
-    build_selection_report,
-    build_semantic_montage_plan,
 )
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
@@ -59,17 +66,11 @@ from travelmovieai.infrastructure.music_generation import (
 )
 from travelmovieai.infrastructure.system import ResourceProfile, detect_resource_profile
 from travelmovieai.infrastructure.vision import build_vision_provider
-from travelmovieai.infrastructure.whisper import FasterWhisperProvider
 from travelmovieai.pipeline.registry import build_default_pipeline
 from travelmovieai.pipeline.runner import PipelineRunner
-from travelmovieai.pipeline.stages.scene_detection import SceneDetectionStage
-from travelmovieai.story.builder import (
-    build_multimodal_descriptions,
-    build_storyboard,
-)
-from travelmovieai.story.events import detect_events
+from travelmovieai.pipeline.stages.music_selection import MusicGeneratorFactory
+from travelmovieai.pipeline.stages.vision_analysis import VisionProviderFactory
 from travelmovieai.story.music import NeuralMusicGenerator, build_music_plan
-from travelmovieai.story.optimizer import apply_story_structure
 
 
 class TravelMovieService:
@@ -96,6 +97,36 @@ class TravelMovieService:
             )
         return self._resource_profile
 
+    def diagnostics(self) -> SystemDiagnosticReport:
+        return run_system_diagnostics(self.settings)
+
+    def estimate(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        montage_settings: QuickMontageSettings | None = None,
+    ) -> ProjectResourceEstimate:
+        """Scan metadata and return a bounded runtime/disk preflight estimate."""
+
+        self.analyze(input_path=input_path, workspace=workspace)
+        context = self._context(input_path=input_path, workspace=workspace)
+        analysis_path = context.artifacts_dir / "analysis.json"
+        try:
+            report = MediaScanReport.model_validate_json(analysis_path.read_text(encoding="utf-8"))
+        except (OSError, ValidationError) as error:
+            raise MontageError("Could not read media metadata for the project estimate.") from error
+        repository = MediaAssetRepository(context.database_path)
+        repository.initialize()
+        known_scene_count = len(repository.list_scenes()) or None
+        repository.close()
+        return estimate_project_resources(
+            report.assets,
+            settings=self.settings,
+            montage_settings=montage_settings or QuickMontageSettings(),
+            known_scene_count=known_scene_count,
+        )
+
     def create(
         self,
         *,
@@ -104,19 +135,40 @@ class TravelMovieService:
         workspace: Path | None,
         style: StoryStyle,
         semantic: bool = False,
+        montage_settings: QuickMontageSettings | None = None,
+        variant_name: str = "Default",
     ) -> StageResult:
-        result = self.create_quick_montage(
-            input_path=input_path,
-            workspace=workspace,
-            settings=QuickMontageSettings(
+        if montage_settings is None:
+            montage_settings = QuickMontageSettings(
                 semantic_analysis=semantic,
                 story_style=style,
                 vision_provider=self.settings.vision_provider,
                 vision_model=(
                     None if self.settings.vision_model == "auto" else self.settings.vision_model
                 ),
-            ),
+            )
+        else:
+            montage_settings = montage_settings.model_copy(
+                update={"semantic_analysis": semantic, "story_style": style}
+            )
+        _validate_montage_feature_requests(montage_settings, self.settings)
+        if semantic:
+            return self.run_until(
+                PipelineStage.RENDERING,
+                input_path=input_path,
+                output_path=output_path,
+                workspace=workspace,
+                style=style,
+                montage_settings=montage_settings,
+                variant_name=variant_name,
+            )
+
+        result = self.create_quick_montage(
+            input_path=input_path,
+            workspace=workspace,
+            settings=montage_settings,
             output_path=output_path,
+            variant_name=variant_name,
         )
         return StageResult(
             stage=PipelineStage.RENDERING,
@@ -128,11 +180,18 @@ class TravelMovieService:
             ),
         )
 
-    def analyze(self, *, input_path: Path, workspace: Path | None) -> StageResult:
+    def analyze(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        progress: Callable[[int, int, str], None] | None = None,
+    ) -> StageResult:
         return self.run_until(
             PipelineStage.MEDIA_SCAN,
             input_path=input_path,
             workspace=workspace,
+            progress=progress,
         )
 
     def create_quick_montage(
@@ -143,12 +202,24 @@ class TravelMovieService:
         settings: QuickMontageSettings,
         output_path: Path | None = None,
         progress: Callable[[int, int, str], None] | None = None,
+        variant_name: str = "Default",
     ) -> QuickMontageResult:
         settings = _effective_montage_settings(settings)
+        _validate_montage_feature_requests(settings, self.settings)
+        try:
+            normalized_variant_name = validate_variant_name(variant_name)
+        except ValueError as error:
+            raise MontageError(str(error)) from error
+        variant_slug = safe_variant_slug(normalized_variant_name)
         resources = self.get_resource_profile(refresh=True)
         tracker = _ProgressTracker(progress)
         tracker.emit(0, f"Resource profile: {resources.summary}")
-        context = self._context(input_path=input_path, workspace=workspace)
+        context = self._context(
+            input_path=input_path,
+            workspace=workspace,
+            variant_name=normalized_variant_name,
+            variant_slug=variant_slug,
+        )
         default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
         resolved_output = validate_output_path(
             output_path or context.artifacts_dir / default_name,
@@ -156,8 +227,28 @@ class TravelMovieService:
             workspace=context.workspace,
             database_path=context.database_path,
         )
+        if settings.semantic_analysis:
+            semantic_context = self._context(
+                input_path=context.input_path,
+                workspace=context.workspace,
+                output_path=resolved_output,
+                style=settings.story_style,
+                montage_settings=settings,
+                variant_name=normalized_variant_name,
+                variant_slug=variant_slug,
+            )
+            return self._create_semantic_montage(
+                semantic_context,
+                resolved_output,
+                tracker,
+            )
+
         tracker.emit(1, "Checking media library and updating index")
-        self.analyze(input_path=context.input_path, workspace=context.workspace)
+        self.analyze(
+            input_path=context.input_path,
+            workspace=context.workspace,
+            progress=tracker.range(1, 5),
+        )
         tracker.emit(5, "Media scan complete, reading metadata")
         analysis_path = context.artifacts_dir / "analysis.json"
         try:
@@ -167,40 +258,43 @@ class TravelMovieService:
 
         quality_report_path = context.artifacts_dir / "montage_quality_report.json"
         quality_report: MontageQualityReport | None = None
-        if settings.semantic_analysis:
-            plan = self._build_semantic_plan(
-                context,
-                report,
-                settings,
-                tracker,
-                resources,
-            )
-        else:
-            tracker.emit(10, "Selecting quick clips by duration")
-            plan = build_quick_montage_plan(report.assets, settings)
-            tracker.emit(78, "Building a music map from clip boundaries")
-            music_plan = self._build_music_plan(
-                context,
-                report,
-                [],
-                settings,
-                plan,
-                tracker.range(78, 80),
-            )
-            plan = plan.model_copy(
-                update={
-                    "music_plan": music_plan,
-                    "music_path": music_plan.source_path,
-                }
-            )
-            plan = apply_music_directing(plan)
-            quality_report = build_montage_quality_report(plan, [])
-            write_json_atomic(quality_report_path, quality_report)
-            tracker.emit(80, "Quick edit plan created")
+        tracker.emit(10, "Selecting quick clips by duration")
+        plan = build_quick_montage_plan(report.assets, settings)
+        tracker.emit(78, "Building a music map from clip boundaries")
+        music_plan = self._build_music_plan(
+            context,
+            report,
+            [],
+            settings,
+            plan,
+            tracker.range(78, 80),
+        )
+        plan = plan.model_copy(
+            update={
+                "music_plan": music_plan,
+                "music_path": music_plan.source_path,
+            }
+        )
+        plan = apply_music_directing(plan)
+        quality_report = build_montage_quality_report(plan, [])
+        write_json_atomic(quality_report_path, quality_report)
+        tracker.emit(80, "Quick edit plan created")
         timeline_path = context.artifacts_dir / "quick_timeline.json"
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(timeline_path, plan)
+        _record_timeline_version(
+            context,
+            plan,
+            phase="built",
+        )
         tracker.emit(84, f"Timeline saved: {len(plan.clips)} clip(s)")
+        ensure_render_disk_space(
+            workspace=context.workspace,
+            output_path=resolved_output,
+            settings=settings,
+            reserve_mb=self.settings.render_disk_reserve_mb,
+            safety_factor=self.settings.render_disk_safety_factor,
+        )
         render_encoder = QuickMontageRenderer(
             self.settings.ffmpeg_binary,
             self.settings.ffprobe_binary,
@@ -231,6 +325,12 @@ class TravelMovieService:
         )
         write_json_atomic(quality_report_path, quality_report)
         enforce_montage_quality(quality_report)
+        _record_timeline_version(
+            context,
+            plan,
+            phase="rendered",
+            output_path=resolved_output,
+        )
         tracker.emit(100, "Film ready and validated with FFprobe")
         return QuickMontageResult(
             output_path=resolved_output,
@@ -247,232 +347,47 @@ class TravelMovieService:
             quality_issue_count=len(quality_report.issues),
         )
 
-    def _build_semantic_plan(
+    def _create_semantic_montage(
         self,
         context: ProjectContext,
-        report: MediaScanReport,
-        settings: QuickMontageSettings,
+        output_path: Path,
         tracker: _ProgressTracker,
-        resources: ResourceProfile,
-    ) -> QuickMontagePlan:
-        tracker.emit(6, "Scene detection")
-        SceneDetectionStage(settings=settings).run(context)
-        scenes_path = context.artifacts_dir / "scenes.json"
+    ) -> QuickMontageResult:
+        result = self._pipeline_runner().run_until(
+            context,
+            PipelineStage.RENDERING,
+            progress=tracker.range(1, 100),
+        )
+        if result.status is StageStatus.NO_INPUT:
+            raise MontageError(result.message or "Semantic montage has no usable media.")
+
+        timeline_path = context.artifacts_dir / "quick_timeline.json"
+        quality_report_path = context.artifacts_dir / "montage_quality_report.json"
         try:
-            scene_report = SceneDetectionReport.model_validate_json(
-                scenes_path.read_text(encoding="utf-8")
+            plan = QuickMontagePlan.model_validate_json(timeline_path.read_text(encoding="utf-8"))
+            quality_report = MontageQualityReport.model_validate_json(
+                quality_report_path.read_text(encoding="utf-8")
             )
         except (OSError, ValidationError) as error:
-            raise MontageError("Could not read scene detection results.") from error
+            raise MontageError("Semantic pipeline produced invalid montage artifacts.") from error
+        if not output_path.is_file():
+            raise MontageError("Semantic pipeline did not produce the requested movie.")
 
-        assets_by_id = {asset.id: asset for asset in report.assets}
-        use_cuda_decode = resources.nvenc and self.settings.device in {"auto", "cuda"}
-        frame_workers = (
-            min(
-                resources.frame_workers,
-                1 if resources.resource_mode == "safe" else self.settings.max_gpu_processes,
-            )
-            if use_cuda_decode
-            else resources.frame_workers
+        tracker.emit(100, "Film ready and validated with FFprobe")
+        return QuickMontageResult(
+            output_path=output_path,
+            timeline_path=timeline_path,
+            clip_count=len(plan.clips),
+            duration_seconds=plan.total_duration_seconds,
+            selection_mode=plan.selection_mode,
+            render_encoder=quality_report.render_encoder,
+            music_mode=plan.music_plan.mode if plan.music_plan else None,
+            music_profile=plan.music_plan.profile if plan.music_plan else None,
+            music_generator=plan.music_plan.generator if plan.music_plan else None,
+            music_model=plan.music_plan.model if plan.music_plan else None,
+            quality_score=quality_report.score,
+            quality_issue_count=len(quality_report.issues),
         )
-        extractor = RepresentativeFrameExtractor(
-            self.settings.ffmpeg_binary,
-            self.settings.ffprobe_binary,
-            use_cuda_decode=use_cuda_decode,
-            frame_sample_count=frame_sample_count_for_mode(settings.analysis_quality_mode),
-            timeout_seconds=self.settings.frame_extraction_timeout_seconds,
-        )
-        tracker.emit(
-            12,
-            f"Scenes found: {len(scene_report.scenes)}. "
-            f"Extracting frames with {frame_workers} worker(s), "
-            f"decode={'NVDEC' if use_cuda_decode else 'CPU'}",
-        )
-        prepared_scenes = _extract_scene_frames(
-            scene_report.scenes,
-            assets_by_id,
-            extractor,
-            context.frames_dir,
-            frame_workers,
-            tracker.range(12, 32),
-        )
-        tracker.emit(32, f"Frame preparation complete: {extractor.backend_summary}")
-
-        quality_report = (
-            analyze_scene_quality(
-                prepared_scenes,
-                workers=resources.analysis_workers,
-                progress=tracker.range(32, 45),
-            )
-            if settings.quality_analysis
-            else QualityAnalysisReport(
-                created_at=scene_report.created_at,
-                scenes=prepared_scenes,
-            )
-        )
-        quality_path = context.artifacts_dir / "quality_analysis.json"
-        write_json_atomic(quality_path, quality_report)
-        quality_backend = next(
-            (
-                scene.metadata.get("quality_metrics", {}).get("backend")
-                for scene in quality_report.scenes
-                if scene.metadata.get("quality_metrics")
-            ),
-            "disabled",
-        )
-        tracker.emit(45, f"Quality analysis saved, backend={quality_backend}")
-        vision_path = context.artifacts_dir / "vision_analysis.json"
-        try:
-            cached_vision_report = VisionAnalysisReport.model_validate_json(
-                vision_path.read_text(encoding="utf-8")
-            )
-        except (OSError, ValidationError):
-            cached_vision_report = None
-        vision_provider = self._vision_provider(
-            settings.vision_provider,
-            settings.vision_model,
-        )
-        tracker.emit(
-            45,
-            f"Vision AI: checking cache for {vision_provider.model}. "
-            "The model loads only when a scene still needs analysis",
-        )
-        try:
-            vision_report = analyze_scenes(
-                quality_report.scenes,
-                vision_provider,
-                settings.story_style,
-                tracker.range(45, 70),
-                cached_report=cached_vision_report,
-                checkpoint=lambda partial: write_json_atomic(vision_path, partial),
-            )
-            runtime = getattr(vision_provider, "runtime_description", "ready")
-            tracker.emit(
-                70,
-                f"Vision AI complete: {vision_report.analyzed_count} analyzed, "
-                f"{vision_report.cached_count} cached ({runtime})",
-            )
-        finally:
-            release = getattr(vision_provider, "release", None)
-            if callable(release):
-                release()
-        write_json_atomic(vision_path, vision_report)
-        speech_scenes = vision_report.scenes
-        if settings.speech_analysis:
-            tracker.emit(70, "Whisper: transcribing speech and important lines")
-            whisper_provider = FasterWhisperProvider(
-                self.settings.whisper_model,
-                self.settings.device,
-            )
-            try:
-                speech_report = analyze_speech(
-                    vision_report.scenes,
-                    report.assets,
-                    whisper_provider,
-                    self.settings.ffmpeg_binary,
-                    context.cache_dir / "speech",
-                    timeout_seconds=self.settings.frame_extraction_timeout_seconds,
-                    progress=tracker.range(70, 74),
-                )
-            finally:
-                whisper_provider.release()
-            speech_scenes = speech_report.scenes
-            write_json_atomic(
-                context.artifacts_dir / "speech_analysis.json",
-                speech_report,
-            )
-        else:
-            tracker.emit(74, "Speech recognition disabled")
-        if settings.audio_analysis:
-            tracker.emit(74, "Audio Analysis: classifying speech, silence, and noise")
-            audio_report = analyze_audio(
-                speech_scenes,
-                report.assets,
-                self.settings.ffmpeg_binary,
-                timeout_seconds=self.settings.frame_extraction_timeout_seconds,
-                progress=tracker.range(74, 76),
-            )
-            speech_scenes = audio_report.scenes
-            write_json_atomic(
-                context.artifacts_dir / "audio_analysis.json",
-                audio_report,
-            )
-        else:
-            tracker.emit(76, "Audio Analysis disabled")
-        if settings.duplicate_detection:
-            tracker.emit(76, "Finding similar and duplicate scenes")
-            duplicate_report, deduplicated_scenes = detect_duplicate_scenes(
-                speech_scenes,
-                settings.duplicate_similarity_threshold,
-            )
-            write_json_atomic(
-                context.artifacts_dir / "duplicates.json",
-                duplicate_report,
-            )
-        else:
-            deduplicated_scenes = speech_scenes
-        tracker.emit(77, "Merging Vision AI, OpenCV, and audio metadata")
-        descriptions = build_multimodal_descriptions(deduplicated_scenes)
-        write_json_atomic(
-            context.artifacts_dir / "scene_descriptions.json",
-            descriptions,
-        )
-        event_report, event_scenes = detect_events(
-            deduplicated_scenes,
-            report.assets,
-        )
-        tracker.emit(79, f"Trip events grouped: {len(event_report.events)}")
-        events_path = context.artifacts_dir / "events.json"
-        write_json_atomic(events_path, event_report)
-        storyboard = build_storyboard(
-            event_report.events,
-            event_scenes,
-            settings.story_style,
-        )
-        event_scenes = apply_story_structure(event_scenes, storyboard)
-        tracker.emit(81, "Story structure and scene order created")
-        write_json_atomic(context.artifacts_dir / "storyboard.json", storyboard)
-        repository = MediaAssetRepository(context.database_path)
-        repository.initialize()
-        repository.synchronize_scenes(event_scenes)
-        repository.synchronize_events(event_report.events)
-        plan = build_semantic_montage_plan(
-            report.assets,
-            event_scenes,
-            settings,
-        )
-        tracker.emit(82, f"AI selection complete: {len(plan.clips)} clip(s)")
-        write_json_atomic(
-            context.artifacts_dir / "selection_decisions.json",
-            build_selection_report(event_scenes, plan, settings),
-        )
-        tracker.emit(82, "Building a music map from scene and event importance")
-        music_plan = self._build_music_plan(
-            context,
-            report,
-            event_scenes,
-            settings,
-            plan,
-            tracker.range(82, 84),
-        )
-        tracker.emit(
-            83,
-            f"Music: {music_plan.mode}, profile {music_plan.profile}, "
-            f"{len(music_plan.accents)} accent(s)",
-        )
-        final_plan = plan.model_copy(
-            update={
-                "music_plan": music_plan,
-                "music_path": music_plan.source_path,
-            }
-        )
-        final_plan = apply_music_directing(final_plan, event_scenes)
-        montage_quality_report = build_montage_quality_report(final_plan, event_scenes)
-        write_json_atomic(
-            context.artifacts_dir / "montage_quality_report.json",
-            montage_quality_report,
-        )
-        return final_plan
 
     def _build_music_plan(
         self,
@@ -492,6 +407,7 @@ class TravelMovieService:
             context.artifacts_dir / self.settings.generated_music_filename,
             montage_plan,
             neural_generator=generator,
+            ffmpeg_binary=self.settings.ffmpeg_binary,
             progress=progress,
         )
         write_json_atomic(context.artifacts_dir / "music_plan.json", music_plan)
@@ -548,11 +464,18 @@ class TravelMovieService:
         )
 
     def resolve_workspace(self, input_path: Path, workspace: Path | None) -> Path:
-        return (workspace or self.settings.workspace / input_path.name).resolve()
+        if workspace is not None:
+            return workspace.expanduser().resolve()
+        legacy_workspace = legacy_workspace_path(self.settings.workspace, input_path)
+        if workspace_proves_source(legacy_workspace, input_path):
+            return legacy_workspace
+        return default_workspace_path(self.settings.workspace, input_path)
 
     def resolve_project_paths(self, input_path: Path, workspace: Path | None) -> ProjectPaths:
         resolved_workspace = self.resolve_workspace(input_path, workspace)
-        return validate_project_paths(input_path, resolved_workspace)
+        project_paths = validate_project_paths(input_path, resolved_workspace)
+        validate_existing_workspace_identity(project_paths.input_path, project_paths.workspace)
+        return project_paths
 
     def run_until(
         self,
@@ -563,28 +486,110 @@ class TravelMovieService:
         output_path: Path | None = None,
         style: StoryStyle = StoryStyle.CINEMATIC,
         montage_settings: QuickMontageSettings | None = None,
+        progress: Callable[[int, int, str], None] | None = None,
+        variant_name: str = "Default",
     ) -> StageResult:
+        try:
+            normalized_variant_name = validate_variant_name(variant_name)
+        except ValueError as error:
+            raise MontageError(str(error)) from error
         context = self._context(
             input_path=input_path,
             output_path=output_path,
             workspace=workspace,
             style=style,
             montage_settings=montage_settings,
+            variant_name=normalized_variant_name,
+            variant_slug=safe_variant_slug(normalized_variant_name),
         )
-        return PipelineRunner(build_default_pipeline()).run_until(context, target)
+        return self._pipeline_runner().run_until(context, target, progress=progress)
+
+    def _pipeline_runner(self) -> PipelineRunner:
+        vision_factory: VisionProviderFactory | None = None
+        if self._vision_provider_factory is not None:
+            injected_vision_factory = self._vision_provider_factory
+
+            def build_injected_vision(
+                _context: ProjectContext,
+                _provider: str,
+                _model: str,
+                _resources: ResourceProfile,
+            ) -> VisionProvider:
+                return injected_vision_factory(self.settings)
+
+            vision_factory = build_injected_vision
+        music_factory: MusicGeneratorFactory | None = None
+        if self._music_generator_factory is not None:
+
+            def build_injected_music(
+                _context: ProjectContext,
+                montage_settings: QuickMontageSettings,
+            ) -> NeuralMusicGenerator | None:
+                return self._music_generator(montage_settings)
+
+            music_factory = build_injected_music
+        return PipelineRunner(
+            build_default_pipeline(
+                vision_provider_factory=vision_factory,
+                music_generator_factory=music_factory,
+            )
+        )
 
     def report(self, *, input_path: Path, workspace: Path | None) -> StageResult:
         context = self._context(input_path=input_path, workspace=workspace)
-        context.prepare()
-        report_path = context.artifacts_dir / "report.html"
+        report = generate_project_report(context)
         return StageResult(
             stage=PipelineStage.EVENT_DETECTION,
-            skipped=True,
-            artifacts=[],
+            artifacts=[report.path],
             message=(
-                "Project structure is ready. Report generation will be implemented "
-                f"in a later milestone: {report_path}"
+                f"HTML report generated for {report.asset_count} asset(s), "
+                f"{report.scene_count} scene(s), and {report.event_count} event(s): "
+                f"{report.path}"
             ),
+        )
+
+    def search(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        query: str,
+        limit: int = 10,
+    ) -> SemanticSearchReport:
+        context = self._context(input_path=input_path, workspace=workspace)
+        return search_project_scenes(context, query, limit=limit)
+
+    def export_project(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        output_path: Path,
+        include_rendered_media: bool = False,
+        overwrite: bool = False,
+    ) -> StageResult:
+        context = self._context(input_path=input_path, workspace=workspace)
+        result = export_project_archive(
+            context,
+            output_path,
+            include_rendered_media=include_rendered_media,
+            overwrite=overwrite,
+        )
+        return StageResult(
+            stage=PipelineStage.MEDIA_SCAN,
+            artifacts=[result.archive_path],
+            message=(
+                f"Project archive created with {result.file_count} file(s), "
+                f"{result.total_bytes} byte(s): {result.archive_path}"
+            ),
+        )
+
+    def restore_project(self, *, archive_path: Path, workspace: Path) -> StageResult:
+        restored = restore_project_archive(archive_path, workspace)
+        return StageResult(
+            stage=PipelineStage.MEDIA_SCAN,
+            artifacts=[restored],
+            message=f"Project archive restored to {restored}",
         )
 
     def _context(
@@ -595,6 +600,8 @@ class TravelMovieService:
         output_path: Path | None = None,
         style: StoryStyle = StoryStyle.CINEMATIC,
         montage_settings: QuickMontageSettings | None = None,
+        variant_name: str = "Default",
+        variant_slug: str = "default",
     ) -> ProjectContext:
         project_paths = self.resolve_project_paths(input_path, workspace)
         return ProjectContext(
@@ -604,6 +611,8 @@ class TravelMovieService:
             settings=self.settings,
             style=style,
             montage_settings=montage_settings,
+            variant_name=variant_name,
+            variant_slug=variant_slug,
         )
 
 
@@ -625,6 +634,34 @@ def _effective_montage_settings(
             "fps": min(settings.fps, 24),
         }
     )
+
+
+def _validate_montage_feature_requests(
+    montage_settings: QuickMontageSettings,
+    application_settings: Settings,
+) -> None:
+    semantic_render_features = []
+    if montage_settings.framing_mode == "smart":
+        semantic_render_features.append("smart crop")
+    if montage_settings.color_normalization:
+        semantic_render_features.append("color normalization")
+    if montage_settings.event_titles_enabled:
+        semantic_render_features.append("event titles")
+    if montage_settings.scene_subtitles_enabled:
+        semantic_render_features.append("scene subtitles")
+    if semantic_render_features and not montage_settings.semantic_analysis:
+        raise MontageError(
+            f"{', '.join(semantic_render_features)} require semantic scene analysis."
+        )
+    if montage_settings.speech_analysis and not montage_settings.semantic_analysis:
+        raise MontageError("Speech analysis requires semantic scene selection.")
+    if montage_settings.narration_enabled and not montage_settings.semantic_analysis:
+        raise MontageError("Narration requires semantic scene selection.")
+    if montage_settings.narration_enabled and application_settings.voice_provider == "disabled":
+        raise MontageError(
+            "Narration was requested, but voice_provider is disabled. Configure the local "
+            "Piper executable, model, and voice_provider='piper', or disable narration."
+        )
 
 
 class _ProgressTracker:
@@ -653,33 +690,22 @@ class _ProgressTracker:
         return report
 
 
-def _extract_scene_frames(
-    scenes: list[Scene],
-    assets_by_id: dict[UUID, MediaAsset],
-    extractor: RepresentativeFrameExtractor,
-    frames_dir: Path,
-    workers: int,
-    progress: Callable[[int, int, str], None],
-) -> list[Scene]:
-    jobs = [(index, scene, assets_by_id.get(scene.asset_id)) for index, scene in enumerate(scenes)]
-    valid_jobs = [(index, scene, asset) for index, scene, asset in jobs if asset is not None]
-    prepared: dict[int, Scene] = {}
-    worker_count = min(max(1, workers), max(1, len(valid_jobs)))
-
-    with ThreadPoolExecutor(
-        max_workers=worker_count,
-        thread_name_prefix="travelmovieai-frames",
-    ) as executor:
-        futures = {
-            executor.submit(extractor.extract, scene, asset, frames_dir): (index, scene)
-            for index, scene, asset in valid_jobs
-        }
-        for completed, future in enumerate(as_completed(futures), start=1):
-            index, scene = futures[future]
-            prepared[index] = scene.model_copy(update={"keyframe_path": future.result()})
-            progress(
-                completed,
-                len(valid_jobs),
-                f"Frames: {completed}/{len(valid_jobs)}, workers={worker_count}",
-            )
-    return [prepared[index] for index in sorted(prepared)]
+def _record_timeline_version(
+    context: ProjectContext,
+    plan: QuickMontagePlan,
+    *,
+    phase: Literal["built", "rendered"],
+    output_path: Path | None = None,
+) -> None:
+    repository = MediaAssetRepository(context.database_path)
+    try:
+        repository.initialize()
+        repository.record_timeline_version(
+            plan,
+            phase=phase,
+            variant_name=context.variant_name,
+            variant_slug=context.variant_slug,
+            output_path=output_path,
+        )
+    finally:
+        repository.close()

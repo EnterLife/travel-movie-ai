@@ -1,10 +1,11 @@
 """Pipeline stage for structured local Vision AI scene understanding."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 from travelmovieai.analysis.vision import VisionProvider, analyze_scenes
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import Scene, StageResult, VisionAnalysisReport
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -13,15 +14,19 @@ from travelmovieai.infrastructure.artifacts import (
     write_stage_cache_manifest,
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
-from travelmovieai.infrastructure.system import detect_resource_profile
+from travelmovieai.infrastructure.system import ResourceProfile, detect_resource_profile
 from travelmovieai.infrastructure.vision import build_vision_provider
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "vision-analysis-v1"
+ARTIFACT_SCHEMA_VERSION = "vision-analysis-v2"
+VisionProviderFactory = Callable[[ProjectContext, str, str, ResourceProfile], VisionProvider]
 
 
 class VisionAnalysisStage(Stage):
     name = PipelineStage.VISION_ANALYSIS
+
+    def __init__(self, provider_factory: VisionProviderFactory | None = None) -> None:
+        self._provider_factory = provider_factory
 
     def run(self, context: ProjectContext) -> StageResult:
         montage_settings = context.montage_settings
@@ -70,20 +75,25 @@ class VisionAnalysisStage(Stage):
         ) and _cached_vision_analysis_valid(artifact, scenes):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Vision AI reused cached analysis artifacts.",
             )
 
-        provider: VisionProvider = build_vision_provider(
-            provider=provider_name,
-            model=model_name,
-            device=context.settings.device,
-            cache_dir=context.settings.model_cache.expanduser().resolve(),
-            allow_download=context.settings.allow_model_download,
-            gpu_memory_mb=resources.gpu_memory_mb,
-            system_memory_mb=resources.memory_mb,
-            model_batch_size=resources.model_batch_size,
+        provider: VisionProvider = (
+            self._provider_factory(context, provider_name, model_name, resources)
+            if self._provider_factory is not None
+            else build_vision_provider(
+                provider=provider_name,
+                model=model_name,
+                device=context.settings.device,
+                cache_dir=context.settings.model_cache.expanduser().resolve(),
+                allow_download=context.settings.allow_model_download,
+                gpu_memory_mb=resources.gpu_memory_mb,
+                system_memory_mb=resources.memory_mb,
+                model_batch_size=resources.model_batch_size,
+                model_pool_size=context.settings.vision_model_pool_size,
+            )
         )
         try:
             cached_report = VisionAnalysisReport.model_validate_json(
@@ -98,6 +108,7 @@ class VisionAnalysisStage(Stage):
                 context.style,
                 cached_report=cached_report,
                 checkpoint=lambda partial: write_json_atomic(artifact, partial),
+                progress=context.progress,
             )
         finally:
             release = getattr(provider, "release", None)
@@ -115,7 +126,13 @@ class VisionAnalysisStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=report.analyzed_count == 0,
+            status=(
+                StageStatus.CACHED
+                if report.analyzed_count == 0 and report.cached_count > 0
+                else StageStatus.NO_INPUT
+                if not report.scenes
+                else StageStatus.COMPLETED
+            ),
             artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Vision AI analyzed {report.analyzed_count} scene(s), "

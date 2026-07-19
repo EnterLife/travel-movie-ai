@@ -7,13 +7,39 @@ database_filename = "project.db"
 ffmpeg_binary = "ffmpeg"
 ffprobe_binary = "ffprobe"
 frame_extraction_timeout_seconds = 120
+# 4K/8K sources are transcoded once into project-local analysis proxies. The
+# originals remain unchanged and rendering continues to use them.
+analysis_proxy_mode = "auto" # auto | disabled | always
+analysis_proxy_max_dimension = 1920
+analysis_proxy_video_bitrate_mbps = 6.0
+analysis_proxy_timeout_seconds = 3600
 render_timeout_seconds = 7200
+# Keep this much free space after accounting for the estimated MP4 and
+# temporary render segments. Increase it on a shared system drive.
+render_disk_reserve_mb = 1024
+render_disk_safety_factor = 3.0
 
 vision_provider = "local"
 vision_model = "auto"
 model_cache = "models"
 allow_model_download = true
+# Keep one idle Vision runtime available for a later project in this process.
+# Set 0 to unload immediately after a stage; higher values use more RAM/VRAM.
+vision_model_pool_size = 1
 device = "auto"
+
+# Feature-hash keeps the base install model-free. Switch to sentence-transformers
+# after installing the embeddings optional dependency group.
+embedding_backend = "feature-hash"
+embedding_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+embedding_index = "auto"
+embedding_batch_size = 32
+
+# The deterministic builder keeps the base pipeline model-free. Set this to
+# "local" after installing the story dependency group to use a local text model.
+story_provider = "deterministic" # deterministic | local
+story_model = "Qwen/Qwen2.5-1.5B-Instruct"
+story_max_new_tokens = 768
 
 # "auto" detects CPU, RAM, GPU, CUDA, NVENC, and free VRAM. It selects the
 # fastest suitable profile while preserving memory for Windows and the driver.
@@ -26,6 +52,17 @@ music_model = "auto"
 generated_music_filename = "generated_soundtrack.wav"
 
 whisper_model = "medium"
+
+# Set voice_provider to "piper" and provide a local .onnx voice model to enable
+# the explicit Voice Synthesis stage. No voice model is downloaded implicitly.
+voice_provider = "disabled"
+piper_binary = "piper"
+# piper_model = "models/voices/en_US-lessac-medium.onnx"
+voice_synthesis_timeout_seconds = 600
+
+# Project-local cache cleanup runs before new pipeline work. Set 0 to disable.
+project_cache_limit_mb = 20480
+project_cache_target_ratio = 0.85
 
 # 0 enables automatic hardware-based selection.
 batch_size = 0

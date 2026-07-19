@@ -3,10 +3,11 @@
 import importlib
 import math
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from PIL import Image, ImageChops, ImageFilter, ImageStat
 
@@ -19,6 +20,20 @@ from travelmovieai.domain.models import (
 
 class QualityAnalyzer(Protocol):
     def analyze(self, image_path: Path) -> VisualQualityMetrics: ...
+
+
+@dataclass(frozen=True, slots=True)
+class QualityBackend:
+    name: Literal["torch-cuda", "opencv", "pillow"]
+    device: Literal["cuda", "cpu"]
+    library_version: str
+
+    def fingerprint_payload(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "device": self.device,
+            "library_version": self.library_version,
+        }
 
 
 class VisualQualityAnalyzer:
@@ -192,22 +207,45 @@ def analyze_scene_quality(
                 progress(index, len(scenes), f"{backend_label}: scene {index}/{len(scenes)}")
     else:
         analyzed_by_index: dict[int, Scene] = {}
-        with ThreadPoolExecutor(
-            max_workers=min(workers, len(scenes)),
+        worker_count = min(workers, len(scenes))
+        if progress:
+            progress(0, len(scenes), f"{backend_label}: scene 0/{len(scenes)}")
+        executor = ThreadPoolExecutor(
+            max_workers=worker_count,
             thread_name_prefix="travelmovieai-quality",
-        ) as executor:
-            futures = {
-                executor.submit(_analyze_scene_quality, scene, resolved_analyzer): index
-                for index, scene in enumerate(scenes)
-            }
-            for completed, future in enumerate(as_completed(futures), start=1):
-                analyzed_by_index[futures[future]] = future.result()
-                if progress:
-                    progress(
-                        completed,
-                        len(scenes),
-                        f"{backend_label}: scene {completed}/{len(scenes)}, workers={workers}",
-                    )
+        )
+        futures: dict[Future[Scene], int] = {}
+        scene_iterator = iter(enumerate(scenes))
+
+        def submit_next() -> bool:
+            try:
+                index, scene = next(scene_iterator)
+            except StopIteration:
+                return False
+            futures[executor.submit(_analyze_scene_quality, scene, resolved_analyzer)] = index
+            return True
+
+        completed = 0
+        try:
+            for _ in range(worker_count):
+                if not submit_next():
+                    break
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    analyzed_by_index[futures.pop(future)] = future.result()
+                    completed += 1
+                    if progress:
+                        progress(
+                            completed,
+                            len(scenes),
+                            f"{backend_label}: scene {completed}/{len(scenes)}, workers={workers}",
+                        )
+                    submit_next()
+        finally:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
         analyzed = [analyzed_by_index[index] for index in range(len(scenes))]
     return QualityAnalysisReport(
         created_at=datetime.now(UTC),
@@ -216,12 +254,41 @@ def analyze_scene_quality(
 
 
 def _default_quality_analyzer() -> QualityAnalyzer:
+    return create_quality_analyzer(resolve_quality_backend("auto"))
+
+
+def resolve_quality_backend(device: str) -> QualityBackend:
+    if device not in {"auto", "cuda", "directml", "cpu"}:
+        raise ValueError(f"Unsupported quality analysis device: {device}")
+    if device in {"auto", "cuda"}:
+        try:
+            torch: Any = importlib.import_module("torch")
+            if torch.cuda.is_available():
+                return QualityBackend(
+                    name="torch-cuda",
+                    device="cuda",
+                    library_version=str(getattr(torch, "__version__", "unknown")),
+                )
+        except (ImportError, RuntimeError):
+            pass
     try:
-        torch: Any = importlib.import_module("torch")
-        if torch.cuda.is_available():
-            return TorchCudaQualityAnalyzer()
-    except (ImportError, RuntimeError):
-        pass
+        cv2: Any = importlib.import_module("cv2")
+    except ImportError:
+        return QualityBackend(
+            name="pillow",
+            device="cpu",
+            library_version=str(getattr(Image, "__version__", "unknown")),
+        )
+    return QualityBackend(
+        name="opencv",
+        device="cpu",
+        library_version=str(getattr(cv2, "__version__", "unknown")),
+    )
+
+
+def create_quality_analyzer(backend: QualityBackend) -> QualityAnalyzer:
+    if backend.name == "torch-cuda":
+        return TorchCudaQualityAnalyzer()
     return VisualQualityAnalyzer()
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from travelmovieai.domain.enums import (
     ActivityType,
@@ -14,8 +14,30 @@ from travelmovieai.domain.enums import (
     MediaType,
     PersonGroup,
     PipelineStage,
+    StageStatus,
     StoryStyle,
 )
+
+type ShotScale = Literal[
+    "unknown",
+    "extreme_wide",
+    "wide",
+    "full",
+    "medium",
+    "close_up",
+    "extreme_close_up",
+]
+type CameraMotion = Literal[
+    "unknown",
+    "static",
+    "pan",
+    "tilt",
+    "tracking",
+    "handheld",
+    "zoom",
+    "drone",
+    "orbit",
+]
 
 
 class MediaAsset(BaseModel):
@@ -32,8 +54,8 @@ class MediaAsset(BaseModel):
     width: int | None = None
     height: int | None = None
     fps: float | None = None
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     probe_metadata: dict[str, Any] = Field(default_factory=dict)
     scan_error: str | None = None
 
@@ -97,6 +119,11 @@ class SceneUnderstanding(BaseModel):
     location_type: LocationType = LocationType.UNKNOWN
     activity: ActivityType = ActivityType.UNKNOWN
     emotion: EmotionType = EmotionType.NEUTRAL
+    shot_scale: ShotScale = "unknown"
+    camera_motion: CameraMotion = "unknown"
+    focus_x: float | None = Field(default=None, ge=0, le=1)
+    focus_y: float | None = Field(default=None, ge=0, le=1)
+    focus_source: Literal["face", "object", "subject"] | None = None
     people_count: int = Field(default=0, ge=0, le=1000)
     people_groups: list[PersonGroup] = Field(default_factory=list, max_length=6)
     landmarks: list[LandmarkDetection] = Field(default_factory=list, max_length=10)
@@ -104,6 +131,15 @@ class SceneUnderstanding(BaseModel):
     score_factors: VisionScoreFactors
     story_relevance: str = Field(default="", max_length=500)
     tags: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_focus_contract(self) -> "SceneUnderstanding":
+        focus_fields = (self.focus_x, self.focus_y, self.focus_source)
+        if any(value is not None for value in focus_fields) and any(
+            value is None for value in focus_fields
+        ):
+            raise ValueError("focus_x, focus_y, and focus_source must be provided together")
+        return self
 
 
 class VisionAnalysisReport(BaseModel):
@@ -118,14 +154,41 @@ class VisionAnalysisReport(BaseModel):
 
 class SceneEmbedding(BaseModel):
     scene_id: UUID
-    vector: list[float] = Field(min_length=1, max_length=256)
+    vector: list[float] = Field(min_length=1, max_length=4096)
 
 
 class EmbeddingAnalysisReport(BaseModel):
     created_at: datetime
     backend: str
-    dimensions: int = Field(ge=1, le=256)
+    model: str | None = None
+    dimensions: int = Field(ge=1, le=4096)
     embeddings: list[SceneEmbedding] = Field(default_factory=list)
+    index_path: Path | None = None
+    indexed_count: int = Field(default=0, ge=0)
+    fallback_used: bool = False
+
+
+class SemanticIndexManifest(BaseModel):
+    created_at: datetime
+    backend: str
+    model: str | None = None
+    dimensions: int = Field(ge=1, le=4096)
+    scene_ids: list[UUID] = Field(default_factory=list)
+    index_path: Path
+    source_fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class SemanticSearchHit(BaseModel):
+    scene_id: UUID
+    score: float = Field(ge=-1, le=1)
+    rank: int = Field(ge=1)
+
+
+class SemanticSearchReport(BaseModel):
+    backend: str
+    model: str | None = None
+    query: str = Field(min_length=1, max_length=1000)
+    hits: list[SemanticSearchHit] = Field(default_factory=list)
 
 
 class SpeechSegment(BaseModel):
@@ -274,6 +337,7 @@ class MontageQualityReport(BaseModel):
     rendered_duration_delta_seconds: float | None = None
     rendered_has_video: bool | None = None
     rendered_has_audio: bool | None = None
+    render_encoder: str | None = None
     rendered_audio_rms: dict[str, float] = Field(default_factory=dict)
     rendered_video_luma: dict[str, float] = Field(default_factory=dict)
     issues: list[MontageQualityIssue] = Field(default_factory=list)
@@ -366,12 +430,27 @@ class StorySection(BaseModel):
     scene_ids: list[UUID] = Field(default_factory=list)
 
 
+class StoryModelSection(BaseModel):
+    role: Literal["opening", "journey", "highlight", "finale"]
+    title: str = Field(min_length=1, max_length=200)
+    event_ids: list[UUID] = Field(min_length=1)
+
+
+class StoryModelOutput(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    sections: list[StoryModelSection] = Field(min_length=1, max_length=20)
+
+
 class Storyboard(BaseModel):
     title: str
     style: StoryStyle
     event_ids: list[UUID] = Field(default_factory=list)
     narration: list[str] = Field(default_factory=list)
     sections: list[StorySection] = Field(default_factory=list)
+    provider: str = Field(default="deterministic", min_length=1, max_length=100)
+    model: str | None = Field(default=None, max_length=300)
+    prompt_version: str | None = Field(default=None, max_length=100)
+    fallback_used: bool = False
 
 
 class NarrationLine(BaseModel):
@@ -382,6 +461,17 @@ class NarrationLine(BaseModel):
 class NarrationReport(BaseModel):
     created_at: datetime
     lines: list[NarrationLine] = Field(default_factory=list)
+
+
+class VoiceSynthesisReport(BaseModel):
+    created_at: datetime
+    provider: str
+    model: str
+    audio_path: Path
+    duration_seconds: float = Field(gt=0)
+    sample_rate: int = Field(gt=0)
+    channels: int = Field(gt=0, le=8)
+    line_count: int = Field(ge=1)
 
 
 class TimelineItem(BaseModel):
@@ -425,6 +515,18 @@ class QuickMontageSettings(BaseModel):
     vision_provider: Literal["local", "qwen", "florence"] = "local"
     vision_model: str | None = Field(default=None, max_length=300)
     render_device: Literal["auto", "cuda", "cpu"] = "auto"
+    framing_mode: Literal["fit", "fill", "smart"] = "fit"
+    vertical_video_layout: Literal["fit", "blur", "crop"] = "fit"
+    photo_motion: Literal["none", "ken_burns"] = "none"
+    photo_zoom_ratio: float = Field(default=1.08, ge=1.0, le=1.35)
+    color_normalization: bool = False
+    hdr_to_sdr: bool = False
+    event_titles_enabled: bool = False
+    scene_subtitles_enabled: bool = False
+    credits_text: str | None = Field(default=None, max_length=500)
+    overlay_safe_margin: float = Field(default=0.05, ge=0.03, le=0.2)
+    overlay_max_characters: int = Field(default=160, ge=20, le=500)
+    credits_duration_seconds: float = Field(default=3.0, ge=1, le=15)
     scene_threshold: float = Field(default=27, ge=1, le=100)
     min_scene_duration_seconds: float = Field(default=1.5, ge=0.5, le=30)
     max_scene_duration_seconds: float = Field(default=12, ge=2, le=120)
@@ -449,8 +551,14 @@ class QuickMontageSettings(BaseModel):
     music_path: Path | None = None
     music_volume: float = Field(default=1.0, ge=0, le=1)
     music_sync: bool = True
+    music_bpm_analysis: bool = False
+    music_volume_envelope: bool = False
     music_engine: Literal["auto", "ace-step", "procedural"] = "auto"
     music_model: str | None = Field(default=None, max_length=300)
+    narration_enabled: bool = False
+    narration_volume: float = Field(default=1.0, ge=0, le=2)
+    background_volume_during_narration: float = Field(default=0.35, ge=0, le=1)
+    source_audio_volume: float = Field(default=0.55, ge=0, le=1)
     preview_mode: bool = False
 
 
@@ -466,6 +574,17 @@ class MontageClip(BaseModel):
     caption: str | None = None
     semantic_score: float | None = Field(default=None, ge=0, le=100)
     event_id: UUID | None = None
+    event_title: str | None = Field(default=None, max_length=300)
+    source_width: int | None = Field(default=None, gt=0)
+    source_height: int | None = Field(default=None, gt=0)
+    rotation_degrees: Literal[0, 90, 180, 270] = 0
+    color_transfer: str | None = Field(default=None, max_length=80)
+    focus_x: float | None = Field(default=None, ge=0, le=1)
+    focus_y: float | None = Field(default=None, ge=0, le=1)
+    focus_source: Literal["face", "object", "subject", "manual"] | None = None
+    brightness_adjustment: float = Field(default=0, ge=-0.25, le=0.25)
+    contrast_multiplier: float = Field(default=1, ge=0.75, le=1.25)
+    saturation_multiplier: float = Field(default=1, ge=0.75, le=1.25)
     selection_reason: str = ""
     transition: Literal["cut", "fade", "wipeleft", "slideright"] | None = None
 
@@ -477,6 +596,7 @@ class QuickMontagePlan(BaseModel):
     total_duration_seconds: float = Field(default=0, ge=0)
     music_path: Path | None = None
     music_plan: MusicPlan | None = None
+    narration_path: Path | None = None
     selection_mode: Literal["chronological", "semantic"] = "chronological"
 
 
@@ -497,9 +617,31 @@ class QuickMontageResult(BaseModel):
 
 class StageResult(BaseModel):
     stage: PipelineStage
+    status: StageStatus = StageStatus.COMPLETED
     skipped: bool = False
     artifacts: list[Path] = Field(default_factory=list)
     message: str = ""
+    trace: list["StageResult"] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_skipped(cls, value: object) -> object:
+        """Keep legacy ``skipped=`` callers compatible while exposing a status."""
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        explicit_status = normalized.get("status")
+        if explicit_status is None:
+            explicit_status = (
+                StageStatus.NO_INPUT if normalized.get("skipped", False) else StageStatus.COMPLETED
+            )
+            normalized["status"] = explicit_status
+        status = StageStatus(explicit_status)
+        expected_skipped = status is not StageStatus.COMPLETED
+        if "skipped" in normalized and bool(normalized["skipped"]) != expected_skipped:
+            raise ValueError("skipped must match the explicit stage status")
+        normalized["skipped"] = expected_skipped
+        return normalized
 
 
 class StageCacheManifest(BaseModel):

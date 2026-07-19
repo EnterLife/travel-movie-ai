@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import Event, EventDetectionReport, Scene, StageResult
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -15,7 +15,7 @@ from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
 from travelmovieai.story.events import detect_events
 
-ARTIFACT_SCHEMA_VERSION = "event-detection-v1"
+ARTIFACT_SCHEMA_VERSION = "event-detection-v2"
 
 
 class EventDetectionStage(Stage):
@@ -40,6 +40,9 @@ class EventDetectionStage(Stage):
                     "location": scene.metadata.get("location_type"),
                     "activity": scene.metadata.get("activity"),
                     "landmarks": scene.metadata.get("landmarks"),
+                    "semantic_embedding": scene.metadata.get("semantic_embedding"),
+                    "embedding_backend": scene.metadata.get("embedding_backend"),
+                    "embedding_model": scene.metadata.get("embedding_model"),
                 }
                 for scene in scenes
             ],
@@ -48,6 +51,8 @@ class EventDetectionStage(Stage):
                     "id": str(asset.id),
                     "created_at": asset.created_at,
                     "modified_at": asset.modified_at,
+                    "latitude": asset.latitude,
+                    "longitude": asset.longitude,
                 }
                 for asset in assets
             ],
@@ -63,7 +68,7 @@ class EventDetectionStage(Stage):
         ) and _cached_events_valid(artifact, scenes, repository.list_events()):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Event detection reused cached event groups.",
             )
@@ -81,17 +86,31 @@ class EventDetectionStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=not report.events,
+            status=StageStatus.COMPLETED if report.events else StageStatus.NO_INPUT,
             artifacts=[context.database_path, artifact, cache_artifact],
             message=f"Event detection produced {len(report.events)} event(s).",
         )
 
 
 def _cached_events_valid(path: Path, scenes: list[Scene], events: list[Event]) -> bool:
-    if not events:
-        return False
     try:
-        EventDetectionReport.model_validate_json(path.read_text(encoding="utf-8"))
+        report = EventDetectionReport.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return all(scene.metadata.get("event_id") for scene in scenes)
+    if not scenes:
+        return not report.events and not events
+    reported_by_id = {event.id: event for event in report.events}
+    if set(reported_by_id) != {event.id for event in events}:
+        return False
+    expected_scene_ids = {scene.id for scene in scenes}
+    if {scene_id for event in report.events for scene_id in event.scene_ids} != expected_scene_ids:
+        return False
+    reported_by_text_id = {str(event.id): event for event in report.events}
+    for scene in scenes:
+        event_id = scene.metadata.get("event_id")
+        if not isinstance(event_id, str):
+            return False
+        event = reported_by_text_id.get(event_id)
+        if event is None or scene.id not in event.scene_ids:
+            return False
+    return True

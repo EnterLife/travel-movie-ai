@@ -11,6 +11,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from travelmovieai.core.exceptions import DependencyUnavailableError, PipelineStageError
+from travelmovieai.core.security import sanitize_process_error
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MediaAsset,
@@ -149,7 +150,11 @@ def _extract_scene_audio(
         ) from error
     try:
         if completed.returncode != 0:
-            detail = completed.stderr.strip() or "unknown FFmpeg error"
+            detail = sanitize_process_error(
+                completed.stderr,
+                private_paths=[source_path, temporary, output_path],
+                fallback="unknown FFmpeg error",
+            )
             raise PipelineStageError(f"Could not extract speech from {source_path.name}: {detail}")
         os.replace(temporary, output_path)
     finally:

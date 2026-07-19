@@ -1,7 +1,7 @@
 """Pipeline stage for media discovery and SQLite persistence."""
 
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import StageResult
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
@@ -25,6 +25,7 @@ class MediaScanStage(Stage):
             context.input_path,
             cached_assets=cached_assets,
             excluded_roots=(context.workspace,),
+            progress=context.progress,
         )
         repository.synchronize(report.assets, report.scanned_at)
 
@@ -33,7 +34,13 @@ class MediaScanStage(Stage):
 
         return StageResult(
             stage=self.name,
-            skipped=report.probed_count == 0,
+            status=(
+                StageStatus.CACHED
+                if report.probed_count == 0 and report.cached_count > 0
+                else StageStatus.NO_INPUT
+                if report.discovered_count == 0
+                else StageStatus.COMPLETED
+            ),
             artifacts=[context.database_path, analysis_path],
             message=(
                 f"Media scan found {report.discovered_count} file(s): "

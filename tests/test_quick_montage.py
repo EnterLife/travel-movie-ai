@@ -5,13 +5,14 @@ import struct
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
 
 from travelmovieai.application.service import TravelMovieService
 from travelmovieai.core.config import Settings
-from travelmovieai.core.exceptions import MontageError
+from travelmovieai.core.exceptions import MediaProbeError, MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MediaAsset,
@@ -26,6 +27,7 @@ from travelmovieai.editing.renderer import (
     _transition_duration,
 )
 from travelmovieai.editing.timeline import build_quick_montage_plan
+from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.system import CudaStatus
 
 
@@ -303,6 +305,162 @@ def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> No
     assert "atrim=start=1.000:duration=2.000" in filter_graph
 
 
+def test_renderer_resumes_from_atomic_segment_checkpoints(tmp_path: Path) -> None:
+    calls: list[str] = []
+    fail_second_once = True
+
+    class CheckpointRenderer(QuickMontageRenderer):
+        def _valid_cached_segment(self, path: Path) -> bool:
+            return path.is_file() and path.stat().st_size > 0
+
+        def _render_segment(
+            self,
+            clip: MontageClip,
+            plan: QuickMontagePlan,
+            output_path: Path,
+            *,
+            show_event_title: bool = False,
+            show_credits: bool = False,
+        ) -> None:
+            nonlocal fail_second_once
+            del plan, show_event_title, show_credits
+            calls.append(clip.relative_path.as_posix())
+            output_path.write_bytes(b"partial-or-complete")
+            if clip.relative_path.name == "second.mp4" and fail_second_once:
+                fail_second_once = False
+                raise MontageError("simulated interruption")
+
+    clips = []
+    for name in ("first.mp4", "second.mp4", "third.mp4"):
+        source = tmp_path / name
+        source.write_bytes(name.encode())
+        clips.append(
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=source,
+                relative_path=Path(name),
+                media_type=MediaType.VIDEO,
+                duration_seconds=1,
+            )
+        )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(music_enabled=False, render_device="cpu"),
+        clips=clips,
+        total_duration_seconds=3,
+    )
+    renderer = CheckpointRenderer(workers=1)
+    segments_dir = tmp_path / "cache" / "quick_montage_segments"
+    segments_dir.mkdir(parents=True)
+
+    with pytest.raises(MontageError, match="simulated interruption"):
+        renderer._render_segments(plan, segments_dir, None, 4)
+    resumed = renderer._render_segments(plan, segments_dir, None, 4)
+
+    assert calls == ["first.mp4", "second.mp4", "second.mp4", "third.mp4"]
+    assert all(path.is_file() and path.stat().st_size > 0 for path in resumed)
+    assert not list(segments_dir.glob(".*.tmp.mp4"))
+
+
+def test_parallel_renderer_does_not_start_queued_clips_after_cancel(tmp_path: Path) -> None:
+    barrier = Barrier(2)
+    calls: list[Path] = []
+
+    class BlockingRenderer(QuickMontageRenderer):
+        def _valid_cached_segment(self, path: Path) -> bool:
+            del path
+            return False
+
+        def _render_segment(
+            self,
+            clip: MontageClip,
+            plan: QuickMontagePlan,
+            output_path: Path,
+            *,
+            show_event_title: bool = False,
+            show_credits: bool = False,
+        ) -> None:
+            del plan, show_event_title, show_credits
+            calls.append(clip.relative_path)
+            barrier.wait(timeout=5)
+            output_path.write_bytes(b"complete")
+
+    clips = []
+    for index in range(5):
+        source = tmp_path / f"clip-{index}.mp4"
+        source.write_bytes(b"source")
+        clips.append(
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=source,
+                relative_path=Path(source.name),
+                media_type=MediaType.VIDEO,
+                duration_seconds=1,
+            )
+        )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(music_enabled=False, render_device="cpu"),
+        clips=clips,
+        total_duration_seconds=5,
+    )
+
+    def cancel_after_first(current: int, total: int, message: str) -> None:
+        del total
+        if current >= 1 and "Clips complete" in message:
+            raise MontageError("cancel render queue")
+
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    with pytest.raises(MontageError, match="cancel render queue"):
+        BlockingRenderer(workers=2)._render_segments(
+            plan,
+            segments_dir,
+            cancel_after_first,
+            6,
+        )
+
+    assert len(calls) == 2
+
+
+def test_cached_segment_requires_valid_probed_video_and_audio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment = tmp_path / "segment.mp4"
+    segment.write_bytes(b"nonempty but corrupt")
+
+    class FailingProbe:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def probe(self, path: Path) -> object:
+            del path
+            raise MediaProbeError("corrupt segment")
+
+    monkeypatch.setattr("travelmovieai.editing.renderer.FFprobeClient", FailingProbe)
+    renderer = QuickMontageRenderer()
+    assert renderer._valid_cached_segment(segment) is False
+
+    class ValidProbe:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def probe(self, path: Path) -> object:
+            del path
+            return type(
+                "Probe",
+                (),
+                {
+                    "duration_seconds": 1.0,
+                    "metadata": {"streams": [{"codec_type": "video"}, {"codec_type": "audio"}]},
+                },
+            )()
+
+    monkeypatch.setattr("travelmovieai.editing.renderer.FFprobeClient", ValidProbe)
+    assert renderer._valid_cached_segment(segment) is True
+
+
 def test_renderer_reports_ffmpeg_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[float] = []
 
@@ -420,6 +578,42 @@ def test_renderer_rejects_missing_soundtrack_before_ffmpeg(tmp_path: Path) -> No
         QuickMontageRenderer().render(plan, tmp_path / "out.mp4", tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        (QuickMontageSettings(speech_analysis=True), "Speech analysis requires semantic"),
+        (QuickMontageSettings(narration_enabled=True), "Narration requires semantic"),
+        (QuickMontageSettings(framing_mode="smart"), "smart crop.*require semantic"),
+        (QuickMontageSettings(color_normalization=True), "color normalization.*require semantic"),
+        (QuickMontageSettings(event_titles_enabled=True), "event titles.*require semantic"),
+        (QuickMontageSettings(scene_subtitles_enabled=True), "scene subtitles.*require semantic"),
+    ],
+)
+def test_service_rejects_ai_audio_features_without_semantic_pipeline(
+    tmp_path: Path,
+    settings: QuickMontageSettings,
+    message: str,
+) -> None:
+    with pytest.raises(MontageError, match=message):
+        TravelMovieService(Settings()).create_quick_montage(
+            input_path=tmp_path / "media",
+            workspace=tmp_path / "workspace",
+            settings=settings,
+        )
+
+
+def test_service_rejects_requested_narration_when_piper_is_disabled(tmp_path: Path) -> None:
+    with pytest.raises(MontageError, match="voice_provider is disabled"):
+        TravelMovieService(Settings(voice_provider="disabled")).create_quick_montage(
+            input_path=tmp_path / "media",
+            workspace=tmp_path / "workspace",
+            settings=QuickMontageSettings(
+                semantic_analysis=True,
+                narration_enabled=True,
+            ),
+        )
+
+
 def test_renderer_rejects_output_that_overwrites_source_media(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     plan = QuickMontagePlan(
@@ -473,12 +667,16 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
             fps=24,
             music_engine="procedural",
         ),
+        variant_name="Quick history",
     )
 
     assert result.output_path.is_file()
     assert result.output_path.stat().st_size > 0
     assert result.clip_count == 2
     assert result.timeline_path.is_file()
+    versions = MediaAssetRepository(workspace / "project.db").list_timeline_versions()
+    assert [version.phase for version in versions[:2]] == ["rendered", "built"]
+    assert all(version.variant_name == "Quick history" for version in versions[:2])
     quality_report = json.loads(
         (workspace / "artifacts" / "montage_quality_report.json").read_text(encoding="utf-8")
     )
@@ -575,7 +773,9 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     timeline = json.loads(first.timeline_path.read_text(encoding="utf-8"))
     assert len(vision["scenes"]) >= 2
     assert (workspace / "artifacts" / "events.json").is_file()
+    assert (workspace / "artifacts" / "embeddings.json").is_file()
     assert (workspace / "artifacts" / "scene_descriptions.json").is_file()
+    assert (workspace / "artifacts" / "storyboard.json").is_file()
     quality_report = json.loads(
         (workspace / "artifacts" / "montage_quality_report.json").read_text(encoding="utf-8")
     )
@@ -583,10 +783,26 @@ def test_service_creates_cached_semantic_montage_with_music(tmp_path: Path) -> N
     assert quality_report["music_mode"] == "library"
     assert quality_report["rendered_has_video"] is True
     assert quality_report["rendered_has_audio"] is True
+    assert quality_report["render_encoder"] == first.render_encoder
     assert timeline["selection_mode"] == "semantic"
     assert timeline["music_path"].endswith("cinematic theme.wav")
     assert all(clip["semantic_score"] is not None for clip in timeline["clips"])
     assert {clip["transition"] for clip in timeline["clips"]} <= {None, "cut", "fade"}
+
+
+def test_semantic_montage_rejects_empty_media_directory(tmp_path: Path) -> None:
+    media = tmp_path / "empty trip"
+    media.mkdir()
+
+    with pytest.raises(MontageError, match="timeline|usable media"):
+        TravelMovieService(Settings()).create_quick_montage(
+            input_path=media,
+            workspace=tmp_path / "workspace",
+            settings=QuickMontageSettings(
+                semantic_analysis=True,
+                music_enabled=False,
+            ),
+        )
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")

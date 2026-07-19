@@ -7,6 +7,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+build/
+dist/
 
 # Virtual environments
 .venv/
@@ -26,6 +28,7 @@ models/
 # TravelMovieAI runtime data
 workspace/
 output/
+.tmp/
 *.db
 *.sqlite
 *.sqlite3

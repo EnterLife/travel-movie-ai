@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,12 +18,19 @@ from travelmovieai.core.exceptions import TravelMovieError, WorkspaceBusyError
 from travelmovieai.domain.models import MediaScanReport, StageResult
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.web.schemas import JobStatus, ScanJobHistory, ScanJobResponse
+from travelmovieai.web.state import redact_sensitive_text
 
 LOGGER = logging.getLogger(__name__)
 
 
 class ScanService(Protocol):
-    def analyze(self, *, input_path: Path, workspace: Path | None) -> StageResult: ...
+    def analyze(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path | None,
+        progress: Callable[[int, int, str], None] | None = None,
+    ) -> StageResult: ...
 
     def resolve_project_paths(self, input_path: Path, workspace: Path | None) -> ProjectPaths: ...
 
@@ -39,6 +47,10 @@ class _ScanJob:
     message: str = ""
     error: str | None = None
     report: MediaScanReport | None = None
+
+
+class _ScanInterrupted(Exception):
+    """Stop this worker while keeping its persisted job recoverable."""
 
 
 class ScanJobManager:
@@ -58,6 +70,7 @@ class ScanJobManager:
         )
         self._jobs: dict[UUID, _ScanJob] = {}
         self._lock = RLock()
+        self._shutting_down = False
         self._load()
 
     def submit(self, input_path: Path, workspace: Path | None) -> ScanJobResponse:
@@ -108,23 +121,39 @@ class ScanJobManager:
             return self._workspace_is_active(workspace)
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=False)
+        with self._lock:
+            self._shutting_down = True
+            self._persist()
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run(self, job_id: UUID) -> None:
         with self._lock:
             job = self._jobs[job_id]
+            if self._shutting_down:
+                return
             job.status = JobStatus.RUNNING
             job.started_at = datetime.now(UTC)
+            job.finished_at = None
+            job.error = None
             job.message = "Scanning media..."
             self._persist()
+
+        def progress(current: int, total: int, message: str) -> None:
+            del current, total, message
+            with self._lock:
+                if self._shutting_down:
+                    raise _ScanInterrupted
 
         try:
             result = self._service.analyze(
                 input_path=job.input_path,
                 workspace=job.workspace,
+                progress=progress,
             )
             report_path = job.workspace / "artifacts" / "analysis.json"
             report = MediaScanReport.model_validate_json(report_path.read_text(encoding="utf-8"))
+        except _ScanInterrupted:
+            return
         except (TravelMovieError, OSError, ValidationError) as error:
             self._fail(job, str(error))
             return
@@ -142,10 +171,14 @@ class ScanJobManager:
 
     def _fail(self, job: _ScanJob, error: str) -> None:
         with self._lock:
+            safe_error = redact_sensitive_text(
+                error,
+                private_paths=[job.input_path, job.workspace],
+            )
             job.status = JobStatus.FAILED
             job.finished_at = datetime.now(UTC)
             job.message = "The scan failed."
-            job.error = error
+            job.error = safe_error
             self._persist()
 
     def _workspace_is_active(self, workspace: Path) -> bool:
@@ -180,17 +213,18 @@ class ScanJobManager:
             LOGGER.exception("Could not load web job history")
             return
 
-        now = datetime.now(UTC)
+        recovered_ids: list[UUID] = []
         for saved in history.jobs:
             status = saved.status
             message = saved.message
             error = saved.error
             finished_at = saved.finished_at
             if status in {JobStatus.QUEUED, JobStatus.RUNNING}:
-                status = JobStatus.FAILED
-                message = "The job was interrupted by a server restart."
-                error = message
-                finished_at = now
+                status = JobStatus.QUEUED
+                message = "Recovered interrupted scan; waiting to resume."
+                error = None
+                finished_at = None
+                recovered_ids.append(saved.id)
 
             report = _load_report(saved.workspace) if status == JobStatus.COMPLETED else None
             self._jobs[saved.id] = _ScanJob(
@@ -207,6 +241,8 @@ class ScanJobManager:
             )
         self._trim_history()
         self._persist()
+        for job_id in recovered_ids:
+            self._executor.submit(self._run, job_id)
 
     def _persist(self) -> None:
         if self._state_path is None:

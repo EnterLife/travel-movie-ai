@@ -13,6 +13,7 @@ from typing import TypedDict
 from uuid import UUID
 
 from travelmovieai.core.exceptions import DependencyUnavailableError, MontageError
+from travelmovieai.core.security import sanitize_process_error
 from travelmovieai.domain.models import (
     MontageClip,
     MontageQualityIssue,
@@ -458,7 +459,11 @@ def _probe_rendered_movie(
             f"FFprobe timed out after {timeout_seconds:g}s while validating the final movie."
         ) from error
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or "unknown FFprobe error"
+        detail = sanitize_process_error(
+            completed.stderr,
+            private_paths=[output_path],
+            fallback="unknown FFprobe error",
+        )
         raise MontageError(f"Could not validate the final movie: {detail}")
     try:
         payload = json.loads(completed.stdout)

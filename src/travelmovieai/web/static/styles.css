@@ -761,6 +761,13 @@ input::placeholder {
   color: #e6b45f;
 }
 
+.capability-guidance {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .movie-panel h3,
 .movie-progress h3,
 .movie-result h3,
@@ -784,7 +791,7 @@ input::placeholder {
 
 .ai-config-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 24px;
 }
@@ -894,6 +901,32 @@ input::placeholder {
   padding: 26px;
 }
 
+.scene-review-heading,
+.scene-page-actions {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scene-review-heading select {
+  min-width: 180px;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(5, 7, 9, 0.7);
+}
+
+.scene-page-actions {
+  margin-top: 16px;
+}
+
+.scene-page-actions p {
+  margin: 0;
+}
+
 .scene-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -976,6 +1009,65 @@ input::placeholder {
 
 .scene-actions button.active.exclude {
   color: var(--red);
+}
+
+.scene-edit-fields,
+.event-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.scene-edit-fields input,
+.scene-edit-fields textarea,
+.event-card input,
+.event-card textarea,
+.version-controls select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  color: var(--text);
+  background: rgba(5, 7, 9, 0.75);
+  font: inherit;
+}
+
+.scene-edit-buttons,
+.event-actions,
+.version-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.edit-workspace {
+  margin-top: 16px;
+  padding: 26px;
+}
+
+.version-controls {
+  margin: 20px 0;
+}
+
+.version-controls select {
+  width: auto;
+  min-width: 220px;
+}
+
+.version-controls p {
+  flex-basis: 100%;
+}
+
+.event-list {
+  display: grid;
+  gap: 10px;
+}
+
+.event-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 
 .music-path {
@@ -1418,9 +1510,6 @@ footer a {
     grid-template-columns: 1fr 1fr;
   }
 
-  .config-card:last-child {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 580px) {
@@ -1506,9 +1595,6 @@ footer a {
     justify-content: flex-start;
   }
 
-  .config-card:last-child {
-    grid-column: auto;
-  }
 
   .movie-result-heading {
     align-items: stretch;

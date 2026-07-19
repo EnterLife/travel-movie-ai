@@ -1,5 +1,6 @@
 """Pipeline stage that plans soundtrack cues for the montage."""
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -7,7 +8,7 @@ from pydantic import ValidationError
 
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.exceptions import MontageError
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import MusicPlan, QuickMontageSettings, StageResult
 from travelmovieai.editing.timeline import build_semantic_montage_plan
 from travelmovieai.infrastructure.artifacts import (
@@ -26,10 +27,17 @@ from travelmovieai.pipeline.base import Stage
 from travelmovieai.story.music import NeuralMusicGenerator, build_music_plan
 
 ARTIFACT_SCHEMA_VERSION = "music-selection-v2"
+MusicGeneratorFactory = Callable[
+    [ProjectContext, QuickMontageSettings],
+    NeuralMusicGenerator | None,
+]
 
 
 class MusicSelectionStage(Stage):
     name = PipelineStage.MUSIC_SELECTION
+
+    def __init__(self, generator_factory: MusicGeneratorFactory | None = None) -> None:
+        self._generator_factory = generator_factory
 
     def run(self, context: ProjectContext) -> StageResult:
         repository = MediaAssetRepository(context.database_path)
@@ -43,7 +51,7 @@ class MusicSelectionStage(Stage):
             cache_artifact.unlink(missing_ok=True)
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.NO_INPUT,
                 message="Music selection needs media assets and ranked scenes.",
             )
 
@@ -58,7 +66,7 @@ class MusicSelectionStage(Stage):
             cache_artifact.unlink(missing_ok=True)
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.DISABLED,
                 artifacts=[music_artifact],
                 message="Music selection disabled by montage settings.",
             )
@@ -90,7 +98,7 @@ class MusicSelectionStage(Stage):
         ) and _cached_music_artifact_valid(music_artifact):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[music_artifact, cache_artifact],
                 message="Music selection reused cached soundtrack metadata.",
             )
@@ -102,7 +110,13 @@ class MusicSelectionStage(Stage):
             context.settings.music_library.expanduser().resolve(),
             context.artifacts_dir / context.settings.generated_music_filename,
             draft_plan,
-            neural_generator=_neural_music_generator(context, settings),
+            neural_generator=(
+                self._generator_factory(context, settings)
+                if self._generator_factory is not None
+                else _neural_music_generator(context, settings)
+            ),
+            ffmpeg_binary=context.settings.ffmpeg_binary,
+            progress=context.progress,
         )
         if not _music_plan_source_available(music_plan):
             raise MontageError(

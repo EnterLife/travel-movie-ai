@@ -37,6 +37,15 @@ class PipelineStage(StrEnum):
     RENDERING = "rendering"
 
 
+class StageStatus(StrEnum):
+    """Observable outcome of a successfully returned pipeline stage."""
+
+    COMPLETED = "completed"
+    CACHED = "cached"
+    DISABLED = "disabled"
+    NO_INPUT = "no_input"
+
+
 class LocationType(StrEnum):
     UNKNOWN = "unknown"
     BEACH = "beach"

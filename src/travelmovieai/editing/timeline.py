@@ -1,7 +1,9 @@
 """Timeline assembly."""
 
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID
 
 from travelmovieai.core.exceptions import MontageError
@@ -18,6 +20,22 @@ from travelmovieai.domain.models import (
 )
 from travelmovieai.story.optimizer import optimize_story_timeline_candidates
 from travelmovieai.story.ranking import rank_scenes
+
+type _FocusSource = Literal["face", "object", "subject", "manual"]
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderMetadata:
+    source_width: int | None
+    source_height: int | None
+    rotation_degrees: Literal[0, 90, 180, 270]
+    color_transfer: str | None
+    focus_x: float | None = None
+    focus_y: float | None = None
+    focus_source: _FocusSource | None = None
+    brightness_adjustment: float = 0
+    contrast_multiplier: float = 1
+    saturation_multiplier: float = 1
 
 
 def build_quick_montage_plan(
@@ -66,6 +84,7 @@ def build_quick_montage_plan(
         source_start = 0.0
         if asset.media_type is MediaType.VIDEO and asset.duration_seconds:
             source_start = max(0.0, (asset.duration_seconds - duration) / 2)
+        render_metadata = _render_metadata(asset)
 
         clips.append(
             MontageClip(
@@ -76,6 +95,16 @@ def build_quick_montage_plan(
                 source_start_seconds=source_start,
                 duration_seconds=duration,
                 has_audio=_has_audio(asset),
+                source_width=render_metadata.source_width,
+                source_height=render_metadata.source_height,
+                rotation_degrees=render_metadata.rotation_degrees,
+                color_transfer=render_metadata.color_transfer,
+                focus_x=render_metadata.focus_x,
+                focus_y=render_metadata.focus_y,
+                focus_source=render_metadata.focus_source,
+                brightness_adjustment=render_metadata.brightness_adjustment,
+                contrast_multiplier=render_metadata.contrast_multiplier,
+                saturation_multiplier=render_metadata.saturation_multiplier,
             )
         )
         effective_duration += duration - (boundary_overlap if len(clips) > 1 else 0)
@@ -158,6 +187,7 @@ def build_semantic_montage_plan(
         selection_reason = _selection_reason(scene, settings)
         if window_reason:
             selection_reason = f"{selection_reason}; {window_reason}"
+        render_metadata = _render_metadata(asset, scene)
         selected.append(
             MontageClip(
                 asset_id=asset.id,
@@ -171,7 +201,18 @@ def build_semantic_montage_plan(
                 caption=scene.caption,
                 semantic_score=float(scene.metadata.get("ranking_score", 50)),
                 event_id=event_id,
+                event_title=_optional_text(scene.metadata.get("event_title")),
                 selection_reason=selection_reason,
+                source_width=render_metadata.source_width,
+                source_height=render_metadata.source_height,
+                rotation_degrees=render_metadata.rotation_degrees,
+                color_transfer=render_metadata.color_transfer,
+                focus_x=render_metadata.focus_x,
+                focus_y=render_metadata.focus_y,
+                focus_source=render_metadata.focus_source,
+                brightness_adjustment=render_metadata.brightness_adjustment,
+                contrast_multiplier=render_metadata.contrast_multiplier,
+                saturation_multiplier=render_metadata.saturation_multiplier,
             )
         )
         effective_duration += duration - (boundary_overlap if len(selected) > 1 else 0)
@@ -193,6 +234,7 @@ def build_semantic_montage_plan(
         )
     else:
         selected.sort(key=lambda clip: _story_timeline_sort_key(clip, scenes_by_id, assets_by_id))
+    selected = _apply_manual_timeline_order(selected, scenes_by_id)
     selected = _apply_transition_policy(selected, scenes_by_id, settings)
     selected = _fit_clips_to_target_duration(
         selected,
@@ -210,6 +252,73 @@ def build_semantic_montage_plan(
         music_plan=music_plan,
         selection_mode="semantic",
     )
+
+
+def _apply_manual_timeline_order(
+    clips: list[MontageClip],
+    scenes_by_id: dict[UUID, Scene],
+) -> list[MontageClip]:
+    """Apply persisted user ordering after automatic story/chronology ordering."""
+
+    ordered = list(clips)
+    positions_by_event: dict[str, list[int]] = {}
+    for index, clip in enumerate(ordered):
+        event_key = _manual_order_event_key(clip, scenes_by_id)
+        positions_by_event.setdefault(event_key, []).append(index)
+
+    for positions in positions_by_event.values():
+        event_clips = [ordered[index] for index in positions]
+        if not any(
+            _manual_order_value(clip, scenes_by_id, "manual_scene_order") is not None
+            for clip in event_clips
+        ):
+            continue
+        event_clips.sort(
+            key=lambda clip: (
+                _manual_order_value(clip, scenes_by_id, "manual_scene_order")
+                if _manual_order_value(clip, scenes_by_id, "manual_scene_order") is not None
+                else len(event_clips),
+            )
+        )
+        for position, clip in zip(positions, event_clips, strict=True):
+            ordered[position] = clip
+
+    if any(
+        _manual_order_value(clip, scenes_by_id, "manual_event_order") is not None
+        for clip in ordered
+    ):
+        original_positions = {id(clip): index for index, clip in enumerate(ordered)}
+        ordered.sort(
+            key=lambda clip: (
+                _manual_order_value(clip, scenes_by_id, "manual_event_order")
+                if _manual_order_value(clip, scenes_by_id, "manual_event_order") is not None
+                else len(positions_by_event),
+                original_positions[id(clip)],
+            )
+        )
+    return ordered
+
+
+def _manual_order_event_key(
+    clip: MontageClip,
+    scenes_by_id: dict[UUID, Scene],
+) -> str:
+    if clip.event_id is not None:
+        return str(clip.event_id)
+    scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
+    if scene is not None and scene.metadata.get("event_id") is not None:
+        return str(scene.metadata["event_id"])
+    return f"clip:{id(clip)}"
+
+
+def _manual_order_value(
+    clip: MontageClip,
+    scenes_by_id: dict[UUID, Scene],
+    field: str,
+) -> int | None:
+    scene = scenes_by_id.get(clip.scene_id) if clip.scene_id is not None else None
+    value = scene.metadata.get(field) if scene is not None else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def build_selection_report(
@@ -329,6 +438,229 @@ def apply_music_directing(
 def _has_audio(asset: MediaAsset) -> bool:
     streams = asset.probe_metadata.get("streams", [])
     return any(stream.get("codec_type") == "audio" for stream in streams)
+
+
+def _render_metadata(asset: MediaAsset, scene: Scene | None = None) -> _RenderMetadata:
+    stream = _video_stream(asset)
+    width = _positive_int(stream.get("width")) or asset.width
+    height = _positive_int(stream.get("height")) or asset.height
+    rotation = _rotation_degrees(stream.get("rotation_degrees"))
+    focus = _scene_focus(scene, width=width, height=height)
+    brightness, contrast, saturation = _scene_color_adjustments(scene)
+    return _RenderMetadata(
+        source_width=width,
+        source_height=height,
+        rotation_degrees=rotation,
+        color_transfer=_optional_text(stream.get("color_transfer")),
+        focus_x=focus[0] if focus is not None else None,
+        focus_y=focus[1] if focus is not None else None,
+        focus_source=focus[2] if focus is not None else None,
+        brightness_adjustment=brightness,
+        contrast_multiplier=contrast,
+        saturation_multiplier=saturation,
+    )
+
+
+def _video_stream(asset: MediaAsset) -> dict[str, object]:
+    streams = asset.probe_metadata.get("streams", [])
+    if not isinstance(streams, list):
+        return {}
+    return next(
+        (
+            stream
+            for stream in streams
+            if isinstance(stream, dict) and stream.get("codec_type") == "video"
+        ),
+        {},
+    )
+
+
+def _scene_focus(
+    scene: Scene | None,
+    *,
+    width: int | None,
+    height: int | None,
+) -> tuple[float, float, _FocusSource] | None:
+    if scene is None:
+        return None
+    direct = _focus_point(scene.metadata.get("focus_point"), width=width, height=height)
+    if direct is not None:
+        source = str(scene.metadata.get("focus_source", "manual"))
+        source_values: dict[str, _FocusSource] = {
+            "face": "face",
+            "object": "object",
+            "subject": "subject",
+            "manual": "manual",
+        }
+        normalized_source = source_values.get(source, "manual")
+        return direct[0], direct[1], normalized_source
+    focus_sources: tuple[tuple[str, _FocusSource], ...] = (
+        ("face_boxes", "face"),
+        ("object_boxes", "object"),
+        ("subject_boxes", "subject"),
+        ("subject_bbox", "subject"),
+    )
+    for key, source in focus_sources:
+        box = _best_box(scene.metadata.get(key))
+        point = _box_center(box, width=width, height=height)
+        if point is not None:
+            return point[0], point[1], source
+    return None
+
+
+def _scene_color_adjustments(scene: Scene | None) -> tuple[float, float, float]:
+    if scene is None:
+        return 0.0, 1.0, 1.0
+    raw_metrics = scene.metadata.get("quality_metrics")
+    if not isinstance(raw_metrics, dict):
+        return 0.0, 1.0, 1.0
+    brightness = _optional_number(raw_metrics.get("brightness"))
+    exposure = _optional_number(raw_metrics.get("exposure_score"))
+    contrast = _optional_number(raw_metrics.get("contrast"))
+    saturation = _optional_number(raw_metrics.get("saturation"))
+    luminance_values = [value for value in (brightness, exposure) if value is not None]
+    measured_luminance = sum(luminance_values) / len(luminance_values) if luminance_values else 50
+    brightness_adjustment = _clamp((50 - measured_luminance) / 400, -0.12, 0.12)
+    measured_contrast = contrast if contrast is not None else 50
+    measured_saturation = saturation if saturation is not None else 50
+    contrast_multiplier = _clamp(1 + (50 - measured_contrast) / 250, 0.8, 1.2)
+    saturation_multiplier = _clamp(1 + (50 - measured_saturation) / 250, 0.8, 1.2)
+    return (
+        round(brightness_adjustment, 4),
+        round(contrast_multiplier, 4),
+        round(saturation_multiplier, 4),
+    )
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _focus_point(
+    value: object,
+    *,
+    width: int | None,
+    height: int | None,
+) -> tuple[float, float] | None:
+    if not isinstance(value, dict):
+        return None
+    x = _optional_number(value.get("x"))
+    y = _optional_number(value.get("y"))
+    if x is None or y is None:
+        return None
+    if x > 1 or y > 1:
+        if not width or not height:
+            return None
+        x /= width
+        y /= height
+    if 0 <= x <= 1 and 0 <= y <= 1:
+        return x, y
+    return None
+
+
+def _best_box(value: object) -> dict[object, object] | None:
+    direct = _coerce_box(value)
+    if direct is not None:
+        return direct
+    if not isinstance(value, list):
+        return None
+    boxes = [box for item in value if (box := _coerce_box(item)) is not None]
+    if not boxes:
+        return None
+    return max(
+        boxes,
+        key=lambda box: _optional_number(box.get("confidence")) or 0,
+    )
+
+
+def _coerce_box(value: object) -> dict[object, object] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    coordinates = [_optional_number(item) for item in value]
+    if any(coordinate is None for coordinate in coordinates):
+        return None
+    return dict(zip(("x1", "y1", "x2", "y2"), coordinates, strict=True))
+
+
+def _box_center(
+    box: dict[object, object] | None,
+    *,
+    width: int | None,
+    height: int | None,
+) -> tuple[float, float] | None:
+    if box is None:
+        return None
+    x = _optional_number(box.get("x"))
+    y = _optional_number(box.get("y"))
+    box_width = _optional_number(box.get("width"))
+    box_height = _optional_number(box.get("height"))
+    if None not in {x, y, box_width, box_height}:
+        assert x is not None and y is not None
+        assert box_width is not None and box_height is not None
+        return _focus_point(
+            {"x": x + box_width / 2, "y": y + box_height / 2},
+            width=width,
+            height=height,
+        )
+    x1 = _optional_number(box.get("x1"))
+    y1 = _optional_number(box.get("y1"))
+    x2 = _optional_number(box.get("x2"))
+    y2 = _optional_number(box.get("y2"))
+    if None in {x1, y1, x2, y2}:
+        return None
+    assert x1 is not None and y1 is not None and x2 is not None and y2 is not None
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return _focus_point(
+        {"x": (x1 + x2) / 2, "y": (y1 + y2) / 2},
+        width=width,
+        height=height,
+    )
+
+
+def _rotation_degrees(value: object) -> Literal[0, 90, 180, 270]:
+    number = _optional_number(value)
+    if number is None:
+        return 0
+    rotation = int(round(number)) % 360
+    if rotation == 90:
+        return 90
+    if rotation == 180:
+        return 180
+    if rotation == 270:
+        return 270
+    return 0
+
+
+def _positive_int(value: object) -> int | None:
+    number = _optional_number(value)
+    if number is None or number <= 0:
+        return None
+    return int(number)
+
+
+def _optional_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, str):
+        try:
+            number = float(value)
+        except ValueError:
+            return None
+        return number if math.isfinite(number) else None
+    return None
+
+
+def _optional_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    return text or None
 
 
 def _story_timeline_sort_key(

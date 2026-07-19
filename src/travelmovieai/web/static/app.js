@@ -24,6 +24,7 @@ const recentJobs = document.querySelector("#recent-jobs");
 const recentJobsList = document.querySelector("#recent-jobs-list");
 const refreshJobs = document.querySelector("#refresh-jobs");
 const movieButton = document.querySelector("#movie-button");
+const movieVariant = document.querySelector("#movie-variant");
 const movieDuration = document.querySelector("#movie-duration");
 const clipDuration = document.querySelector("#clip-duration");
 const photoDuration = document.querySelector("#photo-duration");
@@ -39,6 +40,15 @@ const previewMode = document.querySelector("#preview-mode");
 const semanticAnalysis = document.querySelector("#semantic-analysis");
 const qualityAnalysis = document.querySelector("#quality-analysis");
 const speechAnalysis = document.querySelector("#speech-analysis");
+const narrationEnabled = document.querySelector("#narration-enabled");
+const framingMode = document.querySelector("#framing-mode");
+const verticalVideoLayout = document.querySelector("#vertical-video-layout");
+const photoMotion = document.querySelector("#photo-motion");
+const colorNormalization = document.querySelector("#color-normalization");
+const hdrToSdr = document.querySelector("#hdr-to-sdr");
+const eventTitlesEnabled = document.querySelector("#event-titles-enabled");
+const sceneSubtitlesEnabled = document.querySelector("#scene-subtitles-enabled");
+const creditsText = document.querySelector("#credits-text");
 const musicMode = document.querySelector("#music-mode");
 const musicEngine = document.querySelector("#music-engine");
 const musicModel = document.querySelector("#music-model");
@@ -47,7 +57,13 @@ const musicSync = document.querySelector("#music-sync");
 const musicVolume = document.querySelector("#music-volume");
 const musicVolumeValue = document.querySelector("#music-volume-value");
 const musicPath = document.querySelector("#music-path");
+const musicBpmAnalysis = document.querySelector("#music-bpm-analysis");
+const musicVolumeEnvelope = document.querySelector("#music-volume-envelope");
+const narrationVolume = document.querySelector("#narration-volume");
+const backgroundVolume = document.querySelector("#background-volume");
+const sourceAudioVolume = document.querySelector("#source-audio-volume");
 const capabilityList = document.querySelector("#capability-list");
+const capabilityGuidance = document.querySelector("#capability-guidance");
 const movieProgress = document.querySelector("#movie-progress");
 const movieStatus = document.querySelector("#movie-status");
 const movieProgressTitle = document.querySelector("#movie-progress-title");
@@ -66,10 +82,20 @@ const movieResult = document.querySelector("#movie-result");
 const movieResultSummary = document.querySelector("#movie-result-summary");
 const sceneReview = document.querySelector("#scene-review");
 const sceneGrid = document.querySelector("#scene-grid");
+const sceneEventFilter = document.querySelector("#scene-event-filter");
+const scenePageStatus = document.querySelector("#scene-page-status");
+const loadMoreScenes = document.querySelector("#load-more-scenes");
 const movieDownload = document.querySelector("#movie-download");
 const moviePreview = document.querySelector("#movie-preview");
 const moviePauseButton = document.querySelector("#movie-pause-button");
 const movieCancelButton = document.querySelector("#movie-cancel-button");
+const editWorkspace = document.querySelector("#edit-workspace");
+const eventList = document.querySelector("#event-list");
+const refreshEdits = document.querySelector("#refresh-edits");
+const versionBefore = document.querySelector("#version-before");
+const versionAfter = document.querySelector("#version-after");
+const compareVersions = document.querySelector("#compare-versions");
+const versionComparison = document.querySelector("#version-comparison");
 
 let currentJob = null;
 let currentAssets = [];
@@ -81,6 +107,12 @@ let currentMovieJob = null;
 let loadedCapabilities = null;
 let defaultWorkspaceRoot = "";
 let workspaceIsAutomatic = true;
+let currentScenes = [];
+let currentSceneTotal = 0;
+let scenePageLoading = false;
+let currentEvents = [];
+let currentVersions = [];
+const scenePageSize = 60;
 
 const statusLabels = {
   queued: "Queued",
@@ -202,9 +234,16 @@ async function loadCapabilities() {
     updateAutomaticWorkspace();
     renderCapabilities(capabilities);
     populateModels(capabilities);
+    applyCapabilityAvailability(capabilities);
     renderDevice.value = capabilities.recommended_render_device || "cpu";
   } catch {
     capabilityList.replaceChildren(capabilityChip("AI/GPU: unavailable", false));
+    capabilityGuidance.textContent =
+      "Capability detection failed. AI options are disabled; quick local editing remains available.";
+    disableCapabilityControl(semanticAnalysis, "Local vision capability is unknown.");
+    disableCapabilityControl(speechAnalysis, "Speech capability is unknown.");
+    disableCapabilityControl(narrationEnabled, "Narration capability is unknown.");
+    updateDependentCapabilityControls();
     visionModel.replaceChildren(new Option("Models unavailable", ""));
   }
 }
@@ -244,6 +283,14 @@ function renderCapabilities(capabilities) {
       capabilities.music_ai.available,
     ),
     capabilityChip(
+      capabilities.speech.available ? "Faster Whisper ready" : "Speech unavailable",
+      capabilities.speech.available,
+    ),
+    capabilityChip(
+      capabilities.narration.available ? "Piper narration ready" : "Narration unavailable",
+      capabilities.narration.available,
+    ),
+    capabilityChip(
       capabilities.opencv_available ? "OpenCV ready" : "OpenCV fallback: Pillow",
       capabilities.opencv_available,
     ),
@@ -256,6 +303,85 @@ function renderCapabilities(capabilities) {
       true,
     ),
   );
+}
+
+function applyCapabilityAvailability(capabilities) {
+  setCapabilityControl(
+    semanticAnalysis,
+    capabilities.local_ai.available,
+    capabilityDetail(capabilities.local_ai),
+  );
+  setCapabilityControl(
+    speechAnalysis,
+    capabilities.speech.available,
+    capabilityDetail(capabilities.speech),
+  );
+  setCapabilityControl(
+    narrationEnabled,
+    capabilities.narration.available,
+    capabilityDetail(capabilities.narration),
+  );
+  visionProvider.disabled = !capabilities.local_ai.available;
+  visionModel.disabled = !capabilities.local_ai.available;
+  const cudaRenderOption = renderDevice.querySelector('option[value="cuda"]');
+  if (cudaRenderOption) cudaRenderOption.disabled = !capabilities.cuda.ffmpeg_nvenc;
+  if (!capabilities.cuda.ffmpeg_nvenc && renderDevice.value === "cuda") {
+    renderDevice.value = "cpu";
+  }
+  updateDependentCapabilityControls();
+
+  const unavailable = [
+    ["Semantic selection", capabilities.local_ai],
+    ["Speech", capabilities.speech],
+    ["Narration", capabilities.narration],
+  ].filter(([, capability]) => !capability.available);
+  capabilityGuidance.textContent = unavailable.length
+    ? unavailable
+        .map(([label, capability]) => `${label}: ${capabilityDetail(capability)}`)
+        .join(" ")
+    : "All local AI editing features are available. Enable only the analysis you need.";
+}
+
+function capabilityDetail(capability) {
+  return [capability.reason, capability.action].filter(Boolean).join(" ");
+}
+
+function setCapabilityControl(control, available, detail) {
+  control.dataset.capabilityAvailable = String(available);
+  if (!available) {
+    disableCapabilityControl(control, detail);
+    return;
+  }
+  control.disabled = false;
+  control.title = "";
+  const label = control.closest("label");
+  if (label) label.title = "";
+}
+
+function disableCapabilityControl(control, detail) {
+  control.checked = false;
+  control.disabled = true;
+  control.title = detail || "This local capability is unavailable.";
+  const label = control.closest("label");
+  if (label) label.title = control.title;
+}
+
+function updateDependentCapabilityControls() {
+  const semanticReady =
+    semanticAnalysis.dataset.capabilityAvailable === "true" && semanticAnalysis.checked;
+  for (const control of [speechAnalysis, narrationEnabled]) {
+    const capabilityReady = control.dataset.capabilityAvailable === "true";
+    control.disabled = !semanticReady || !capabilityReady;
+    if (!semanticReady) control.checked = false;
+  }
+  const smartFraming = framingMode.querySelector('option[value="smart"]');
+  if (smartFraming) smartFraming.disabled = !semanticReady;
+  if (!semanticReady && framingMode.value === "smart") framingMode.value = "fit";
+  for (const control of [colorNormalization, eventTitlesEnabled, sceneSubtitlesEnabled]) {
+    control.disabled = !semanticReady;
+    if (!semanticReady) control.checked = false;
+    control.title = semanticReady ? "" : "Requires semantic scene analysis.";
+  }
 }
 
 function capabilityChip(label, available) {
@@ -328,7 +454,10 @@ function updateAutomaticWorkspace() {
   const sourceName = lastPathPart(inputPath.value.trim());
   const separator = defaultWorkspaceRoot.includes("\\") ? "\\" : "/";
   const root = defaultWorkspaceRoot.replace(/[\\/]+$/, "");
-  workspace.value = sourceName ? `${root}${separator}${sourceName}` : root;
+  workspace.value = "";
+  workspace.placeholder = sourceName
+    ? `${root}${separator}${sourceName}-<source-id>`
+    : `${root}${separator}<automatic-project>`;
 }
 
 form.addEventListener("submit", async (event) => {
@@ -492,6 +621,7 @@ movieButton.addEventListener("click", async () => {
 
   hideError();
   movieResult.classList.add("hidden");
+  editWorkspace.classList.add("hidden");
   movieProgress.classList.remove("hidden");
   movieButton.disabled = true;
   movieStatus.textContent = "Queued";
@@ -515,6 +645,7 @@ movieButton.addEventListener("click", async () => {
       body: JSON.stringify({
         input_path: currentJob.input_path,
         workspace: currentJob.workspace,
+        variant_name: movieVariant.value.trim() || "Default",
         settings: {
           target_duration_seconds: Number(movieDuration.value),
           max_video_clip_seconds: Number(clipDuration.value),
@@ -522,6 +653,10 @@ movieButton.addEventListener("click", async () => {
           semantic_analysis: semanticAnalysis.checked,
           quality_analysis: qualityAnalysis.checked,
           speech_analysis: speechAnalysis.checked,
+          narration_enabled: narrationEnabled.checked,
+          narration_volume: Number(narrationVolume.value),
+          background_volume_during_narration: Number(backgroundVolume.value),
+          source_audio_volume: Number(sourceAudioVolume.value),
           audio_analysis: true,
           vision_provider: visionProvider.value,
           vision_model: visionModel.value || null,
@@ -531,12 +666,22 @@ movieButton.addEventListener("click", async () => {
           story_style: storyStyle.value,
           analysis_quality_mode: analysisQualityMode.value,
           preview_mode: previewMode.checked,
+          framing_mode: framingMode.value,
+          vertical_video_layout: verticalVideoLayout.value,
+          photo_motion: photoMotion.value,
+          color_normalization: colorNormalization.checked,
+          hdr_to_sdr: hdrToSdr.checked,
+          event_titles_enabled: eventTitlesEnabled.checked,
+          scene_subtitles_enabled: sceneSubtitlesEnabled.checked,
+          credits_text: creditsText.value.trim() || null,
           music_enabled: musicMode.value !== "none",
           music_mode: musicMode.value,
           music_engine: musicEngine.value,
           music_model: musicModel.value || null,
           music_profile: musicProfile.value,
           music_sync: musicSync.checked,
+          music_bpm_analysis: musicBpmAnalysis.checked,
+          music_volume_envelope: musicVolumeEnvelope.checked,
           music_volume: Number(musicVolume.value) / 100,
           music_path: musicPath.value.trim() || null,
         },
@@ -680,26 +825,46 @@ function showMovieResult(job) {
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");
-  loadSceneReview().catch((error) => showError(error.message));
+  loadEditingWorkspace().catch((error) => showError(error.message));
   movieResult.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-async function loadSceneReview() {
+async function loadSceneReview(reset = true) {
   if (!currentJob || !semanticAnalysis.checked) {
+    currentScenes = [];
+    currentSceneTotal = 0;
     sceneReview.classList.add("hidden");
     return;
   }
+  if (scenePageLoading) return;
+  if (reset) {
+    currentScenes = [];
+    currentSceneTotal = 0;
+  }
+  scenePageLoading = true;
+  loadMoreScenes.disabled = true;
   const query = new URLSearchParams({
     input_path: currentJob.input_path,
     workspace: currentJob.workspace,
+    offset: String(currentScenes.length),
+    limit: String(scenePageSize),
   });
-  const payload = await requestJson(`/api/scenes?${query}`);
-  renderSceneReview(payload.scenes || []);
+  if (sceneEventFilter.value) query.set("event_id", sceneEventFilter.value);
+  try {
+    const payload = await requestJson(`/api/scenes?${query}`);
+    const known = new Set(currentScenes.map((scene) => scene.id));
+    currentScenes.push(...(payload.scenes || []).filter((scene) => !known.has(scene.id)));
+    currentSceneTotal = payload.total || 0;
+    renderSceneReview(currentScenes);
+  } finally {
+    scenePageLoading = false;
+    loadMoreScenes.disabled = false;
+  }
 }
 
 function renderSceneReview(scenes) {
   sceneGrid.replaceChildren();
-  for (const scene of scenes.slice(0, 120)) {
+  for (const scene of scenes) {
     const card = document.createElement("article");
     card.className = "scene-card";
     const query = new URLSearchParams({
@@ -749,10 +914,251 @@ function renderSceneReview(scenes) {
       });
       actions.append(button);
     }
-    card.append(image, copy, actions);
+
+    const editFields = document.createElement("div");
+    editFields.className = "scene-edit-fields";
+    const caption = document.createElement("input");
+    caption.value = scene.caption || "";
+    caption.placeholder = "Scene caption";
+    const transcript = document.createElement("textarea");
+    transcript.value = scene.transcript || "";
+    transcript.placeholder = "Transcript";
+    const landmarks = document.createElement("input");
+    landmarks.value = (scene.landmarks || []).join(", ");
+    landmarks.placeholder = "Landmarks, comma separated";
+    const editButtons = document.createElement("div");
+    editButtons.className = "scene-edit-buttons";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "secondary-button";
+    save.textContent = "Save text";
+    save.addEventListener("click", async () => {
+      try {
+        const payload = await requestJson(`/api/scenes/${scene.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            input_path: currentJob.input_path,
+            workspace: currentJob.workspace,
+            expected_version: scene.edit_version,
+            caption: caption.value.trim() || null,
+            transcript: transcript.value.trim() || null,
+            landmarks: commaValues(landmarks.value),
+          }),
+        });
+        Object.assign(scene, payload.scenes[0]);
+        renderSceneReview(scenes);
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+    editButtons.append(save);
+    for (const [direction, label] of [[-1, "Move up"], [1, "Move down"]]) {
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "secondary-button";
+      move.textContent = label;
+      move.addEventListener("click", () =>
+        reorderScene(scene, direction).catch((error) => showError(error.message)),
+      );
+      editButtons.append(move);
+    }
+    editFields.append(caption, transcript, landmarks, editButtons);
+    card.append(image, copy, actions, editFields);
     sceneGrid.append(card);
   }
+  scenePageStatus.textContent = `${scenes.length} of ${currentSceneTotal} scenes loaded`;
+  loadMoreScenes.classList.toggle("hidden", scenes.length >= currentSceneTotal);
   sceneReview.classList.toggle("hidden", scenes.length === 0);
+}
+
+async function loadEditingWorkspace() {
+  await Promise.all([loadSceneReview(), loadEventReview(), loadTimelineVersions()]);
+  editWorkspace.classList.toggle(
+    "hidden",
+    currentEvents.length === 0 && currentVersions.length === 0,
+  );
+}
+
+function projectQuery() {
+  return new URLSearchParams({
+    input_path: currentJob.input_path,
+    workspace: currentJob.workspace,
+  });
+}
+
+async function loadEventReview() {
+  const payload = await requestJson(`/api/events?${projectQuery()}`);
+  currentEvents = payload.events || [];
+  const selectedEvent = sceneEventFilter.value;
+  sceneEventFilter.replaceChildren(new Option("All events", ""));
+  for (const event of currentEvents) {
+    sceneEventFilter.append(new Option(event.title || "Untitled event", event.id));
+  }
+  sceneEventFilter.value = currentEvents.some((event) => event.id === selectedEvent)
+    ? selectedEvent
+    : "";
+  renderEventReview();
+}
+
+function renderEventReview() {
+  eventList.replaceChildren();
+  currentEvents.forEach((event, index) => {
+    const card = document.createElement("article");
+    card.className = "event-card";
+    const title = document.createElement("input");
+    title.value = event.title;
+    const summary = document.createElement("textarea");
+    summary.value = event.summary || "";
+    const landmarks = document.createElement("input");
+    landmarks.value = (event.landmarks || []).join(", ");
+    landmarks.placeholder = "Landmarks, comma separated";
+    const actions = document.createElement("div");
+    actions.className = "event-actions";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "secondary-button";
+    save.textContent = "Save event";
+    save.addEventListener("click", async () => {
+      try {
+        const payload = await requestJson(`/api/events/${event.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            input_path: currentJob.input_path,
+            workspace: currentJob.workspace,
+            expected_version: event.edit_version,
+            title: title.value.trim(),
+            summary: summary.value.trim(),
+            landmarks: commaValues(landmarks.value),
+          }),
+        });
+        Object.assign(event, payload.events[0]);
+        renderEventReview();
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+    actions.append(save);
+    for (const [direction, label] of [[-1, "Move up"], [1, "Move down"]]) {
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "secondary-button";
+      move.textContent = label;
+      move.disabled = index + direction < 0 || index + direction >= currentEvents.length;
+      move.addEventListener("click", () =>
+        reorderEvent(index, direction).catch((error) => showError(error.message)),
+      );
+      actions.append(move);
+    }
+    card.append(title, summary, landmarks, actions);
+    eventList.append(card);
+  });
+}
+
+async function reorderEvent(index, direction) {
+  const ordered = [...currentEvents];
+  const target = index + direction;
+  [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
+  const payload = await requestJson("/api/events/order", {
+    method: "PUT",
+    body: JSON.stringify({
+      input_path: currentJob.input_path,
+      workspace: currentJob.workspace,
+      ordered_ids: ordered.map((event) => event.id),
+      expected_versions: Object.fromEntries(
+        currentEvents.map((event) => [event.id, event.edit_version]),
+      ),
+    }),
+  });
+  currentEvents = payload.events;
+  renderEventReview();
+  await loadSceneReview();
+}
+
+async function reorderScene(scene, direction) {
+  const eventId = scene.metadata?.event_id;
+  if (!eventId) {
+    showError("Run event detection before reordering scenes.");
+    return;
+  }
+  const eventScenes = await loadAllScenesForEvent(eventId);
+  const index = eventScenes.findIndex((item) => item.id === scene.id);
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= eventScenes.length) return;
+  [eventScenes[index], eventScenes[target]] = [eventScenes[target], eventScenes[index]];
+  await requestJson(`/api/events/${eventId}/scenes/order`, {
+    method: "PUT",
+    body: JSON.stringify({
+      input_path: currentJob.input_path,
+      workspace: currentJob.workspace,
+      ordered_ids: eventScenes.map((item) => item.id),
+      expected_versions: Object.fromEntries(
+        eventScenes.map((item) => [item.id, item.edit_version]),
+      ),
+    }),
+  });
+  await Promise.all([loadSceneReview(), loadEventReview()]);
+}
+
+async function loadAllScenesForEvent(eventId) {
+  const scenes = [];
+  let total = 0;
+  do {
+    const query = projectQuery();
+    query.set("event_id", eventId);
+    query.set("offset", String(scenes.length));
+    query.set("limit", "500");
+    const payload = await requestJson(`/api/scenes?${query}`);
+    const page = payload.scenes || [];
+    if (page.length === 0 && scenes.length < (payload.total || 0)) {
+      throw new Error("The scene list changed while it was being loaded. Refresh and retry.");
+    }
+    scenes.push(...page);
+    total = payload.total || 0;
+  } while (scenes.length < total);
+  return scenes;
+}
+
+async function loadTimelineVersions() {
+  const payload = await requestJson(`/api/timeline-versions?${projectQuery()}`);
+  currentVersions = payload.versions || [];
+  versionBefore.replaceChildren();
+  versionAfter.replaceChildren();
+  currentVersions.forEach((version, index) => {
+    const label = `${version.variant_name} · ${version.phase} · ${new Date(
+      version.created_at,
+    ).toLocaleString()}`;
+    for (const select of [versionBefore, versionAfter]) {
+      const option = document.createElement("option");
+      option.value = version.id;
+      option.textContent = label;
+      select.append(option);
+    }
+    if (index === 1) versionBefore.value = version.id;
+    if (index === 0) versionAfter.value = version.id;
+  });
+  compareVersions.disabled = currentVersions.length < 2;
+}
+
+async function compareTimelineVersions() {
+  const query = projectQuery();
+  query.set("before_id", versionBefore.value);
+  query.set("after_id", versionAfter.value);
+  const payload = await requestJson(`/api/timeline-versions/compare?${query}`);
+  const comparison = payload.comparison;
+  versionComparison.textContent =
+    `${comparison.selected_scene_ids_added.length} added · ` +
+    `${comparison.selected_scene_ids_removed.length} removed · ` +
+    `${comparison.order_changes.length} scene moves · ` +
+    `${comparison.clip_keys_added.length} clip additions · ` +
+    `${comparison.clip_keys_removed.length} clip removals · ` +
+    `${comparison.clip_order_changes.length} clip moves · ` +
+    `${comparison.clip_changes.length} clip edits · settings: ` +
+    `${Object.keys(comparison.settings_changes).join(", ") || "unchanged"} · plan: ` +
+    `${Object.keys(comparison.plan_changes).join(", ") || "unchanged"}`;
+}
+
+function commaValues(value) {
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
 }
 
 async function updateSceneDecision(sceneId, decision) {
@@ -932,6 +1338,18 @@ function lastPathPart(value) {
 }
 
 refreshJobs.addEventListener("click", loadHistory);
+refreshEdits.addEventListener("click", () =>
+  loadEditingWorkspace().catch((error) => showError(error.message)),
+);
+compareVersions.addEventListener("click", () =>
+  compareTimelineVersions().catch((error) => showError(error.message)),
+);
+loadMoreScenes.addEventListener("click", () =>
+  loadSceneReview(false).catch((error) => showError(error.message)),
+);
+sceneEventFilter.addEventListener("change", () =>
+  loadSceneReview(true).catch((error) => showError(error.message)),
+);
 browseInputPath.addEventListener("click", () =>
   pickDirectory("input", inputPath, browseInputPath),
 );
@@ -941,7 +1359,8 @@ browseWorkspace.addEventListener("click", () =>
 inputPath.addEventListener("input", updateAutomaticWorkspace);
 inputPath.addEventListener("change", updateAutomaticWorkspace);
 workspace.addEventListener("input", () => {
-  workspaceIsAutomatic = false;
+  workspaceIsAutomatic = workspace.value.trim() === "";
+  if (workspaceIsAutomatic) updateAutomaticWorkspace();
 });
 moviePauseButton.addEventListener("click", async () => {
   if (!currentMovieJob) return;
@@ -978,6 +1397,7 @@ visionProvider.addEventListener("change", () => {
   }
   populateModels(loadedCapabilities);
 });
+semanticAnalysis.addEventListener("change", updateDependentCapabilityControls);
 musicMode.addEventListener("change", () => {
   musicPath.disabled = musicMode.value !== "manual";
   musicProfile.disabled = ["manual", "library", "none"].includes(musicMode.value);

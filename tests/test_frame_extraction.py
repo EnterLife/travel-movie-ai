@@ -2,6 +2,8 @@ import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
+from uuid import uuid4
 
 import pytest
 from PIL import Image
@@ -10,6 +12,7 @@ from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, scene_ca
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MediaAsset, QuickMontageSettings, Scene
+from travelmovieai.pipeline.stages.frame_sampling import _extract_frames
 
 
 def test_photo_scene_cache_invalidates_when_duration_changes(tmp_path: Path) -> None:
@@ -32,6 +35,56 @@ def test_photo_scene_cache_invalidates_when_duration_changes(tmp_path: Path) -> 
         video,
         QuickMontageSettings(photo_duration_seconds=2),
     ) == scene_cache_key(video, QuickMontageSettings(photo_duration_seconds=5))
+
+
+def test_parallel_frame_extraction_does_not_start_queued_work_after_cancel(
+    tmp_path: Path,
+) -> None:
+    barrier = Barrier(2)
+    calls: list[Path] = []
+    assets = []
+    scenes = []
+    for index in range(5):
+        asset = MediaAsset(
+            id=uuid4(),
+            path=tmp_path / f"clip-{index}.mp4",
+            relative_path=Path(f"clip-{index}.mp4"),
+            media_type=MediaType.VIDEO,
+            extension=".mp4",
+            size_bytes=1,
+            modified_at=datetime.now(UTC),
+            modified_ns=index + 1,
+            duration_seconds=2,
+        )
+        assets.append(asset)
+        scenes.append(Scene(asset_id=asset.id, start_seconds=0, end_seconds=2))
+
+    class BlockingExtractor:
+        def extract(self, scene: Scene, asset: MediaAsset, frames_dir: Path) -> Path:
+            del scene
+            calls.append(asset.relative_path)
+            barrier.wait(timeout=5)
+            output = frames_dir / f"{asset.id}.png"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"png")
+            return output
+
+    def cancel_after_first(current: int, total: int, message: str) -> None:
+        del total, message
+        if current >= 1:
+            raise MontageError("cancel frame queue")
+
+    with pytest.raises(MontageError, match="cancel frame queue"):
+        _extract_frames(
+            scenes,
+            {asset.id: asset for asset in assets},
+            BlockingExtractor(),
+            tmp_path / "frames",
+            workers=2,
+            progress=cancel_after_first,
+        )
+
+    assert len(calls) == 2
 
 
 def test_frame_extraction_times_out_hung_ffmpeg(

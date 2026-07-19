@@ -1,6 +1,7 @@
 import wave
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 from uuid import uuid4
 
 import numpy as np
@@ -19,6 +20,7 @@ from travelmovieai.domain.models import (
     QuickMontagePlan,
     QuickMontageSettings,
     Scene,
+    VisualQualityMetrics,
 )
 from travelmovieai.story.music import (
     apply_music_accents,
@@ -57,6 +59,54 @@ def test_quality_analysis_persists_explainable_metrics(tmp_path: Path) -> None:
     assert metrics["candidate_windows"]
     assert metrics["candidate_windows"][0]["source"] == "visual_quality"
     assert isinstance(metrics["rejection_reasons"], list)
+
+
+def test_parallel_quality_analysis_does_not_start_queued_work_after_cancel(
+    tmp_path: Path,
+) -> None:
+    barrier = Barrier(2)
+    calls: list[Path] = []
+    scenes = []
+    for index in range(5):
+        image = tmp_path / f"frame-{index}.png"
+        image.write_bytes(b"frame")
+        scenes.append(
+            Scene(
+                asset_id=uuid4(),
+                start_seconds=0,
+                end_seconds=2,
+                keyframe_path=image,
+            )
+        )
+
+    class BlockingAnalyzer:
+        def analyze(self, image_path: Path) -> VisualQualityMetrics:
+            calls.append(image_path)
+            barrier.wait(timeout=5)
+            return VisualQualityMetrics(
+                brightness=50,
+                contrast=50,
+                sharpness=50,
+                saturation=50,
+                colorfulness=50,
+                quality_score=50,
+                backend="test",
+            )
+
+    def cancel_after_first(current: int, total: int, message: str) -> None:
+        del total, message
+        if current >= 1:
+            raise RuntimeError("cancel quality queue")
+
+    with pytest.raises(RuntimeError, match="cancel quality queue"):
+        analyze_scene_quality(
+            scenes,
+            analyzer=BlockingAnalyzer(),
+            workers=2,
+            progress=cancel_after_first,
+        )
+
+    assert len(calls) == 2
 
 
 def test_cuda_quality_analyzer_uses_gpu_when_available(tmp_path: Path) -> None:

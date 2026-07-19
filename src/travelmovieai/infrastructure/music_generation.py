@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from travelmovieai.core.exceptions import MusicGenerationError
+from travelmovieai.core.security import sanitize_process_error
 from travelmovieai.domain.models import MusicCueSection
 
 LOCAL_MUSIC_MODELS = ("ACE-Step/acestep-v15-turbo",)
@@ -376,7 +377,11 @@ class AceStepMusicGenerator:
             ) from error
         if completed.returncode != 0 or not temporary_path.is_file():
             temporary_path.unlink(missing_ok=True)
-            detail = completed.stderr.strip()
+            detail = sanitize_process_error(
+                completed.stderr,
+                private_paths=[temporary_path, output_path],
+                fallback="",
+            )
             suffix = f" {detail}" if detail else ""
             raise MusicGenerationError(f"FFmpeg could not normalize ACE-Step output.{suffix}")
         os.replace(temporary_path, output_path)

@@ -2,9 +2,13 @@
 
 from pathlib import Path
 
-from travelmovieai.analysis.quality import analyze_scene_quality
+from travelmovieai.analysis.quality import (
+    analyze_scene_quality,
+    create_quality_analyzer,
+    resolve_quality_backend,
+)
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import QualityAnalysisReport, Scene, StageResult
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -15,8 +19,9 @@ from travelmovieai.infrastructure.artifacts import (
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
+from travelmovieai.pipeline.state import QUALITY_STATE, clear_stage_owned_state
 
-ARTIFACT_SCHEMA_VERSION = "quality-analysis-v1"
+ARTIFACT_SCHEMA_VERSION = "quality-analysis-v2"
 
 
 class QualityAnalysisStage(Stage):
@@ -24,9 +29,10 @@ class QualityAnalysisStage(Stage):
 
     def run(self, context: ProjectContext) -> StageResult:
         if context.montage_settings is not None and not context.montage_settings.quality_analysis:
+            clear_stage_owned_state(context, QUALITY_STATE)
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.DISABLED,
                 message="Visual quality analysis disabled by montage settings.",
             )
 
@@ -35,8 +41,22 @@ class QualityAnalysisStage(Stage):
         scenes = repository.list_scenes()
         artifact = context.artifacts_dir / "quality_analysis.json"
         cache_artifact = context.artifacts_dir / "quality_analysis.cache.json"
+        if not any(scene.keyframe_path is not None for scene in scenes):
+            clear_stage_owned_state(context, QUALITY_STATE)
+            return StageResult(
+                stage=self.name,
+                status=StageStatus.NO_INPUT,
+                message="Visual quality analysis needs sampled scene frames.",
+            )
         input_fingerprint = artifact_fingerprint(_quality_inputs(scenes))
-        config_fingerprint = artifact_fingerprint({"schema": ARTIFACT_SCHEMA_VERSION})
+        quality_backend = resolve_quality_backend(context.settings.device)
+        config_fingerprint = artifact_fingerprint(
+            {
+                "requested_device": context.settings.device,
+                "resolved_backend": quality_backend.fingerprint_payload(),
+                "schema": ARTIFACT_SCHEMA_VERSION,
+            }
+        )
         if stage_cache_manifest_matches(
             cache_artifact,
             stage=self.name,
@@ -47,7 +67,7 @@ class QualityAnalysisStage(Stage):
         ) and _cached_quality_analysis_valid(artifact, scenes):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Visual quality reused cached analysis artifacts.",
             )
@@ -60,7 +80,12 @@ class QualityAnalysisStage(Stage):
             gpu_memory_reserve_mb=context.settings.gpu_memory_reserve_mb,
             max_gpu_processes=context.settings.max_gpu_processes,
         )
-        report = analyze_scene_quality(scenes, workers=resources.analysis_workers)
+        report = analyze_scene_quality(
+            scenes,
+            analyzer=create_quality_analyzer(quality_backend),
+            workers=resources.analysis_workers,
+            progress=context.progress,
+        )
         repository.synchronize_scenes(report.scenes)
         write_json_atomic(artifact, report)
         write_stage_cache_manifest(
@@ -73,10 +98,10 @@ class QualityAnalysisStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=not report.scenes,
             artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Visual quality analyzed for {len(report.scenes)} scene(s), "
+                f"backend={quality_backend.name}, "
                 f"workers={min(max(1, resources.analysis_workers), max(1, len(scenes)))}."
             ),
         )

@@ -2,7 +2,7 @@
 
 from travelmovieai.analysis.duplicates import detect_duplicate_scenes
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import StageResult
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -12,6 +12,7 @@ from travelmovieai.infrastructure.artifacts import (
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
+from travelmovieai.pipeline.state import DUPLICATE_STATE, clear_stage_owned_state
 
 ARTIFACT_SCHEMA_VERSION = "duplicate-detection-v1"
 
@@ -24,9 +25,10 @@ class DuplicateDetectionStage(Stage):
             context.montage_settings is not None
             and not context.montage_settings.duplicate_detection
         ):
+            clear_stage_owned_state(context, DUPLICATE_STATE)
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.DISABLED,
                 message="Duplicate detection disabled by montage settings.",
             )
 
@@ -40,6 +42,13 @@ class DuplicateDetectionStage(Stage):
         scenes = repository.list_scenes()
         artifact = context.artifacts_dir / "duplicates.json"
         cache_artifact = context.artifacts_dir / "duplicates.cache.json"
+        if not scenes:
+            clear_stage_owned_state(context, DUPLICATE_STATE)
+            return StageResult(
+                stage=self.name,
+                status=StageStatus.NO_INPUT,
+                message="Duplicate detection needs scene metadata.",
+            )
         input_fingerprint = artifact_fingerprint(
             [
                 {
@@ -64,7 +73,7 @@ class DuplicateDetectionStage(Stage):
         ) and all("duplicate_status" in scene.metadata for scene in scenes):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Duplicate detection reused cached groups.",
             )
@@ -81,7 +90,6 @@ class DuplicateDetectionStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=not report.groups,
             artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Duplicate detection found {report.duplicate_count} duplicate "

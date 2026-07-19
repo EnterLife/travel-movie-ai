@@ -40,3 +40,22 @@ def test_parse_probe_payload_extracts_video_metadata_and_location() -> None:
     assert result.created_at == datetime(2026, 5, 10, 11, 12, 13, tzinfo=UTC)
     assert result.latitude == pytest.approx(55.7558)
     assert result.longitude == pytest.approx(37.6173)
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["+091.000+000.000/", "+045.000+181.000/"],
+)
+def test_parse_probe_payload_ignores_out_of_range_location(location: str) -> None:
+    result = parse_probe_payload(
+        {
+            "format": {
+                "duration": "1",
+                "tags": {"com.apple.quicktime.location.ISO6709": location},
+            },
+            "streams": [],
+        }
+    )
+
+    assert result.latitude is None
+    assert result.longitude is None

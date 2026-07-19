@@ -26,6 +26,16 @@ class FailingProbe:
         raise MediaProbeError(f"Could not inspect {path.name}: corrupt media")
 
 
+class InvalidLocationProbe:
+    def probe(self, path: Path) -> ProbeResult:
+        del path
+        return ProbeResult(
+            duration_seconds=1,
+            latitude=91,
+            longitude=37,
+        )
+
+
 def test_scan_discovers_supported_files_and_reuses_cache(tmp_path: Path) -> None:
     media = tmp_path / "Моя поездка"
     media.mkdir()
@@ -90,3 +100,16 @@ def test_scan_records_probe_error_without_stopping_project(tmp_path: Path) -> No
     assert cached_report.probed_count == 0
     assert cached_report.cached_count == 1
     assert cached_report.error_count == 1
+
+
+def test_scan_ignores_invalid_probe_coordinates_without_stopping(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "bad-gps.mp4").write_bytes(b"video")
+
+    report = MediaScanner(InvalidLocationProbe()).scan(media)
+
+    assert report.discovered_count == 1
+    assert report.error_count == 0
+    assert report.assets[0].latitude is None
+    assert report.assets[0].longitude is None

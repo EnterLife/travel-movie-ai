@@ -8,41 +8,93 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Condition, RLock
+from time import monotonic
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
+from travelmovieai.application.disk_space import ensure_render_disk_space
 from travelmovieai.application.validation import ProjectPaths
-from travelmovieai.core.exceptions import TravelMovieError, WorkspaceBusyError
+from travelmovieai.application.variants import (
+    safe_variant_slug,
+    validate_variant_name,
+    variant_output_path,
+)
+from travelmovieai.core.exceptions import (
+    InvalidProjectPathError,
+    TravelMovieError,
+    WorkspaceBusyError,
+)
+from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.models import QuickMontageResult, QuickMontageSettings
+from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.system import ResourceProfile
 from travelmovieai.web.schemas import (
     JobLogEntry,
     JobStatus,
     JobSubtaskProgress,
     MovieJobResponse,
+    MovieJobState,
+    MovieJobStateHistory,
     ResourceProfileResponse,
 )
+from travelmovieai.web.state import redact_sensitive_text
 
 LOGGER = logging.getLogger(__name__)
 
-_SUBTASK_RANGES = {
-    "media_scan": (0.0, 6.0, "Media Scan"),
-    "scene_detection": (6.0, 12.0, "Scene Detection"),
-    "frame_sampling": (12.0, 32.0, "Frame Extraction"),
-    "quality_analysis": (32.0, 45.0, "OpenCV Analysis"),
-    "vision_analysis": (45.0, 70.0, "Vision AI"),
-    "speech_analysis": (70.0, 74.0, "Speech Recognition"),
-    "audio_analysis": (74.0, 76.0, "Audio Analysis"),
-    "story_builder": (76.0, 82.0, "Story and Selection"),
-    "music": (82.0, 84.0, "Music"),
-    "timeline": (84.0, 85.0, "Timeline"),
-    "rendering": (85.0, 99.0, "Rendering"),
-    "validation": (99.0, 100.0, "Validation"),
+_SUBTASK_LABELS = {
+    PipelineStage.MEDIA_SCAN.value: "Media Scan",
+    PipelineStage.SCENE_DETECTION.value: "Scene Detection",
+    PipelineStage.FRAME_SAMPLING.value: "Frame Extraction",
+    PipelineStage.QUALITY_ANALYSIS.value: "OpenCV Analysis",
+    PipelineStage.VISION_ANALYSIS.value: "Vision AI",
+    PipelineStage.SPEECH_ANALYSIS.value: "Speech Recognition",
+    PipelineStage.AUDIO_ANALYSIS.value: "Audio Analysis",
+    PipelineStage.EMBEDDINGS.value: "Embeddings",
+    PipelineStage.DUPLICATE_DETECTION.value: "Duplicate Detection",
+    PipelineStage.SCENE_CAPTIONING.value: "Scene Captioning",
+    PipelineStage.EVENT_DETECTION.value: "Event Detection",
+    PipelineStage.STORY_BUILDER.value: "Story Builder",
+    PipelineStage.SCENE_RANKING.value: "Scene Ranking",
+    PipelineStage.MUSIC_SELECTION.value: "Music",
+    PipelineStage.NARRATION.value: "Narration",
+    PipelineStage.VOICE_SYNTHESIS.value: "Voice Synthesis",
+    PipelineStage.TIMELINE_BUILDER.value: "Timeline",
+    PipelineStage.RENDERING.value: "Rendering and Validation",
 }
+_SEMANTIC_SUBTASK_RANGES = {
+    stage.value: (
+        1.0 + index * 99.0 / len(PipelineStage),
+        1.0 + (index + 1) * 99.0 / len(PipelineStage),
+        _SUBTASK_LABELS[stage.value],
+    )
+    for index, stage in enumerate(PipelineStage)
+}
+_QUICK_SUBTASK_RANGES = {
+    stage.value: (0.0, 0.0, _SUBTASK_LABELS[stage.value]) for stage in PipelineStage
+}
+_QUICK_SUBTASK_RANGES.update(
+    {
+        PipelineStage.MEDIA_SCAN.value: (0.0, 5.0, _SUBTASK_LABELS["media_scan"]),
+        PipelineStage.SCENE_RANKING.value: (5.0, 78.0, "Chronological Clip Selection"),
+        PipelineStage.MUSIC_SELECTION.value: (78.0, 80.0, _SUBTASK_LABELS["music_selection"]),
+        PipelineStage.TIMELINE_BUILDER.value: (
+            80.0,
+            85.0,
+            _SUBTASK_LABELS["timeline_builder"],
+        ),
+        PipelineStage.RENDERING.value: (85.0, 100.0, _SUBTASK_LABELS["rendering"]),
+    }
+)
 
 
 class _MovieCancelled(Exception):
     pass
+
+
+class _MovieInterrupted(Exception):
+    """Stop this worker while keeping its persisted job recoverable."""
 
 
 class MovieService(Protocol):
@@ -54,6 +106,7 @@ class MovieService(Protocol):
         input_path: Path,
         workspace: Path | None,
         settings: QuickMontageSettings,
+        variant_name: str = "Default",
         output_path: Path | None = None,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> QuickMontageResult: ...
@@ -66,6 +119,8 @@ class _MovieJob:
     input_path: Path
     workspace: Path
     settings: QuickMontageSettings
+    variant_name: str
+    variant_slug: str
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -89,8 +144,21 @@ class _MovieJob:
 
 
 class MovieJobManager:
-    def __init__(self, service: MovieService) -> None:
+    def __init__(
+        self,
+        service: MovieService,
+        *,
+        state_path: Path | None = None,
+        history_limit: int = 100,
+        render_disk_reserve_mb: int = 1024,
+        render_disk_safety_factor: float = 3.0,
+    ) -> None:
         self._service = service
+        self._state_path = state_path
+        self._history_limit = history_limit
+        self._render_disk_reserve_mb = render_disk_reserve_mb
+        self._render_disk_safety_factor = render_disk_safety_factor
+        self._last_persist_at = 0.0
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="travelmovieai-movie",
@@ -98,14 +166,21 @@ class MovieJobManager:
         self._jobs: dict[UUID, _MovieJob] = {}
         self._lock = RLock()
         self._condition = Condition(self._lock)
+        self._shutting_down = False
+        self._load()
 
     def submit(
         self,
         input_path: Path,
         workspace: Path | None,
         settings: QuickMontageSettings,
+        variant_name: str = "Default",
     ) -> MovieJobResponse:
         paths = self._service.resolve_project_paths(input_path, workspace)
+        try:
+            normalized_variant_name = validate_variant_name(variant_name)
+        except ValueError as error:
+            raise InvalidProjectPathError(str(error)) from error
         with self._lock:
             if self._workspace_is_active(paths.workspace):
                 raise WorkspaceBusyError("A movie edit is already running for this workspace.")
@@ -115,12 +190,16 @@ class MovieJobManager:
                 input_path=paths.input_path,
                 workspace=paths.workspace,
                 settings=settings,
+                variant_name=normalized_variant_name,
+                variant_slug=safe_variant_slug(normalized_variant_name),
                 created_at=datetime.now(UTC),
                 message="The edit is waiting to start.",
                 subtasks=_build_subtasks(settings),
             )
             _append_log(job, "Job added to the queue.")
             self._jobs[job.id] = job
+            self._trim_history()
+            self._persist(force=True)
         self._executor.submit(self._run, job.id)
         return _to_response(job)
 
@@ -128,6 +207,15 @@ class MovieJobManager:
         with self._lock:
             job = self._jobs.get(job_id)
             return _to_response(job) if job else None
+
+    def list(self, limit: int = 20) -> list[MovieJobResponse]:
+        with self._lock:
+            jobs = sorted(
+                self._jobs.values(),
+                key=lambda job: job.created_at,
+                reverse=True,
+            )
+            return [_to_response(job) for job in jobs[:limit]]
 
     def pause(self, job_id: UUID) -> MovieJobResponse | None:
         with self._condition:
@@ -142,6 +230,7 @@ class MovieJobManager:
                     "Pause requested. The current operation will finish before processing stops."
                 )
                 _append_log(job, job.message)
+                self._persist(force=True)
             return _to_response(job)
 
     def resume(self, job_id: UUID) -> MovieJobResponse | None:
@@ -161,6 +250,7 @@ class MovieJobManager:
                 job.status = JobStatus.RUNNING
                 job.message = "Edit resumed."
                 _append_log(job, job.message)
+                self._persist(force=True)
                 self._condition.notify_all()
             return _to_response(job)
 
@@ -183,6 +273,7 @@ class MovieJobManager:
                 )
                 _fail_active_subtask(job, job.message)
                 _append_log(job, job.message, level="warning")
+                self._persist(force=True)
                 self._condition.notify_all()
             return _to_response(job)
 
@@ -199,15 +290,24 @@ class MovieJobManager:
             return self._workspace_is_active(workspace)
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=False)
+        with self._condition:
+            self._shutting_down = True
+            self._persist(force=True)
+            self._condition.notify_all()
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run(self, job_id: UUID) -> None:
         with self._condition:
             job = self._jobs[job_id]
-            while job.pause_requested and not job.cancel_requested:
+            while job.pause_requested and not job.cancel_requested and not self._shutting_down:
                 self._condition.wait()
+            if self._shutting_down:
+                job.worker_finished = True
+                self._persist(force=True)
+                return
             if job.cancel_requested:
                 job.worker_finished = True
+                self._persist(force=True)
                 return
             job.status = JobStatus.RUNNING
             job.started_at = datetime.now(UTC)
@@ -222,11 +322,14 @@ class MovieJobManager:
                     LOGGER.exception("Could not detect hardware resources")
                     job.resources = None
             _append_log(job, job.message)
+            self._persist(force=True)
 
         def progress(current: int, total: int, message: str) -> None:
             with self._condition:
-                while job.pause_requested and not job.cancel_requested:
+                while job.pause_requested and not job.cancel_requested and not self._shutting_down:
                     self._condition.wait()
+                if self._shutting_down:
+                    raise _MovieInterrupted
                 if job.cancel_requested:
                     raise _MovieCancelled
                 now = datetime.now(UTC)
@@ -250,15 +353,29 @@ class MovieJobManager:
                     job.phase_last_progress_percent = progress_percent
                 _update_subtasks(job, job.phase, progress_percent, message)
                 _append_log(job, message)
+                self._persist()
 
         try:
+            movie_output_path = variant_output_path(job.workspace, job.variant_name, job.id)
+            ensure_render_disk_space(
+                workspace=job.workspace,
+                output_path=movie_output_path,
+                settings=job.settings,
+                reserve_mb=self._render_disk_reserve_mb,
+                safety_factor=self._render_disk_safety_factor,
+            )
             result = self._service.create_quick_montage(
                 input_path=job.input_path,
                 workspace=job.workspace,
                 settings=job.settings,
+                variant_name=job.variant_name,
+                output_path=movie_output_path,
                 progress=progress,
             )
         except _MovieCancelled:
+            self._mark_worker_finished(job)
+            return
+        except _MovieInterrupted:
             self._mark_worker_finished(job)
             return
         except TravelMovieError as error:
@@ -285,22 +402,31 @@ class MovieJobManager:
             _complete_subtasks(job)
             _append_log(job, job.message)
             job.worker_finished = True
+            self._trim_history()
+            self._persist(force=True)
 
     def _fail(self, job: _MovieJob, error: str) -> None:
         with self._lock:
             if job.cancel_requested:
                 return
+            private_paths = [job.input_path, job.workspace]
+            if job.settings.music_path is not None:
+                private_paths.append(job.settings.music_path)
+            safe_error = redact_sensitive_text(error, private_paths=private_paths)
             job.status = JobStatus.FAILED
             job.finished_at = datetime.now(UTC)
             job.message = "The edit failed."
             job.phase = "failed"
-            job.error = error
-            _fail_active_subtask(job, error)
-            _append_log(job, error, level="error")
+            job.error = safe_error
+            _fail_active_subtask(job, safe_error)
+            _append_log(job, safe_error, level="error")
+            self._trim_history()
+            self._persist(force=True)
 
     def _mark_worker_finished(self, job: _MovieJob) -> None:
         with self._condition:
             job.worker_finished = True
+            self._persist(force=True)
             self._condition.notify_all()
 
     def _workspace_is_active(self, workspace: Path) -> bool:
@@ -314,6 +440,144 @@ class MovieJobManager:
             )
             for job in self._jobs.values()
         )
+
+    def _trim_history(self) -> None:
+        if len(self._jobs) <= self._history_limit:
+            return
+        removable = sorted(
+            (
+                job
+                for job in self._jobs.values()
+                if job.status not in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED}
+            ),
+            key=lambda job: job.created_at,
+        )
+        while len(self._jobs) > self._history_limit and removable:
+            self._jobs.pop(removable.pop(0).id, None)
+
+    def _load(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            history = MovieJobStateHistory.model_validate_json(
+                self._state_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError):
+            LOGGER.exception("Could not load movie job history")
+            return
+
+        now = datetime.now(UTC)
+        recovered_ids: list[UUID] = []
+        for saved in history.jobs:
+            job = _from_state(saved)
+            if job.status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED}:
+                was_paused = job.status is JobStatus.PAUSED
+                job.status = JobStatus.PAUSED if was_paused else JobStatus.QUEUED
+                job.started_at = None
+                job.finished_at = None
+                job.phase_started_at = None
+                job.phase_last_progress_at = None
+                job.phase_last_progress_percent = None
+                job.progress_current = 0
+                job.progress_total = 0
+                job.phase = "queued"
+                job.error = None
+                job.result = None
+                job.pause_requested = was_paused
+                job.cancel_requested = False
+                job.paused_at = now if was_paused else None
+                job.worker_finished = False
+                job.subtasks = _build_subtasks(job.settings)
+                job.message = (
+                    "Recovered paused edit. Continue when ready; valid stage caches will be reused."
+                    if was_paused
+                    else "Recovered interrupted edit and queued it to resume from validated caches."
+                )
+                _append_log(job, job.message, level="warning")
+                recovered_ids.append(job.id)
+            else:
+                job.worker_finished = True
+            self._jobs[job.id] = job
+        self._trim_history()
+        self._persist(force=True)
+        for job_id in recovered_ids:
+            self._executor.submit(self._run, job_id)
+
+    def _persist(self, *, force: bool = False) -> None:
+        if self._state_path is None:
+            return
+        now = monotonic()
+        if not force and now - self._last_persist_at < 1.0:
+            return
+        jobs = sorted(
+            (_to_state(job) for job in self._jobs.values()),
+            key=lambda job: job.created_at,
+            reverse=True,
+        )
+        try:
+            write_json_atomic(self._state_path, MovieJobStateHistory(jobs=jobs))
+        except OSError:
+            LOGGER.exception("Could not persist movie job history")
+            return
+        self._last_persist_at = now
+
+
+def _to_state(job: _MovieJob) -> MovieJobState:
+    return MovieJobState(
+        id=job.id,
+        status=job.status,
+        input_path=job.input_path,
+        workspace=job.workspace,
+        variant_name=job.variant_name,
+        variant_slug=job.variant_slug,
+        settings=job.settings,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        phase_started_at=job.phase_started_at,
+        phase_last_progress_at=job.phase_last_progress_at,
+        phase_last_progress_percent=job.phase_last_progress_percent,
+        message=job.message,
+        error=job.error,
+        progress_current=job.progress_current,
+        progress_total=job.progress_total,
+        phase=job.phase,
+        resources=(
+            ResourceProfileResponse.model_validate(asdict(job.resources)) if job.resources else None
+        ),
+        subtasks=job.subtasks,
+        logs=job.logs,
+        result=job.result,
+        paused_seconds=job.paused_seconds,
+    )
+
+
+def _from_state(saved: MovieJobState) -> _MovieJob:
+    return _MovieJob(
+        id=saved.id,
+        status=saved.status,
+        input_path=saved.input_path,
+        workspace=saved.workspace,
+        variant_name=saved.variant_name,
+        variant_slug=saved.variant_slug,
+        settings=saved.settings,
+        created_at=saved.created_at,
+        started_at=saved.started_at,
+        finished_at=saved.finished_at,
+        phase_started_at=saved.phase_started_at,
+        phase_last_progress_at=saved.phase_last_progress_at,
+        phase_last_progress_percent=saved.phase_last_progress_percent,
+        message=saved.message,
+        error=saved.error,
+        progress_current=saved.progress_current,
+        progress_total=saved.progress_total,
+        phase=saved.phase,
+        resources=(ResourceProfile(**saved.resources.model_dump()) if saved.resources else None),
+        subtasks=saved.subtasks,
+        logs=saved.logs,
+        result=saved.result,
+        paused_seconds=saved.paused_seconds,
+    )
 
 
 def _to_response(job: _MovieJob) -> MovieJobResponse:
@@ -333,7 +597,7 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         else 0.0
     )
     eta_seconds = None
-    phase_range = _SUBTASK_RANGES.get(job.phase)
+    phase_range = _subtask_ranges(job.settings).get(job.phase)
     if (
         job.status == JobStatus.RUNNING
         and phase_range is not None
@@ -354,6 +618,8 @@ def _to_response(job: _MovieJob) -> MovieJobResponse:
         status=job.status,
         input_path=job.input_path,
         workspace=job.workspace,
+        variant_name=job.variant_name,
+        variant_slug=job.variant_slug,
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
@@ -401,26 +667,28 @@ def _append_log(job: _MovieJob, message: str, *, level: str = "info") -> None:
 
 
 def _build_subtasks(settings: QuickMontageSettings) -> list[JobSubtaskProgress]:
-    semantic_only = {
-        "scene_detection",
-        "frame_sampling",
-        "quality_analysis",
-        "vision_analysis",
-        "speech_analysis",
-        "audio_analysis",
-        "story_builder",
+    quick_stages = {
+        PipelineStage.MEDIA_SCAN.value,
+        PipelineStage.SCENE_RANKING.value,
+        PipelineStage.MUSIC_SELECTION.value,
+        PipelineStage.TIMELINE_BUILDER.value,
+        PipelineStage.RENDERING.value,
     }
     subtasks = []
-    for task_id, (_, _, label) in _SUBTASK_RANGES.items():
+    for task_id, (_, _, label) in _subtask_ranges(settings).items():
         skipped = (
-            task_id in semantic_only
-            and not settings.semantic_analysis
+            not settings.semantic_analysis
+            and task_id not in quick_stages
             or task_id == "quality_analysis"
             and not settings.quality_analysis
             or task_id == "speech_analysis"
             and not settings.speech_analysis
             or task_id == "audio_analysis"
             and not settings.audio_analysis
+            or task_id == "music_selection"
+            and not settings.music_enabled
+            or task_id in {"narration", "voice_synthesis"}
+            and not settings.narration_enabled
         )
         subtasks.append(
             JobSubtaskProgress(
@@ -440,14 +708,15 @@ def _update_subtasks(
     global_percent: float,
     message: str,
 ) -> None:
-    if phase not in _SUBTASK_RANGES:
+    ranges = _subtask_ranges(job.settings)
+    if phase not in ranges:
         return
     updated = []
     for task in job.subtasks:
         if task.status == "skipped":
             updated.append(task)
             continue
-        start, end, _ = _SUBTASK_RANGES[task.id]
+        start, end, _ = ranges[task.id]
         if task.id == phase:
             local_percent = min(100.0, max(0.0, (global_percent - start) / (end - start) * 100))
             updated.append(
@@ -540,22 +809,26 @@ def _phase_from_message(message: str) -> str:
         (("ai analysis", "ai cache", "vision"), "vision_analysis"),
         (("whisper", "speech"), "speech_analysis"),
         (("audio analysis", "silence", "noise"), "audio_analysis"),
-        (
-            (
-                "duplicate",
-                "description",
-                "events",
-                "story",
-                "selection",
-            ),
-            "story_builder",
-        ),
-        (("music", "soundtrack", "ace-step"), "music"),
-        (("timeline",), "timeline"),
+        (("embedding", "faiss"), "embeddings"),
+        (("duplicate",), "duplicate_detection"),
+        (("caption", "description"), "scene_captioning"),
+        (("event detection", "events"), "event_detection"),
+        (("story builder", "storyboard", "story"), "story_builder"),
+        (("scene ranking", "selection", "selecting quick clips"), "scene_ranking"),
+        (("music selection", "music", "soundtrack", "ace-step"), "music_selection"),
+        (("voice synthesis", "piper"), "voice_synthesis"),
+        (("narration",), "narration"),
+        (("timeline", "quick edit plan"), "timeline_builder"),
         (("render", "clip", "transition", "assembly"), "rendering"),
-        (("ffprobe", "film ready"), "validation"),
+        (("ffprobe", "film ready"), "rendering"),
     )
     for markers, phase in phases:
         if any(marker in normalized for marker in markers):
             return phase
     return "processing"
+
+
+def _subtask_ranges(
+    settings: QuickMontageSettings,
+) -> dict[str, tuple[float, float, str]]:
+    return _SEMANTIC_SUBTASK_RANGES if settings.semantic_analysis else _QUICK_SUBTASK_RANGES

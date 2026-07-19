@@ -1,7 +1,7 @@
 """Recursive media discovery and metadata extraction."""
 
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -38,6 +38,7 @@ class MediaScanner:
         *,
         cached_assets: Sequence[MediaAsset] = (),
         excluded_roots: Sequence[Path] = (),
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> MediaScanReport:
         root = input_path.resolve()
         cached_by_path = {_path_key(asset.path): asset for asset in cached_assets}
@@ -47,7 +48,9 @@ class MediaScanner:
         cached_count = 0
         error_count = 0
 
-        for path in _discover_media(root, excluded):
+        discovered = _discover_media(root, excluded)
+        total = len(discovered)
+        for index, path in enumerate(discovered, start=1):
             stat = path.stat()
             cached = cached_by_path.get(_path_key(path))
             if (
@@ -66,6 +69,8 @@ class MediaScanner:
                 cached_count += 1
                 if cached.scan_error:
                     error_count += 1
+                if progress is not None:
+                    progress(index, total, f"Media scan: {index}/{total}")
                 continue
 
             probed_count += 1
@@ -75,6 +80,8 @@ class MediaScanner:
             if asset.scan_error:
                 error_count += 1
             assets.append(asset)
+            if progress is not None:
+                progress(index, total, f"Media scan: {index}/{total}")
 
         return MediaScanReport(
             input_path=root,
@@ -108,6 +115,9 @@ class MediaScanner:
             height = height or image_result.height
             latitude = latitude if latitude is not None else image_result.latitude
             longitude = longitude if longitude is not None else image_result.longitude
+        if not _valid_coordinates(latitude, longitude):
+            latitude = None
+            longitude = None
 
         return MediaAsset(
             path=path,
@@ -127,6 +137,14 @@ class MediaScanner:
             probe_metadata=probe_result.metadata,
             scan_error=scan_error,
         )
+
+
+def _valid_coordinates(latitude: float | None, longitude: float | None) -> bool:
+    if latitude is None and longitude is None:
+        return True
+    if latitude is None or longitude is None:
+        return False
+    return -90 <= latitude <= 90 and -180 <= longitude <= 180
 
 
 def _discover_media(root: Path, excluded_roots: Sequence[Path]) -> list[Path]:

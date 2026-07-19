@@ -1,8 +1,13 @@
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from travelmovieai.core.exceptions import PipelineStageError
 from travelmovieai.domain.enums import ActivityType, LocationType, MediaType
 from travelmovieai.domain.models import Event, MediaAsset, Scene
+from travelmovieai.infrastructure import database
 from travelmovieai.infrastructure.database import MediaAssetRepository
 
 
@@ -81,3 +86,84 @@ def test_repository_persists_detected_events(tmp_path: Path) -> None:
     repository.synchronize_events([event])
 
     assert repository.list_events() == [event]
+
+
+def test_repository_applies_and_records_managed_schema_version(tmp_path: Path) -> None:
+    database_path = tmp_path / "project.db"
+    repository = MediaAssetRepository(database_path)
+
+    repository.initialize()
+    repository.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    assert version == 2
+    assert {"media_assets", "scenes", "events", "timeline_versions"} <= tables
+
+
+def test_repository_rejects_database_from_newer_application_version(tmp_path: Path) -> None:
+    database_path = tmp_path / "project.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA user_version = 999")
+
+    with pytest.raises(PipelineStageError, match="schema is newer"):
+        MediaAssetRepository(database_path).initialize()
+
+
+def test_migrations_use_frozen_ddl_and_upgrade_historical_v1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "project.db"
+    with sqlite3.connect(database_path) as connection:
+        for statement in database._SCHEMA_V1_DDL:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 1")
+
+    monkeypatch.setattr(
+        database.Base.metadata,
+        "create_all",
+        lambda *_args, **_kwargs: pytest.fail("live ORM metadata must not mutate old migrations"),
+    )
+    MediaAssetRepository(database_path).initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        scene_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(scenes)").fetchall()
+        }
+        timeline_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='timeline_versions'"
+        ).fetchone()
+    assert version == 2
+    assert {"manual_caption", "manual_order", "edit_version"} <= scene_columns
+    assert timeline_exists == (1,)
+
+
+def test_failed_migration_does_not_advance_version_and_can_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "project.db"
+    with sqlite3.connect(database_path) as connection:
+        for statement in database._SCHEMA_V1_DDL:
+            connection.execute(statement)
+        connection.execute("PRAGMA user_version = 1")
+    valid_v2 = database._SCHEMA_V2_DDL
+    monkeypatch.setattr(database, "_SCHEMA_V2_DDL", ("INVALID MIGRATION SQL",))
+
+    with pytest.raises(PipelineStageError, match="Could not migrate"):
+        MediaAssetRepository(database_path).initialize()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+    monkeypatch.setattr(database, "_SCHEMA_V2_DDL", valid_v2)
+    MediaAssetRepository(database_path).initialize()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2

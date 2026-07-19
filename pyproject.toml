@@ -43,8 +43,22 @@ embeddings = [
   "faiss-cpu>=1.9,<2",
   "sentence-transformers>=3.4,<4",
 ]
+story = [
+  "accelerate>=1.2,<2",
+  "huggingface-hub>=0.27,<1",
+  "safetensors>=0.4,<1",
+  "torch>=2.5,<3",
+  "transformers>=4.48,<5",
+]
+desktop = [
+  "PySide6>=6.8,<7",
+]
+installer = [
+  "pyinstaller>=6.11,<7",
+]
 dev = [
   "httpx>=0.28,<1",
+  "httpx2>=2,<3",
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
@@ -68,6 +82,7 @@ all = [
 [project.scripts]
 travelmovieai = "travelmovieai.cli:app"
 travelmovieai-web = "travelmovieai.web.server:main"
+travelmovieai-desktop = "travelmovieai.desktop:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/travelmovieai"]

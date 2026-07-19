@@ -3,12 +3,20 @@
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from travelmovieai.domain.models import QuickMontageSettings, Scene
+from travelmovieai.application.variants import validate_variant_name
+from travelmovieai.domain.manual_editing import (
+    EditableEvent,
+    EditableScene,
+    TimelineVersionComparison,
+    TimelineVersionSnapshot,
+    TimelineVersionSummary,
+)
+from travelmovieai.domain.models import QuickMontageResult, QuickMontageSettings
 
 
 class JobStatus(StrEnum):
@@ -80,10 +88,18 @@ class LocalAIStatus(BaseModel):
     cache_dir: str
     downloads_enabled: bool
     models: list[ModelOption] = Field(default_factory=list)
+    reason: str | None = None
+    action: str | None = None
 
 
 class MusicAIStatus(LocalAIStatus):
     runtime_installed: bool = False
+
+
+class FeatureCapability(BaseModel):
+    available: bool
+    reason: str | None = None
+    action: str | None = None
 
 
 class CudaStatusResponse(BaseModel):
@@ -120,6 +136,8 @@ class CapabilitiesResponse(BaseModel):
     default_workspace_root: str
     local_ai: LocalAIStatus
     music_ai: MusicAIStatus
+    speech: FeatureCapability
+    narration: FeatureCapability
     cuda: CudaStatusResponse
     resources: ResourceProfileResponse
     opencv_available: bool
@@ -133,7 +151,13 @@ class CapabilitiesResponse(BaseModel):
 class MovieRequest(BaseModel):
     input_path: str = Field(min_length=1)
     workspace: str | None = None
+    variant_name: str = Field(default="Default", min_length=1, max_length=80)
     settings: QuickMontageSettings = Field(default_factory=QuickMontageSettings)
+
+    @field_validator("variant_name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return validate_variant_name(value)
 
 
 class JobLogEntry(BaseModel):
@@ -172,6 +196,8 @@ class MovieJobResponse(BaseModel):
     subtasks: list[JobSubtaskProgress] = Field(default_factory=list)
     logs: list[JobLogEntry] = Field(default_factory=list)
     output_path: Path | None = None
+    variant_name: str = "Default"
+    variant_slug: str = "default"
     clip_count: int | None = None
     duration_seconds: float | None = None
     selection_mode: str | None = None
@@ -184,11 +210,108 @@ class MovieJobResponse(BaseModel):
     quality_issue_count: int = Field(default=0, ge=0)
 
 
+class MovieJobHistory(BaseModel):
+    jobs: list[MovieJobResponse] = Field(default_factory=list)
+
+
+class MovieJobState(BaseModel):
+    """Restart-safe state stored locally for one movie job."""
+
+    id: UUID
+    status: JobStatus
+    input_path: Path
+    workspace: Path
+    variant_name: str = "Default"
+    variant_slug: str = "default"
+    settings: QuickMontageSettings
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    phase_started_at: datetime | None = None
+    phase_last_progress_at: datetime | None = None
+    phase_last_progress_percent: float | None = Field(default=None, ge=0, le=100)
+    message: str = ""
+    error: str | None = None
+    progress_current: int = Field(default=0, ge=0)
+    progress_total: int = Field(default=0, ge=0)
+    phase: str = "queued"
+    resources: ResourceProfileResponse | None = None
+    subtasks: list[JobSubtaskProgress] = Field(default_factory=list)
+    logs: list[JobLogEntry] = Field(default_factory=list)
+    result: QuickMontageResult | None = None
+    paused_seconds: float = Field(default=0, ge=0)
+
+
+class MovieJobStateHistory(BaseModel):
+    schema_version: Literal[1] = 1
+    jobs: list[MovieJobState] = Field(default_factory=list)
+
+
 class SceneListResponse(BaseModel):
-    scenes: list[Scene] = Field(default_factory=list)
+    scenes: list[EditableScene] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=120, ge=1)
 
 
 class SceneOverrideRequest(BaseModel):
     input_path: str = Field(min_length=1)
     workspace: str | None = None
-    decision: str = Field(pattern=r"^(auto|include|exclude)$")
+    decision: str | None = Field(default=None, pattern=r"^(auto|include|exclude)$")
+    expected_version: int | None = Field(default=None, ge=1)
+    caption: str | None = Field(default=None, max_length=500)
+    transcript: str | None = Field(default=None, max_length=10_000)
+    landmarks: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = Field(
+        default=None, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def validate_edits(self) -> "SceneOverrideRequest":
+        edit_fields = {"caption", "transcript", "landmarks"} & self.model_fields_set
+        if not edit_fields and self.decision is None:
+            raise ValueError("At least one scene change is required.")
+        if edit_fields and self.decision is not None:
+            raise ValueError("Selection and scene metadata must be edited separately.")
+        if edit_fields and self.expected_version is None:
+            raise ValueError("expected_version is required for scene metadata edits.")
+        return self
+
+
+class EventListResponse(BaseModel):
+    events: list[EditableEvent] = Field(default_factory=list)
+
+
+class EventPatchRequest(BaseModel):
+    input_path: str = Field(min_length=1)
+    workspace: str | None = None
+    expected_version: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    summary: str | None = Field(default=None, max_length=2000)
+    landmarks: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = Field(
+        default=None, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def require_change(self) -> "EventPatchRequest":
+        if not ({"title", "summary", "landmarks"} & self.model_fields_set):
+            raise ValueError("At least one event change is required.")
+        return self
+
+
+class ReorderRequest(BaseModel):
+    input_path: str = Field(min_length=1)
+    workspace: str | None = None
+    ordered_ids: list[UUID] = Field(min_length=1)
+    expected_versions: dict[UUID, Annotated[int, Field(ge=1)]] = Field(min_length=1)
+
+
+class TimelineVersionListResponse(BaseModel):
+    versions: list[TimelineVersionSummary] = Field(default_factory=list)
+
+
+class TimelineVersionResponse(BaseModel):
+    version: TimelineVersionSnapshot
+
+
+class TimelineVersionCompareResponse(BaseModel):
+    comparison: TimelineVersionComparison

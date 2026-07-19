@@ -6,14 +6,18 @@ from threading import Timer
 
 import uvicorn
 
-from travelmovieai.core.config import load_settings
+from travelmovieai.core.config import load_settings, validate_loopback_web_host
 from travelmovieai.web.app import create_app
 
 
 def main() -> None:
     settings = load_settings()
     parser = argparse.ArgumentParser(description="Run the TravelMovieAI web interface.")
-    parser.add_argument("--host", default=settings.web_host)
+    parser.add_argument(
+        "--host",
+        default=settings.web_host,
+        type=validate_loopback_web_host,
+    )
     parser.add_argument("--port", type=int, default=settings.web_port)
     parser.add_argument(
         "--no-browser",
@@ -22,7 +26,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    url = f"http://{args.host}:{args.port}"
+    url = _browser_url(args.host, args.port)
     if not args.no_browser:
         Timer(1.0, webbrowser.open, args=(url,)).start()
 
@@ -32,6 +36,11 @@ def main() -> None:
         port=args.port,
         log_level="info",
     )
+
+
+def _browser_url(host: str, port: int) -> str:
+    browser_host = f"[{host}]" if ":" in host else host
+    return f"http://{browser_host}:{port}"
 
 
 if __name__ == "__main__":

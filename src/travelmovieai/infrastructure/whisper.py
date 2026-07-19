@@ -13,9 +13,18 @@ from travelmovieai.domain.models import SpeechSegment, SpeechTranscript
 class FasterWhisperProvider:
     name = "faster-whisper"
 
-    def __init__(self, model: str, device: str = "auto") -> None:
+    def __init__(
+        self,
+        model: str,
+        device: str = "auto",
+        *,
+        cache_dir: Path | None = None,
+        allow_download: bool = True,
+    ) -> None:
         self.model = model
         self.device = device
+        self.cache_dir = cache_dir.expanduser().resolve() if cache_dir is not None else None
+        self.allow_download = allow_download
         self._loaded_model: Any = None
 
     def transcribe(self, audio_path: Path) -> SpeechTranscript:
@@ -80,23 +89,36 @@ class FasterWhisperProvider:
             ) from error
         device = "cuda" if self.device in {"auto", "cuda"} else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
+        load_options: dict[str, object] = {
+            "device": device,
+            "compute_type": compute_type,
+            "local_files_only": not self.allow_download,
+        }
+        if self.cache_dir is not None:
+            load_options["download_root"] = str(self.cache_dir)
         try:
             self._loaded_model = module.WhisperModel(
                 self.model,
-                device=device,
-                compute_type=compute_type,
+                **load_options,
             )
         except (OSError, RuntimeError, ValueError) as error:
             if self.device == "auto":
                 try:
+                    load_options.update(device="cpu", compute_type="int8")
                     self._loaded_model = module.WhisperModel(
                         self.model,
-                        device="cpu",
-                        compute_type="int8",
+                        **load_options,
                     )
                     return self._loaded_model
                 except (OSError, RuntimeError, ValueError):
                     pass
+            if not self.allow_download:
+                raise PipelineStageError(
+                    f"Could not load Faster Whisper model '{self.model}' in cache-only mode. "
+                    "The configured local model cache is missing or incomplete. Temporarily set "
+                    "allow_model_download=true and run once while online, then disable downloads "
+                    "again."
+                ) from error
             raise PipelineStageError(
                 f"Could not load Faster Whisper model '{self.model}'."
             ) from error

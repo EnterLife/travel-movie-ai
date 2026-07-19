@@ -1,8 +1,10 @@
 """Deterministic scene-to-event clustering based on Vision AI metadata."""
 
+import math
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
+from travelmovieai.analysis.embeddings import semantic_similarity
 from travelmovieai.domain.enums import ActivityType, LocationType
 from travelmovieai.domain.models import (
     Event,
@@ -12,6 +14,9 @@ from travelmovieai.domain.models import (
 )
 
 MAX_EVENT_GAP = timedelta(minutes=90)
+MAX_EVENT_DISTANCE_KM = 5.0
+MIN_EVENT_SEMANTIC_SIMILARITY = 0.72
+_EVENT_ID_NAMESPACE = uuid5(NAMESPACE_URL, "https://travelmovieai.local/event/v1")
 
 
 def detect_events(
@@ -46,7 +51,7 @@ def detect_events(
         scene.model_copy(
             update={
                 "metadata": {
-                    **scene.metadata,
+                    **_without_stale_event_overrides(scene.metadata),
                     "event_id": str(event_by_scene[scene.id].id),
                     "event_title": event_by_scene[scene.id].title,
                     "event_importance": event_by_scene[scene.id].importance_score,
@@ -61,6 +66,14 @@ def detect_events(
     )
 
 
+def _without_stale_event_overrides(metadata: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"manual_event_order", "event_summary", "event_landmarks"}
+    }
+
+
 def _same_event(
     previous: Scene,
     current: Scene,
@@ -73,9 +86,17 @@ def _same_event(
     if previous.asset_id == current.asset_id:
         return True
 
+    gps_distance = _gps_distance_km(assets[previous.asset_id], assets[current.asset_id])
+    if gps_distance is not None:
+        return gps_distance <= MAX_EVENT_DISTANCE_KM
+
     previous_landmarks = _landmark_names(previous)
     current_landmarks = _landmark_names(current)
     if previous_landmarks & current_landmarks:
+        return True
+
+    similarity = semantic_similarity(previous, current)
+    if similarity is not None and similarity >= MIN_EVENT_SEMANTIC_SIMILARITY:
         return True
 
     previous_location = _metadata_value(previous, "location_type")
@@ -102,6 +123,38 @@ def _same_event(
     }
 
 
+def _gps_distance_km(first: MediaAsset, second: MediaAsset) -> float | None:
+    if not _valid_coordinates(first.latitude, first.longitude) or not _valid_coordinates(
+        second.latitude,
+        second.longitude,
+    ):
+        return None
+    assert first.latitude is not None
+    assert first.longitude is not None
+    assert second.latitude is not None
+    assert second.longitude is not None
+    latitude_delta = math.radians(second.latitude - first.latitude)
+    longitude_delta = math.radians(second.longitude - first.longitude)
+    first_latitude = math.radians(first.latitude)
+    second_latitude = math.radians(second.latitude)
+    haversine = (
+        math.sin(latitude_delta / 2) ** 2
+        + math.cos(first_latitude) * math.cos(second_latitude) * math.sin(longitude_delta / 2) ** 2
+    )
+    return 6371.0088 * 2 * math.asin(min(1.0, math.sqrt(haversine)))
+
+
+def _valid_coordinates(latitude: float | None, longitude: float | None) -> bool:
+    return (
+        latitude is not None
+        and longitude is not None
+        and math.isfinite(latitude)
+        and math.isfinite(longitude)
+        and -90 <= latitude <= 90
+        and -180 <= longitude <= 180
+    )
+
+
 def _build_event(
     scenes: list[Scene],
     assets: dict[UUID, MediaAsset],
@@ -124,6 +177,7 @@ def _build_event(
     confidence = min(1.0, 0.45 + semantic_fields * 0.15 + min(len(scenes), 4) * 0.025)
     captions = [scene.caption for scene in scenes if scene.caption]
     return Event(
+        id=_event_id(scenes),
         title=_event_title(location, activity, landmarks),
         scene_ids=[scene.id for scene in scenes],
         summary=" ".join(captions[:3]),
@@ -135,6 +189,11 @@ def _build_event(
         landmarks=landmarks,
         confidence=confidence,
     )
+
+
+def _event_id(scenes: list[Scene]) -> UUID:
+    scene_identity = ":".join(str(scene.id) for scene in scenes)
+    return uuid5(_EVENT_ID_NAMESPACE, scene_identity)
 
 
 def _event_title(

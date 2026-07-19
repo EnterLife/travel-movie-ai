@@ -4,7 +4,7 @@ from pathlib import Path
 
 from travelmovieai.analysis.audio import analyze_audio
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import MediaType, PipelineStage, StageStatus
 from travelmovieai.domain.models import AudioAnalysisReport, MediaAsset, Scene, StageResult
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -14,6 +14,7 @@ from travelmovieai.infrastructure.artifacts import (
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
+from travelmovieai.pipeline.state import AUDIO_STATE, clear_stage_owned_state
 
 ARTIFACT_SCHEMA_VERSION = "audio-analysis-v2"
 
@@ -23,9 +24,10 @@ class AudioAnalysisStage(Stage):
 
     def run(self, context: ProjectContext) -> StageResult:
         if context.montage_settings is not None and not context.montage_settings.audio_analysis:
+            clear_stage_owned_state(context, AUDIO_STATE)
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.DISABLED,
                 message="Audio analysis disabled by montage settings.",
             )
 
@@ -35,6 +37,13 @@ class AudioAnalysisStage(Stage):
         assets = repository.list_assets()
         artifact = context.artifacts_dir / "audio_analysis.json"
         cache_artifact = context.artifacts_dir / "audio_analysis.cache.json"
+        if not _has_eligible_audio_scene(scenes, assets):
+            clear_stage_owned_state(context, AUDIO_STATE)
+            return StageResult(
+                stage=self.name,
+                status=StageStatus.NO_INPUT,
+                message="Audio analysis needs a video scene with an audio stream.",
+            )
         input_fingerprint = artifact_fingerprint(_audio_scene_inputs(scenes), _asset_inputs(assets))
         config_fingerprint = artifact_fingerprint(
             {
@@ -53,7 +62,7 @@ class AudioAnalysisStage(Stage):
         ) and _cached_audio_analysis_valid(artifact, scenes):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Audio analysis reused cached scene audio metadata.",
             )
@@ -63,6 +72,7 @@ class AudioAnalysisStage(Stage):
             assets,
             context.settings.ffmpeg_binary,
             timeout_seconds=context.settings.frame_extraction_timeout_seconds,
+            progress=context.progress,
         )
         repository.synchronize_scenes(report.scenes)
         write_json_atomic(artifact, report)
@@ -76,7 +86,6 @@ class AudioAnalysisStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=report.analyzed_count == 0,
             artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Audio analysis classified {report.analyzed_count} scene(s), "
@@ -126,3 +135,16 @@ def _asset_inputs(assets: list[MediaAsset]) -> list[dict[str, object]]:
         }
         for asset in sorted(assets, key=lambda item: str(item.id))
     ]
+
+
+def _has_eligible_audio_scene(scenes: list[Scene], assets: list[MediaAsset]) -> bool:
+    eligible_assets = {
+        asset.id
+        for asset in assets
+        if asset.media_type is MediaType.VIDEO
+        and any(
+            isinstance(stream, dict) and stream.get("codec_type") == "audio"
+            for stream in asset.probe_metadata.get("streams", [])
+        )
+    }
+    return any(scene.asset_id in eligible_assets for scene in scenes)

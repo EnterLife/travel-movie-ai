@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from travelmovieai.domain.enums import StoryStyle
 from travelmovieai.infrastructure.vision import (
     LocalQwenVisionProvider,
@@ -97,6 +99,11 @@ def test_local_qwen_response_normalizes_common_schema_drift() -> None:
           "location_type": "beach",
           "activity": "walking",
           "emotion": "neutral",
+          "shot_scale": "establishing shot",
+          "camera_motion": "gimbal",
+          "focus_x": 0.42,
+          "focus_y": 0.31,
+          "focus_source": "person",
           "people_count": "2-4",
           "people_groups": "none",
           "landmarks": [],
@@ -120,6 +127,11 @@ def test_local_qwen_response_normalizes_common_schema_drift() -> None:
     assert result.people_count == 4
     assert result.people_groups[0].value == "none"
     assert result.vision_score == 60
+    assert result.shot_scale == "extreme_wide"
+    assert result.camera_motion == "tracking"
+    assert result.focus_x == pytest.approx(0.42)
+    assert result.focus_y == pytest.approx(0.31)
+    assert result.focus_source == "face"
     assert result.story_relevance == "Model relevance score: 70/100."
     assert result.tags == ["beach"]
 
@@ -148,3 +160,27 @@ def test_local_qwen_response_normalizes_textual_people_count() -> None:
     assert result.location_type.value == "sea"
     assert result.activity.value == "sightseeing"
     assert result.emotion.value == "relaxing"
+    assert result.shot_scale == "unknown"
+    assert result.camera_motion == "unknown"
+    assert result.focus_x is None
+    assert result.focus_y is None
+    assert result.focus_source is None
+
+
+def test_local_qwen_discards_incomplete_or_out_of_range_focus() -> None:
+    result = _parse_local_qwen_understanding(
+        """
+        {
+          "caption": "Wide landscape",
+          "detailed_description": "A mountain landscape.",
+          "focus_x": 1.4,
+          "focus_y": 0.2,
+          "focus_source": "object",
+          "score_factors": {}
+        }
+        """
+    )
+
+    assert result.focus_x is None
+    assert result.focus_y is None
+    assert result.focus_source is None

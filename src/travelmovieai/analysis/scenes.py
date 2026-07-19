@@ -9,16 +9,20 @@ from collections.abc import Sequence
 from pathlib import Path
 from threading import Lock
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from travelmovieai.core.exceptions import (
     DependencyUnavailableError,
     MediaProbeError,
     MontageError,
 )
+from travelmovieai.core.security import sanitize_process_error
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MediaAsset, QuickMontageSettings, Scene
 from travelmovieai.infrastructure.ffmpeg import FFprobeClient
+
+_SCENE_ID_NAMESPACE = uuid5(NAMESPACE_URL, "https://travelmovieai.local/scene/v1")
+_SCENE_IDENTITY_VERSION = "deterministic-scene-id-v2-proxy-aware"
 
 
 class SceneDetector:
@@ -32,6 +36,11 @@ class SceneDetector:
         if asset.media_type is MediaType.PHOTO:
             return [
                 Scene(
+                    id=_scene_id(
+                        asset,
+                        0,
+                        settings.photo_duration_seconds,
+                    ),
                     asset_id=asset.id,
                     start_seconds=0,
                     end_seconds=settings.photo_duration_seconds,
@@ -102,10 +111,16 @@ class SceneDetector:
                 end = min(range_end, start + settings.max_scene_duration_seconds)
                 if end - start < settings.min_scene_duration_seconds and scenes:
                     previous = scenes[-1]
-                    scenes[-1] = previous.model_copy(update={"end_seconds": range_end})
+                    scenes[-1] = previous.model_copy(
+                        update={
+                            "id": _scene_id(asset, previous.start_seconds, range_end),
+                            "end_seconds": range_end,
+                        }
+                    )
                     break
                 scenes.append(
                     Scene(
+                        id=_scene_id(asset, start, end),
                         asset_id=asset.id,
                         start_seconds=start,
                         end_seconds=end,
@@ -146,7 +161,11 @@ class RepresentativeFrameExtractor:
             return asset.path
 
         frames_dir.mkdir(parents=True, exist_ok=True)
-        frame_path = frames_dir / f"{scene.id}-contact-v4-{self.frame_sample_count}.png"
+        proxy_fingerprint = asset.probe_metadata.get("analysis_proxy_fingerprint")
+        proxy_variant = f"-proxy-{str(proxy_fingerprint)[:12]}" if proxy_fingerprint else ""
+        frame_path = (
+            frames_dir / f"{scene.id}-contact-v4-{self.frame_sample_count}{proxy_variant}.png"
+        )
         if frame_path.is_file() and frame_path.stat().st_size > 0:
             return frame_path
         temporary_path = frame_path.with_name(f".{frame_path.stem}.{uuid4().hex}.tmp.png")
@@ -198,7 +217,15 @@ class RepresentativeFrameExtractor:
                     f"FFmpeg timed out after {self.timeout_seconds:g}s while extracting "
                     f"frames from {asset.relative_path} ({tried})."
                 )
-            detail = completed.stderr.strip() if completed is not None else ""
+            detail = (
+                sanitize_process_error(
+                    completed.stderr,
+                    private_paths=[asset.path, temporary_path, frame_path],
+                    fallback="unknown FFmpeg error",
+                )
+                if completed is not None
+                else ""
+            )
             if not detail:
                 return_code = completed.returncode if completed is not None else "unknown"
                 detail = f"FFmpeg exited with code {return_code}, but did not create an image."
@@ -287,19 +314,40 @@ class RepresentativeFrameExtractor:
             return duration
 
 
-def scene_cache_key(asset: MediaAsset, settings: QuickMontageSettings) -> str:
+def scene_cache_key(
+    asset: MediaAsset,
+    settings: QuickMontageSettings,
+    *,
+    analysis_fingerprint: str | None = None,
+) -> str:
     payload = {
+        "identity_version": _SCENE_IDENTITY_VERSION,
         "asset_id": str(asset.id),
         "size": asset.size_bytes,
         "modified_ns": asset.modified_ns,
         "threshold": settings.scene_threshold,
         "min": settings.min_scene_duration_seconds,
         "max": settings.max_scene_duration_seconds,
+        "analysis_fingerprint": analysis_fingerprint
+        or asset.probe_metadata.get("scene_analysis_fingerprint"),
     }
     if asset.media_type is MediaType.PHOTO:
         payload["photo_duration"] = settings.photo_duration_seconds
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _scene_id(asset: MediaAsset, start_seconds: float, end_seconds: float) -> UUID:
+    start_microseconds = round(start_seconds * 1_000_000)
+    end_microseconds = round(end_seconds * 1_000_000)
+    return uuid5(
+        _SCENE_ID_NAMESPACE,
+        (
+            f"{asset.relative_path.as_posix()}:{asset.media_type.value}:"
+            f"{asset.size_bytes}:{asset.modified_ns}:"
+            f"{start_microseconds}:{end_microseconds}"
+        ),
+    )
 
 
 def _sample_timestamps(

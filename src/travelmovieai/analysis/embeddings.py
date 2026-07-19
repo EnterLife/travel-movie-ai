@@ -5,11 +5,13 @@ import math
 import re
 from datetime import UTC, datetime
 
+from travelmovieai.core.exceptions import PipelineStageError
 from travelmovieai.domain.models import (
     EmbeddingAnalysisReport,
     Scene,
     SceneEmbedding,
 )
+from travelmovieai.infrastructure.embeddings import TextEmbeddingProvider
 
 EMBEDDING_BACKEND = "feature-hash-v1"
 EMBEDDING_DIMENSIONS = 64
@@ -17,11 +19,26 @@ EMBEDDING_DIMENSIONS = 64
 
 def embed_scenes(
     scenes: list[Scene],
+    provider: TextEmbeddingProvider | None = None,
 ) -> tuple[EmbeddingAnalysisReport, list[Scene]]:
+    texts = [_scene_text(scene) for scene in scenes]
+    if provider is None:
+        backend = EMBEDDING_BACKEND
+        model: str | None = None
+        dimensions = EMBEDDING_DIMENSIONS
+        vectors = [feature_hash_embedding(text) for text in texts]
+    else:
+        backend = provider.backend
+        model = provider.model
+        vectors = provider.encode(texts)
+        dimensions = provider.dimensions or 0
+        if len(vectors) != len(scenes) or dimensions <= 0:
+            raise PipelineStageError(
+                "Embedding provider returned an invalid scene vector contract."
+            )
     embeddings: list[SceneEmbedding] = []
     updated: list[Scene] = []
-    for scene in scenes:
-        vector = _feature_hash(_scene_text(scene))
+    for scene, vector in zip(scenes, vectors, strict=True):
         embeddings.append(SceneEmbedding(scene_id=scene.id, vector=vector))
         updated.append(
             scene.model_copy(
@@ -29,7 +46,8 @@ def embed_scenes(
                     "metadata": {
                         **scene.metadata,
                         "semantic_embedding": vector,
-                        "embedding_backend": EMBEDDING_BACKEND,
+                        "embedding_backend": backend,
+                        "embedding_model": model,
                     }
                 }
             )
@@ -37,8 +55,9 @@ def embed_scenes(
     return (
         EmbeddingAnalysisReport(
             created_at=datetime.now(UTC),
-            backend=EMBEDDING_BACKEND,
-            dimensions=EMBEDDING_DIMENSIONS,
+            backend=backend,
+            model=model,
+            dimensions=dimensions,
             embeddings=embeddings,
         ),
         updated,
@@ -50,21 +69,28 @@ def semantic_similarity(first: Scene, second: Scene) -> float | None:
     second_vector = second.metadata.get("semantic_embedding")
     if not isinstance(first_vector, list) or not isinstance(second_vector, list):
         return None
-    if len(first_vector) != EMBEDDING_DIMENSIONS or len(second_vector) != EMBEDDING_DIMENSIONS:
+    if not first_vector or len(first_vector) != len(second_vector):
         return None
     try:
+        first_values = [float(value) for value in first_vector]
+        second_values = [float(value) for value in second_vector]
+        first_norm = math.sqrt(sum(value * value for value in first_values))
+        second_norm = math.sqrt(sum(value * value for value in second_values))
+        if first_norm == 0 or second_norm == 0:
+            return 0.0
         return max(
             0.0,
             min(
                 1.0,
-                sum(float(a) * float(b) for a, b in zip(first_vector, second_vector, strict=True)),
+                sum(a * b for a, b in zip(first_values, second_values, strict=True))
+                / (first_norm * second_norm),
             ),
         )
     except (TypeError, ValueError):
         return None
 
 
-def _scene_text(scene: Scene) -> str:
+def scene_embedding_text(scene: Scene) -> str:
     tags = scene.metadata.get("tags", [])
     resolved_tags = tags if isinstance(tags, list) else []
     values: list[object] = [
@@ -79,7 +105,11 @@ def _scene_text(scene: Scene) -> str:
     return " ".join(str(value) for value in values if str(value).strip())
 
 
-def _feature_hash(text: str) -> list[float]:
+def _scene_text(scene: Scene) -> str:
+    return scene_embedding_text(scene)
+
+
+def feature_hash_embedding(text: str) -> list[float]:
     vector = [0.0] * EMBEDDING_DIMENSIONS
     tokens = re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE)
     for token in tokens:

@@ -6,7 +6,9 @@ import gc
 import importlib
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from PIL import Image
@@ -21,8 +23,9 @@ from travelmovieai.domain.enums import (
     StoryStyle,
 )
 from travelmovieai.domain.models import SceneUnderstanding, VisionScoreFactors
+from travelmovieai.infrastructure.model_pool import BoundedModelPool, ModelLease, ModelPoolStats
 
-PROMPT_VERSION = "scene-understanding-v3-stage-4.5"
+PROMPT_VERSION = "scene-understanding-v5-focus-point"
 LOCAL_QWEN_MODELS = (
     "Qwen/Qwen2.5-VL-3B-Instruct",
     "Qwen/Qwen2.5-VL-7B-Instruct",
@@ -36,12 +39,27 @@ museum|park|landmark|transport|indoor|other),
 activity (unknown|walking|sightseeing|swimming|hiking|cycling|traveling|relaxing|
 sports|dining|boating|arriving|departing|other),
 emotion (neutral|joyful|exciting|relaxing|romantic|emotional|adventurous|cinematic),
+shot_scale (unknown|extreme_wide|wide|full|medium|close_up|extreme_close_up),
+camera_motion (unknown|static|pan|tilt|tracking|handheld|zoom|drone|orbit),
+focus_x and focus_y (0-1 normalized center of the primary visible subject),
+focus_source (face|object|subject; use null for all three focus fields if no clear subject),
 people_count, people_groups (none|adults|children|family|group|solo|mixed),
 landmarks [{name, confidence 0-1, evidence}],
 vision_score 0-100,
 score_factors {uniqueness, people, emotion, visual_quality, landmark,
 unusual_event}, story_relevance, tags.
 """.strip()
+
+
+@dataclass(slots=True)
+class _VisionRuntime:
+    torch: Any
+    processor: Any
+    model: Any
+    inference_lock: RLock = field(default_factory=RLock)
+
+
+_VISION_RUNTIME_POOL: BoundedModelPool[_VisionRuntime] = BoundedModelPool(1)
 
 
 class LocalQwenVisionProvider:
@@ -61,6 +79,7 @@ class LocalQwenVisionProvider:
         gpu_memory_mb: int | None = None,
         system_memory_mb: int | None = None,
         batch_size: int = 1,
+        model_pool_size: int = 1,
     ) -> None:
         self.model = model
         self.device = device
@@ -71,9 +90,11 @@ class LocalQwenVisionProvider:
         self.gpu_memory_mb = gpu_memory_mb
         self.system_memory_mb = system_memory_mb
         self.batch_size = max(1, batch_size)
+        self.model_pool_size = model_pool_size
         self._processor: Any = None
         self._loaded_model: Any = None
         self._torch: Any = None
+        self._runtime_lease: ModelLease[_VisionRuntime] | None = None
 
     @property
     def runtime_description(self) -> str:
@@ -88,11 +109,13 @@ class LocalQwenVisionProvider:
         self._ensure_loaded()
 
     def release(self) -> None:
+        lease = self._runtime_lease
+        self._runtime_lease = None
         self._loaded_model = None
         self._processor = None
-        gc.collect()
-        if self._torch is not None and self._torch.cuda.is_available():
-            self._torch.cuda.empty_cache()
+        self._torch = None
+        if lease is not None:
+            lease.release()
 
     def analyze(self, image_path: Path, style: StoryStyle) -> SceneUnderstanding:
         return self.analyze_batch([image_path], style)[0]
@@ -160,6 +183,23 @@ class LocalQwenVisionProvider:
         *,
         max_new_tokens: int,
     ) -> list[str]:
+        lease = self._runtime_lease
+        if lease is None:
+            raise RuntimeError("Vision runtime is not acquired.")
+        with lease.value.inference_lock:
+            return self._generate_contents_locked(
+                images,
+                prompt,
+                max_new_tokens=max_new_tokens,
+            )
+
+    def _generate_contents_locked(
+        self,
+        images: list[Image.Image],
+        prompt: str,
+        *,
+        max_new_tokens: int,
+    ) -> list[str]:
         messages = [
             [
                 {
@@ -211,8 +251,20 @@ class LocalQwenVisionProvider:
     def _ensure_loaded(self) -> None:
         if self._loaded_model is not None:
             return
+        _VISION_RUNTIME_POOL.configure(self.model_pool_size)
+        lease = _VISION_RUNTIME_POOL.acquire(
+            self._runtime_key(),
+            self._load_runtime,
+            _dispose_runtime,
+        )
+        self._runtime_lease = lease
+        self._torch = lease.value.torch
+        self._processor = lease.value.processor
+        self._loaded_model = lease.value.model
+
+    def _load_runtime(self) -> _VisionRuntime:
         try:
-            self._torch = importlib.import_module("torch")
+            torch_module = importlib.import_module("torch")
             transformers = importlib.import_module("transformers")
             importlib.import_module("accelerate")
             if self.quantize_4bit:
@@ -223,20 +275,22 @@ class LocalQwenVisionProvider:
                 'python -m pip install -e ".[vision]".'
             ) from error
 
-        if self.device == "cuda" and not self._torch.cuda.is_available():
+        if self.device == "cuda" and not torch_module.cuda.is_available():
             raise DependencyUnavailableError(
                 "CUDA was selected, but the installed PyTorch build cannot see the GPU."
             )
         resolved_device = (
-            "cuda" if self.device in {"auto", "cuda"} and self._torch.cuda.is_available() else "cpu"
+            "cuda"
+            if self.device in {"auto", "cuda"} and torch_module.cuda.is_available()
+            else "cpu"
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
             if resolved_device == "cuda":
-                self._torch.backends.cuda.matmul.allow_tf32 = True
+                torch_module.backends.cuda.matmul.allow_tf32 = True
             processor_type = transformers.AutoProcessor
             model_type = transformers.Qwen2_5_VLForConditionalGeneration
-            self._processor = processor_type.from_pretrained(
+            processor = processor_type.from_pretrained(
                 self.model,
                 cache_dir=self.cache_dir,
                 local_files_only=not self.allow_download,
@@ -253,12 +307,12 @@ class LocalQwenVisionProvider:
                 device_map: dict[str, int] | str = {"": 0}
                 model_options.update(
                     {
-                        "dtype": self._torch.float16,
+                        "dtype": torch_module.float16,
                         "device_map": device_map,
                         "quantization_config": transformers.BitsAndBytesConfig(
                             load_in_4bit=True,
                             bnb_4bit_quant_type="nf4",
-                            bnb_4bit_compute_dtype=self._torch.float16,
+                            bnb_4bit_compute_dtype=torch_module.float16,
                             bnb_4bit_use_double_quant=True,
                             llm_int8_enable_fp32_cpu_offload=self.use_cpu_offload,
                         ),
@@ -282,11 +336,16 @@ class LocalQwenVisionProvider:
                         "device_map": "auto" if resolved_device == "cuda" else "cpu",
                     }
                 )
-            self._loaded_model = model_type.from_pretrained(
+            loaded_model = model_type.from_pretrained(
                 self.model,
                 **model_options,
             )
-            self._loaded_model.eval()
+            loaded_model.eval()
+            return _VisionRuntime(
+                torch=torch_module,
+                processor=processor,
+                model=loaded_model,
+            )
         except (AttributeError, OSError, RuntimeError, ValueError) as error:
             download_hint = (
                 "Check internet access and free space in the model cache."
@@ -296,6 +355,19 @@ class LocalQwenVisionProvider:
             raise VisionAnalysisError(
                 f"Could not load Qwen Vision '{self.model}'. {download_hint}"
             ) from error
+
+    def _runtime_key(self) -> tuple[object, ...]:
+        return (
+            "qwen",
+            self.model,
+            self.device,
+            str(self.cache_dir.expanduser().resolve()),
+            self.allow_download,
+            self.quantize_4bit,
+            self.use_cpu_offload,
+            self.gpu_memory_mb,
+            self.system_memory_mb,
+        )
 
     def _max_memory(self) -> dict[int | str, str]:
         gpu_memory_mb = max(1024, (self.gpu_memory_mb or 6144) - 768)
@@ -318,19 +390,25 @@ class Florence2VisionProvider:
         *,
         cache_dir: Path = Path("models"),
         allow_download: bool = True,
+        model_pool_size: int = 1,
     ) -> None:
         self.model = model
         self.device = device
         self.cache_dir = cache_dir
         self.allow_download = allow_download
+        self.model_pool_size = model_pool_size
         self._processor: Any = None
         self._loaded_model: Any = None
         self._torch: Any = None
+        self._runtime_lease: ModelLease[_VisionRuntime] | None = None
 
     def analyze(self, image_path: Path, style: StoryStyle) -> SceneUnderstanding:
         self._ensure_loaded()
+        lease = self._runtime_lease
+        if lease is None:
+            raise VisionAnalysisError("Florence-2 runtime is not acquired.")
         try:
-            with Image.open(image_path) as source:
+            with lease.value.inference_lock, Image.open(image_path) as source:
                 image = source.convert("RGB")
                 image_size = image.size
                 task = "<MORE_DETAILED_CAPTION>"
@@ -358,55 +436,84 @@ class Florence2VisionProvider:
         return _understanding_from_caption(caption, style)
 
     def release(self) -> None:
+        lease = self._runtime_lease
+        self._runtime_lease = None
         self._loaded_model = None
         self._processor = None
-        gc.collect()
-        if self._torch is not None and self._torch.cuda.is_available():
-            self._torch.cuda.empty_cache()
+        self._torch = None
+        if lease is not None:
+            lease.release()
 
     def _ensure_loaded(self) -> None:
         if self._loaded_model is not None:
             return
+        _VISION_RUNTIME_POOL.configure(self.model_pool_size)
+        lease = _VISION_RUNTIME_POOL.acquire(
+            self._runtime_key(),
+            self._load_runtime,
+            _dispose_runtime,
+        )
+        self._runtime_lease = lease
+        self._torch = lease.value.torch
+        self._processor = lease.value.processor
+        self._loaded_model = lease.value.model
+
+    def _load_runtime(self) -> _VisionRuntime:
         try:
-            self._torch = importlib.import_module("torch")
+            torch_module = importlib.import_module("torch")
             transformers = importlib.import_module("transformers")
         except ImportError as error:
             raise DependencyUnavailableError(
                 "Install the vision optional dependency group for Florence-2 and a "
                 "PyTorch build compatible with your system."
             ) from error
-        device = self._resolved_device()
-        dtype = self._torch.float16 if device == "cuda" else self._torch.float32
+        device = self._resolved_device(torch_module)
+        dtype = torch_module.float16 if device == "cuda" else torch_module.float32
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
             processor_type = transformers.AutoProcessor
             model_type = transformers.AutoModelForCausalLM
-            self._processor = processor_type.from_pretrained(
+            processor = processor_type.from_pretrained(
                 self.model,
                 trust_remote_code=True,
                 cache_dir=self.cache_dir,
                 local_files_only=not self.allow_download,
             )
-            self._loaded_model = model_type.from_pretrained(
+            loaded_model = model_type.from_pretrained(
                 self.model,
                 trust_remote_code=True,
                 torch_dtype=dtype,
                 cache_dir=self.cache_dir,
                 local_files_only=not self.allow_download,
             ).to(device)
-            self._loaded_model.eval()
+            loaded_model.eval()
+            return _VisionRuntime(
+                torch=torch_module,
+                processor=processor,
+                model=loaded_model,
+            )
         except (OSError, RuntimeError, ValueError) as error:
             raise VisionAnalysisError(
                 f"Could not load local Florence-2 model '{self.model}'. "
                 "Check internet access, free space, and auto-download settings."
             ) from error
 
-    def _resolved_device(self) -> str:
+    def _runtime_key(self) -> tuple[object, ...]:
+        return (
+            "florence",
+            self.model,
+            self.device,
+            str(self.cache_dir.expanduser().resolve()),
+            self.allow_download,
+        )
+
+    def _resolved_device(self, torch_module: Any | None = None) -> str:
         if self.device == "cuda":
             return "cuda"
         if self.device == "cpu":
             return "cpu"
-        if self._torch is not None and self._torch.cuda.is_available():
+        runtime_torch = torch_module if torch_module is not None else self._torch
+        if runtime_torch is not None and runtime_torch.cuda.is_available():
             return "cuda"
         return "cpu"
 
@@ -426,6 +533,26 @@ def resolve_local_vision_model(
     ):
         return LOCAL_QWEN_MODELS[1]
     return LOCAL_QWEN_MODELS[0]
+
+
+def clear_idle_vision_models() -> None:
+    """Explicitly unload reusable Vision runtimes that have no active stage."""
+
+    _VISION_RUNTIME_POOL.clear_idle()
+
+
+def vision_model_pool_stats() -> ModelPoolStats:
+    return _VISION_RUNTIME_POOL.stats()
+
+
+def _dispose_runtime(runtime: _VisionRuntime) -> None:
+    torch_module = runtime.torch
+    runtime.model = None
+    runtime.processor = None
+    gc.collect()
+    if torch_module is not None and torch_module.cuda.is_available():
+        torch_module.cuda.empty_cache()
+    runtime.torch = None
 
 
 def _model_size_billions(model: str) -> int:
@@ -449,6 +576,7 @@ def build_vision_provider(
     gpu_memory_mb: int | None,
     system_memory_mb: int | None,
     model_batch_size: int = 1,
+    model_pool_size: int = 1,
 ) -> LocalQwenVisionProvider | Florence2VisionProvider:
     """Build the selected backend without importing model-heavy packages."""
 
@@ -461,6 +589,7 @@ def build_vision_provider(
             device=device,
             cache_dir=cache_dir,
             allow_download=allow_download,
+            model_pool_size=model_pool_size,
         )
     resolved_model = resolve_local_vision_model(
         configured_model,
@@ -482,6 +611,7 @@ def build_vision_provider(
         use_cpu_offload=use_cpu_offload,
         gpu_memory_mb=gpu_memory_mb,
         system_memory_mb=system_memory_mb,
+        model_pool_size=model_pool_size,
         batch_size=(
             1
             if model_size >= 7
@@ -548,6 +678,7 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
         tags = [tags]
     if not isinstance(tags, list):
         tags = []
+    focus_x, focus_y, focus_source = _normalized_focus(payload)
 
     payload.update(
         {
@@ -589,6 +720,59 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
                     "dramatic": EmotionType.CINEMATIC.value,
                 },
             ),
+            "shot_scale": _enum_value(
+                payload.get("shot_scale"),
+                {
+                    "unknown",
+                    "extreme_wide",
+                    "wide",
+                    "full",
+                    "medium",
+                    "close_up",
+                    "extreme_close_up",
+                },
+                "unknown",
+                {
+                    "establishing": "extreme_wide",
+                    "establishing_shot": "extreme_wide",
+                    "long": "wide",
+                    "long_shot": "wide",
+                    "full_shot": "full",
+                    "medium_shot": "medium",
+                    "closeup": "close_up",
+                    "close_up_shot": "close_up",
+                    "extreme_closeup": "extreme_close_up",
+                },
+            ),
+            "camera_motion": _enum_value(
+                payload.get("camera_motion"),
+                {
+                    "unknown",
+                    "static",
+                    "pan",
+                    "tilt",
+                    "tracking",
+                    "handheld",
+                    "zoom",
+                    "drone",
+                    "orbit",
+                },
+                "unknown",
+                {
+                    "locked_off": "static",
+                    "locked": "static",
+                    "panning": "pan",
+                    "tilting": "tilt",
+                    "dolly": "tracking",
+                    "gimbal": "tracking",
+                    "aerial": "drone",
+                    "drone_shot": "drone",
+                    "orbiting": "orbit",
+                },
+            ),
+            "focus_x": focus_x,
+            "focus_y": focus_y,
+            "focus_source": focus_source,
             "people_count": _people_count(payload.get("people_count")),
             "people_groups": groups,
             "landmarks": landmarks,
@@ -599,6 +783,30 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
         }
     )
     return SceneUnderstanding.model_validate(payload)
+
+
+def _normalized_focus(payload: dict[str, Any]) -> tuple[float | None, float | None, str | None]:
+    point = payload.get("focus_point")
+    point_payload = point if isinstance(point, dict) else {}
+    x = _unit_coordinate(payload.get("focus_x", point_payload.get("x")))
+    y = _unit_coordinate(payload.get("focus_y", point_payload.get("y")))
+    source = _enum_value(
+        payload.get("focus_source", point_payload.get("source")),
+        {"face", "object", "subject"},
+        "",
+        {"person": "face", "primary_subject": "subject", "main_subject": "subject"},
+    )
+    if x is None or y is None or not source:
+        return None, None, None
+    return x, y, source
+
+
+def _unit_coordinate(value: Any) -> float | None:
+    try:
+        coordinate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return coordinate if 0 <= coordinate <= 1 else None
 
 
 def _enum_value(

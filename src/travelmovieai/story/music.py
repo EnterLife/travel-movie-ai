@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import subprocess
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -118,6 +119,8 @@ def build_music_plan(
     montage_plan: QuickMontagePlan,
     neural_generator: NeuralMusicGenerator | None = None,
     progress: MusicProgress | None = None,
+    *,
+    ffmpeg_binary: str = "ffmpeg",
 ) -> MusicPlan:
     duration_seconds = montage_plan.total_duration_seconds
     accents = (
@@ -134,6 +137,14 @@ def build_music_plan(
     beat_grid = build_music_beat_grid(duration_seconds, bpm, accents)
     if mode == "manual":
         path = _manual_music(settings)
+        bpm, cue_sections, beat_grid = _track_rhythm(
+            path,
+            fallback_bpm=bpm,
+            montage_plan=montage_plan,
+            accents=accents,
+            settings=settings,
+            ffmpeg_binary=ffmpeg_binary,
+        )
         return MusicPlan(
             mode="manual",
             source_path=path,
@@ -150,6 +161,14 @@ def build_music_plan(
         library_path = _select_library_track(assets, settings, bundled_music_dir)
         if library_path is None:
             raise MontageError("No suitable music file was found in the local library.")
+        bpm, cue_sections, beat_grid = _track_rhythm(
+            library_path,
+            fallback_bpm=bpm,
+            montage_plan=montage_plan,
+            accents=accents,
+            settings=settings,
+            ffmpeg_binary=ffmpeg_binary,
+        )
         return MusicPlan(
             mode="library",
             source_path=library_path,
@@ -164,6 +183,14 @@ def build_music_plan(
 
     if mode == "auto" and settings.music_path is not None:
         path = _manual_music(settings)
+        bpm, cue_sections, beat_grid = _track_rhythm(
+            path,
+            fallback_bpm=bpm,
+            montage_plan=montage_plan,
+            accents=accents,
+            settings=settings,
+            ffmpeg_binary=ffmpeg_binary,
+        )
         return MusicPlan(
             mode="manual",
             source_path=path,
@@ -275,6 +302,103 @@ def build_music_plan(
         ),
         generated=True,
     )
+
+
+def _track_rhythm(
+    path: Path,
+    *,
+    fallback_bpm: int,
+    montage_plan: QuickMontagePlan,
+    accents: list[MusicAccent],
+    settings: QuickMontageSettings,
+    ffmpeg_binary: str,
+) -> tuple[int, list[MusicCueSection], list[MusicBeat]]:
+    bpm = fallback_bpm
+    if settings.music_bpm_analysis:
+        bpm = _analyze_music_bpm(path, ffmpeg_binary=ffmpeg_binary) or fallback_bpm
+    return (
+        bpm,
+        build_music_cue_sections(montage_plan, accents, bpm),
+        build_music_beat_grid(montage_plan.total_duration_seconds, bpm, accents),
+    )
+
+
+def _analyze_music_bpm(path: Path, *, ffmpeg_binary: str = "ffmpeg") -> int | None:
+    """Estimate soundtrack tempo from a bounded mono PCM decode, with safe fallback."""
+
+    sample_rate = 11_025
+    command = [
+        ffmpeg_binary,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-t",
+        "90",
+        "-i",
+        str(path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0 or len(completed.stdout) < sample_rate * 4:
+        return None
+    samples = np.frombuffer(completed.stdout, dtype="<f4").astype(np.float64, copy=False)
+    return _estimate_bpm(samples, sample_rate=sample_rate)
+
+
+def _estimate_bpm(samples: NDArray[np.float64], *, sample_rate: int) -> int | None:
+    if sample_rate <= 0 or samples.size < sample_rate:
+        return None
+    frame_size = 1024
+    hop_size = 256
+    frame_count = 1 + (samples.size - frame_size) // hop_size
+    if frame_count < 12:
+        return None
+    energy = np.empty(frame_count, dtype=np.float64)
+    for index in range(frame_count):
+        start = index * hop_size
+        frame = samples[start : start + frame_size]
+        energy[index] = math.sqrt(float(np.mean(frame * frame)))
+    onset = np.maximum(0.0, np.diff(energy, prepend=energy[0]))
+    threshold = float(np.mean(onset) + np.std(onset) * 0.75)
+    onset = np.where(onset >= threshold, onset, 0.0)
+    if np.count_nonzero(onset) < 8 or float(np.max(onset)) <= 1e-8:
+        return None
+    onset -= float(np.mean(onset))
+    envelope_rate = sample_rate / hop_size
+    minimum_lag = max(1, int(envelope_rate * 60 / 180))
+    maximum_lag = min(len(onset) - 1, int(envelope_rate * 60 / 45))
+    if maximum_lag <= minimum_lag:
+        return None
+    scores = np.array(
+        [float(np.dot(onset[lag:], onset[:-lag])) for lag in range(minimum_lag, maximum_lag + 1)],
+        dtype=np.float64,
+    )
+    best_score = float(np.max(scores))
+    if not math.isfinite(best_score) or best_score <= 0:
+        return None
+    best_lag = minimum_lag + int(np.argmax(scores))
+    half_lag = int(round(best_lag / 2))
+    if best_lag >= 2 * minimum_lag and half_lag >= minimum_lag:
+        half_score = scores[half_lag - minimum_lag]
+        if half_score >= best_score * 0.45:
+            best_lag = half_lag
+    bpm = int(round(60 * envelope_rate / best_lag))
+    return min(180, max(45, bpm))
 
 
 def build_music_cue_sections(

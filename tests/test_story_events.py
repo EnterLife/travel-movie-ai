@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from travelmovieai.domain.enums import MediaType, StoryStyle
 from travelmovieai.domain.models import MediaAsset, Scene
 from travelmovieai.story.builder import build_multimodal_descriptions, build_storyboard
@@ -55,6 +57,125 @@ def test_event_detection_splits_different_places_with_generic_activity() -> None
 
     assert len(report.events) == 2
     assert [event.title for event in report.events] == ["Beach Day", "City Exploration"]
+
+
+def test_event_detection_uses_nearby_gps_to_join_semantically_different_scenes() -> None:
+    first = _asset(
+        "park.mp4",
+        datetime(2026, 1, 1, 10, tzinfo=UTC),
+        latitude=43.5855,
+        longitude=39.7231,
+    )
+    second = _asset(
+        "museum.mp4",
+        datetime(2026, 1, 1, 10, 20, tzinfo=UTC),
+        latitude=43.5880,
+        longitude=39.7200,
+    )
+
+    report, _ = detect_events(
+        [
+            _scene(first, "park", "walking", "A quiet park."),
+            _scene(second, "museum", "sightseeing", "An indoor museum."),
+        ],
+        [first, second],
+    )
+
+    assert len(report.events) == 1
+
+
+def test_event_detection_uses_distant_gps_to_split_matching_scene_labels() -> None:
+    first = _asset(
+        "city-a.mp4",
+        datetime(2026, 1, 1, 10, tzinfo=UTC),
+        latitude=43.5855,
+        longitude=39.7231,
+    )
+    second = _asset(
+        "city-b.mp4",
+        datetime(2026, 1, 1, 10, 20, tzinfo=UTC),
+        latitude=44.6167,
+        longitude=33.5254,
+    )
+
+    report, _ = detect_events(
+        [
+            _scene(first, "city", "walking", "A city street."),
+            _scene(second, "city", "walking", "Another city street."),
+        ],
+        [first, second],
+    )
+
+    assert len(report.events) == 2
+
+
+def test_event_detection_uses_semantic_embeddings_without_gps() -> None:
+    first = _asset("coast.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
+    second = _asset("boat.mp4", datetime(2026, 1, 1, 10, 20, tzinfo=UTC))
+    scenes = [
+        _scene(first, "beach", "walking", "A coast at sunrise."),
+        _scene(second, "sea", "boating", "A boat near the coast."),
+    ]
+    scenes = [
+        scene.model_copy(
+            update={"metadata": {**scene.metadata, "semantic_embedding": [1.0, 0.0, 1.0]}}
+        )
+        for scene in scenes
+    ]
+
+    report, _ = detect_events(scenes, [first, second])
+
+    assert len(report.events) == 1
+
+
+def test_event_detection_is_deterministic_without_gps_or_embeddings() -> None:
+    first = _asset("first.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
+    second = _asset("second.mp4", datetime(2026, 1, 1, 10, 20, tzinfo=UTC))
+    scenes = [
+        _scene(first, "city", "walking", "First walk."),
+        _scene(second, "city", "walking", "Second walk."),
+    ]
+
+    first_report, _ = detect_events(scenes, [first, second])
+    second_report, _ = detect_events(scenes, [first, second])
+
+    assert [event.id for event in first_report.events] == [
+        event.id for event in second_report.events
+    ]
+
+
+def test_event_regrouping_removes_stale_manual_event_metadata() -> None:
+    asset = _asset("new-group.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
+    scene = _scene(asset, "beach", "walking", "Fresh grouping.").model_copy(
+        update={
+            "metadata": {
+                **_scene(asset, "beach", "walking", "Fresh grouping.").metadata,
+                "event_id": "old-event",
+                "event_title": "Old manual title",
+                "event_summary": "Old manual summary",
+                "event_landmarks": ["Old landmark"],
+                "manual_event_order": 7,
+            }
+        }
+    )
+
+    report, updated = detect_events([scene], [asset])
+
+    assert updated[0].metadata["event_id"] == str(report.events[0].id)
+    assert updated[0].metadata["event_title"] == report.events[0].title
+    assert "event_summary" not in updated[0].metadata
+    assert "event_landmarks" not in updated[0].metadata
+    assert "manual_event_order" not in updated[0].metadata
+
+
+def test_media_asset_rejects_invalid_gps_coordinates() -> None:
+    with pytest.raises(ValueError, match="latitude"):
+        _asset(
+            "invalid.mp4",
+            datetime(2026, 1, 1, tzinfo=UTC),
+            latitude=91,
+            longitude=0,
+        )
 
 
 def test_multimodal_description_records_used_sources() -> None:
@@ -119,7 +240,13 @@ def test_storyboard_builds_opening_highlight_and_finale() -> None:
     assert narration.lines[0].text.startswith("Our journey begins")
 
 
-def _asset(name: str, created_at: datetime) -> MediaAsset:
+def _asset(
+    name: str,
+    created_at: datetime,
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> MediaAsset:
     return MediaAsset(
         path=Path(name),
         relative_path=Path(name),
@@ -130,6 +257,8 @@ def _asset(name: str, created_at: datetime) -> MediaAsset:
         modified_ns=1,
         created_at=created_at,
         duration_seconds=10,
+        latitude=latitude,
+        longitude=longitude,
     )
 
 

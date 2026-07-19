@@ -4,7 +4,7 @@ from pathlib import Path
 
 from travelmovieai.analysis.speech import analyze_speech
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import MediaType, PipelineStage, StageStatus
 from travelmovieai.domain.models import MediaAsset, Scene, SpeechAnalysisReport, StageResult
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -15,6 +15,7 @@ from travelmovieai.infrastructure.artifacts import (
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.whisper import FasterWhisperProvider
 from travelmovieai.pipeline.base import Stage
+from travelmovieai.pipeline.state import SPEECH_STATE, clear_stage_owned_state
 
 ARTIFACT_SCHEMA_VERSION = "speech-analysis-v2"
 
@@ -24,9 +25,10 @@ class SpeechAnalysisStage(Stage):
 
     def run(self, context: ProjectContext) -> StageResult:
         if context.montage_settings is not None and not context.montage_settings.speech_analysis:
+            clear_stage_owned_state(context, SPEECH_STATE)
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.DISABLED,
                 message="Speech analysis disabled by montage settings.",
             )
 
@@ -36,6 +38,13 @@ class SpeechAnalysisStage(Stage):
         assets = repository.list_assets()
         artifact = context.artifacts_dir / "speech_analysis.json"
         cache_artifact = context.artifacts_dir / "speech_analysis.cache.json"
+        if not _has_eligible_audio_scene(scenes, assets):
+            clear_stage_owned_state(context, SPEECH_STATE)
+            return StageResult(
+                stage=self.name,
+                status=StageStatus.NO_INPUT,
+                message="Speech analysis needs a video scene with an audio stream.",
+            )
         input_fingerprint = artifact_fingerprint(
             _speech_scene_inputs(scenes), _asset_inputs(assets)
         )
@@ -58,7 +67,7 @@ class SpeechAnalysisStage(Stage):
         ) and _cached_speech_analysis_valid(artifact, scenes):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Speech analysis reused cached transcripts.",
             )
@@ -66,6 +75,8 @@ class SpeechAnalysisStage(Stage):
         provider = FasterWhisperProvider(
             context.settings.whisper_model,
             context.settings.device,
+            cache_dir=(context.settings.model_cache / "faster-whisper").expanduser().resolve(),
+            allow_download=context.settings.allow_model_download,
         )
         try:
             report = analyze_speech(
@@ -75,6 +86,7 @@ class SpeechAnalysisStage(Stage):
                 context.settings.ffmpeg_binary,
                 context.cache_dir / "speech",
                 timeout_seconds=context.settings.frame_extraction_timeout_seconds,
+                progress=context.progress,
             )
         finally:
             provider.release()
@@ -90,7 +102,11 @@ class SpeechAnalysisStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=report.transcribed_count == 0,
+            status=(
+                StageStatus.CACHED
+                if report.transcribed_count == 0 and report.cached_count > 0
+                else StageStatus.COMPLETED
+            ),
             artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Speech analysis transcribed {report.transcribed_count} scene(s), "
@@ -140,3 +156,16 @@ def _asset_inputs(assets: list[MediaAsset]) -> list[dict[str, object]]:
         }
         for asset in sorted(assets, key=lambda item: str(item.id))
     ]
+
+
+def _has_eligible_audio_scene(scenes: list[Scene], assets: list[MediaAsset]) -> bool:
+    eligible_assets = {
+        asset.id
+        for asset in assets
+        if asset.media_type is MediaType.VIDEO
+        and any(
+            isinstance(stream, dict) and stream.get("codec_type") == "audio"
+            for stream in asset.probe_metadata.get("streams", [])
+        )
+    }
+    return any(scene.asset_id in eligible_assets for scene in scenes)

@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.exceptions import PipelineStageError
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import NarrationReport, StageResult, Storyboard
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -29,7 +29,7 @@ class NarrationStage(Stage):
         if not storyboard_path.is_file():
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.NO_INPUT,
                 message="Narration needs storyboard.json.",
             )
         storyboard = _read_storyboard(storyboard_path)
@@ -63,7 +63,7 @@ class NarrationStage(Stage):
                 )
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[storyboard_path, artifact, cache_artifact],
                 message="Narration reused cached story text.",
             )
@@ -83,7 +83,7 @@ class NarrationStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=not report.lines,
+            status=StageStatus.COMPLETED if report.lines else StageStatus.NO_INPUT,
             artifacts=[storyboard_path, artifact, cache_artifact],
             message=f"Narration prepared {len(report.lines)} story line(s).",
         )

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from travelmovieai.core.exceptions import DependencyUnavailableError, MediaProbeError
+from travelmovieai.core.security import sanitize_process_error
 
 _ISO6709_PATTERN = re.compile(r"^(?P<latitude>[+-]\d+(?:\.\d+)?)(?P<longitude>[+-]\d+(?:\.\d+)?)")
 
@@ -61,7 +62,11 @@ class FFprobeClient:
             ) from error
 
         if completed.returncode != 0:
-            detail = completed.stderr.strip() or "unknown FFprobe error"
+            detail = sanitize_process_error(
+                completed.stderr,
+                private_paths=[path],
+                fallback="unknown FFprobe error",
+            )
             raise MediaProbeError(f"Could not inspect {path.name}: {detail}")
 
         try:
@@ -108,11 +113,36 @@ def parse_probe_payload(payload: dict[str, Any]) -> ProbeResult:
                     "codec_type": stream.get("codec_type"),
                     "codec_name": stream.get("codec_name"),
                     "codec_long_name": stream.get("codec_long_name"),
+                    "width": _optional_int(stream.get("width")),
+                    "height": _optional_int(stream.get("height")),
+                    "rotation_degrees": _stream_rotation(stream),
+                    "color_space": stream.get("color_space"),
+                    "color_transfer": stream.get("color_transfer"),
+                    "color_primaries": stream.get("color_primaries"),
                 }
                 for stream in streams
             ],
         },
     )
+
+
+def _stream_rotation(stream: dict[str, Any]) -> int:
+    candidates: list[Any] = [
+        item.get("rotation")
+        for item in stream.get("side_data_list") or []
+        if isinstance(item, dict)
+    ]
+    tags = stream.get("tags")
+    if isinstance(tags, dict):
+        candidates.append(tags.get("rotate"))
+    for candidate in candidates:
+        try:
+            degrees = int(round(float(candidate))) % 360
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if degrees in {0, 90, 180, 270}:
+            return degrees
+    return 0
 
 
 def _collect_tags(format_data: dict[str, Any], streams: list[dict[str, Any]]) -> dict[str, Any]:
@@ -134,7 +164,11 @@ def _parse_location(tags: dict[str, Any]) -> tuple[float | None, float | None]:
     match = _ISO6709_PATTERN.match(value)
     if not match:
         return None, None
-    return float(match.group("latitude")), float(match.group("longitude"))
+    latitude = float(match.group("latitude"))
+    longitude = float(match.group("longitude"))
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None, None
+    return latitude, longitude
 
 
 def _parse_rate(value: Any) -> float | None:

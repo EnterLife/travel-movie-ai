@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import SceneDetectionReport, StageResult
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -60,7 +60,7 @@ class SceneRankingStage(Stage):
         ) and all("ranking_score" in scene.metadata for scene in scenes):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Scene ranking reused cached scores.",
             )
@@ -82,7 +82,7 @@ class SceneRankingStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=not ranked_scenes,
+            status=StageStatus.COMPLETED if ranked_scenes else StageStatus.NO_INPUT,
             artifacts=[context.database_path, artifact, cache_artifact],
             message=f"Scene ranking scored {len(ranked_scenes)} scene(s).",
         )

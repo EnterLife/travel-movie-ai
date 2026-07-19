@@ -191,6 +191,9 @@
               <span class="capability-chip pending">Checking AI and GPU...</span>
             </div>
           </div>
+          <p class="capability-guidance" id="capability-guidance" aria-live="polite">
+            Checking which local AI features are available...
+          </p>
 
           <div class="ai-config-grid">
             <section class="config-card">
@@ -226,7 +229,7 @@
               </select>
 
               <label class="toggle-row" for="semantic-analysis">
-                <input id="semantic-analysis" type="checkbox" checked>
+                <input id="semantic-analysis" type="checkbox">
                 <span>
                   <strong>Semantic scene selection</strong>
                   <small>Meaning, emotion, action, and scene importance</small>
@@ -240,12 +243,61 @@
                 </span>
               </label>
               <label class="toggle-row" for="speech-analysis">
-                <input id="speech-analysis" type="checkbox" checked>
+                <input id="speech-analysis" type="checkbox">
                 <span>
                   <strong>Speech recognition</strong>
                   <small>Faster Whisper; slower, but helps preserve important lines</small>
                 </span>
               </label>
+              <label class="toggle-row" for="narration-enabled">
+                <input id="narration-enabled" type="checkbox">
+                <span>
+                  <strong>Local narration</strong>
+                  <small>Piper voice synthesis from the generated story</small>
+                </span>
+              </label>
+            </section>
+
+            <section class="config-card">
+              <h4>Picture and Titles</h4>
+              <label for="framing-mode">Framing <span>AI subject</span></label>
+              <select id="framing-mode">
+                <option value="fit">Fit with letterbox</option>
+                <option value="fill">Fill and center crop</option>
+                <option value="smart">Smart face/object crop</option>
+              </select>
+
+              <label for="vertical-video-layout">Vertical video <span>layout</span></label>
+              <select id="vertical-video-layout">
+                <option value="fit">Fit</option>
+                <option value="blur">Blurred background</option>
+                <option value="crop">Full-frame crop</option>
+              </select>
+
+              <label for="photo-motion">Photo motion <span>local render</span></label>
+              <select id="photo-motion">
+                <option value="none">Still image</option>
+                <option value="ken_burns">Ken Burns</option>
+              </select>
+
+              <label class="toggle-row" for="color-normalization">
+                <input id="color-normalization" type="checkbox">
+                <span><strong>Normalize color and exposure</strong><small>Per-scene OpenCV metrics</small></span>
+              </label>
+              <label class="toggle-row" for="hdr-to-sdr">
+                <input id="hdr-to-sdr" type="checkbox">
+                <span><strong>HDR to SDR</strong><small>BT.709 tone mapping when required</small></span>
+              </label>
+              <label class="toggle-row" for="event-titles-enabled">
+                <input id="event-titles-enabled" type="checkbox">
+                <span><strong>Event titles</strong><small>Story section overlays</small></span>
+              </label>
+              <label class="toggle-row" for="scene-subtitles-enabled">
+                <input id="scene-subtitles-enabled" type="checkbox">
+                <span><strong>Scene subtitles</strong><small>Validated captions in the safe area</small></span>
+              </label>
+              <label for="credits-text">Credits <span>optional</span></label>
+              <input id="credits-text" type="text" maxlength="500" placeholder="Trip · 2026">
             </section>
 
             <section class="config-card">
@@ -275,6 +327,8 @@
               </label>
 
               <div class="compact-settings">
+                <label for="movie-variant">Variant name</label>
+                <input id="movie-variant" type="text" maxlength="80" value="Main cut">
                 <label for="movie-duration">Film, sec.</label>
                 <input id="movie-duration" type="number" min="5" max="3600" value="90">
                 <label for="clip-duration">Clip, sec.</label>
@@ -333,6 +387,15 @@
                 </span>
               </label>
 
+              <label class="toggle-row" for="music-bpm-analysis">
+                <input id="music-bpm-analysis" type="checkbox">
+                <span><strong>Analyze BPM</strong><small>Align cuts to library/manual track beats</small></span>
+              </label>
+              <label class="toggle-row" for="music-volume-envelope">
+                <input id="music-volume-envelope" type="checkbox">
+                <span><strong>Automatic volume envelope</strong><small>Shape music around story and narration</small></span>
+              </label>
+
               <label for="music-volume">
                 Volume
                 <span id="music-volume-value">100%</span>
@@ -351,6 +414,15 @@
                 autocomplete="off"
                 disabled
               >
+
+              <div class="compact-settings mix-settings">
+                <label for="narration-volume">Narration gain</label>
+                <input id="narration-volume" type="number" min="0" max="2" step="0.05" value="1">
+                <label for="background-volume">Music under voice</label>
+                <input id="background-volume" type="number" min="0" max="1" step="0.05" value="0.35">
+                <label for="source-audio-volume">Source audio</label>
+                <input id="source-audio-volume" type="number" min="0" max="1" step="0.05" value="0.55">
+              </div>
             </section>
           </div>
 
@@ -441,8 +513,34 @@
                 reused for scenes that have not changed.
               </p>
             </div>
+            <select id="scene-event-filter" aria-label="Filter scenes by event">
+              <option value="">All events</option>
+            </select>
           </div>
           <div class="scene-grid" id="scene-grid"></div>
+          <div class="scene-page-actions">
+            <p id="scene-page-status">0 scenes loaded</p>
+            <button class="secondary-button hidden" id="load-more-scenes" type="button">
+              Load more scenes
+            </button>
+          </div>
+        </article>
+
+        <article class="panel edit-workspace hidden" id="edit-workspace">
+          <div class="scene-review-heading">
+            <div>
+              <h3>Story Events and Versions</h3>
+              <p>Edit event text and order, then compare immutable timeline snapshots.</p>
+            </div>
+            <button class="secondary-button" id="refresh-edits" type="button">Refresh</button>
+          </div>
+          <section class="version-controls">
+            <select id="version-before" aria-label="Earlier timeline version"></select>
+            <select id="version-after" aria-label="Later timeline version"></select>
+            <button class="secondary-button" id="compare-versions" type="button">Compare</button>
+            <p id="version-comparison">Choose two versions to compare.</p>
+          </section>
+          <div class="event-list" id="event-list"></div>
         </article>
 
         <article class="panel files-panel">

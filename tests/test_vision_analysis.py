@@ -6,6 +6,7 @@ import pytest
 from travelmovieai.analysis.vision import analyze_scenes
 from travelmovieai.domain.enums import StoryStyle
 from travelmovieai.domain.models import Scene, SceneUnderstanding, VisionAnalysisReport
+from travelmovieai.editing.timeline import _scene_pacing
 
 
 class _VisionProvider:
@@ -25,6 +26,11 @@ class _VisionProvider:
         return SceneUnderstanding(
             caption=f"Scene {self.calls}",
             detailed_description=f"Detailed scene {self.calls}",
+            shot_scale="wide",
+            camera_motion="tracking",
+            focus_x=0.35,
+            focus_y=0.65,
+            focus_source="subject",
             score_factors={
                 "uniqueness": 70,
                 "people": 50,
@@ -75,6 +81,8 @@ def test_vision_analysis_checkpoints_and_resumes_after_interruption(tmp_path: Pa
     assert resumed.analyzed_count == 1
     assert resumed.cached_count == 1
     assert len(resumed.scenes) == 2
+    assert resumed.scenes[0].metadata["focus_point"] == {"x": 0.35, "y": 0.65}
+    assert resumed.scenes[0].metadata["focus_source"] == "subject"
 
 
 def test_vision_cache_invalidates_when_measured_quality_changes(tmp_path: Path) -> None:
@@ -118,3 +126,26 @@ def test_vision_analysis_preserves_scene_without_keyframe() -> None:
     assert report.scenes == [scene]
     assert report.analyzed_count == 0
     assert provider.calls == 0
+
+
+def test_vision_shot_language_is_persisted_and_used_for_timeline_pacing(
+    tmp_path: Path,
+) -> None:
+    keyframe = tmp_path / "frame.jpg"
+    keyframe.touch()
+    scene = Scene(
+        asset_id=uuid4(),
+        start_seconds=0,
+        end_seconds=5,
+        keyframe_path=keyframe,
+        metadata={"cache_key": "shot-language"},
+    )
+
+    report = analyze_scenes([scene], _VisionProvider(), StoryStyle.CINEMATIC)
+    analyzed = report.scenes[0]
+    pacing_factor, pacing_reason = _scene_pacing(analyzed)
+
+    assert analyzed.metadata["shot_scale"] == "wide"
+    assert analyzed.metadata["camera_motion"] == "tracking"
+    assert pacing_factor < 1
+    assert pacing_reason == "pacing: high energy"

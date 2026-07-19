@@ -21,8 +21,16 @@ class PipelineStageError(TravelMovieError):
     """Raised when a pipeline stage cannot complete."""
 
 
+class ProjectArchiveError(PipelineStageError):
+    """Raised when a project backup cannot be created or restored safely."""
+
+
 class InvalidProjectPathError(TravelMovieError):
     """Raised when input and workspace paths cannot form a safe project."""
+
+
+class WorkspaceIdentityError(InvalidProjectPathError):
+    """Raised when a workspace does not belong to the requested source folder."""
 
 
 class WorkspaceBusyError(TravelMovieError):
@@ -35,6 +43,10 @@ class MontageError(TravelMovieError):
 
 class VisionAnalysisError(TravelMovieError):
     """Raised when local semantic scene analysis cannot complete."""
+
+
+class StoryGenerationError(TravelMovieError):
+    """Raised when a local story model cannot produce a valid storyboard."""
 
 
 class MusicGenerationError(TravelMovieError):

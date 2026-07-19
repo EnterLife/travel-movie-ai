@@ -1,14 +1,14 @@
 """Pipeline stage that extracts representative scene contact sheets."""
 
-from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable, Mapping
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, frame_sample_count_for_mode
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import (
     FrameSamplingReport,
     MediaAsset,
@@ -24,9 +24,10 @@ from travelmovieai.infrastructure.artifacts import (
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.infrastructure.system import detect_resource_profile
+from travelmovieai.media.proxy import AnalysisMedia, AnalysisProxyManager
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "frame-sampling-v2"
+ARTIFACT_SCHEMA_VERSION = "frame-sampling-v3"
 
 
 class FrameSamplingStage(Stage):
@@ -54,6 +55,11 @@ class FrameSamplingStage(Stage):
                 ),
                 "analysis_quality_mode": montage_settings.analysis_quality_mode,
                 "frame_sample_count": frame_sample_count,
+                "analysis_proxy_mode": context.settings.analysis_proxy_mode,
+                "analysis_proxy_max_dimension": (context.settings.analysis_proxy_max_dimension),
+                "analysis_proxy_video_bitrate_mbps": (
+                    context.settings.analysis_proxy_video_bitrate_mbps
+                ),
                 "schema": ARTIFACT_SCHEMA_VERSION,
             }
         )
@@ -67,7 +73,7 @@ class FrameSamplingStage(Stage):
         ) and _cached_frame_sampling_valid(artifact, source_scenes):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Frame sampling reused cached contact sheets.",
             )
@@ -96,12 +102,28 @@ class FrameSamplingStage(Stage):
             frame_sample_count=frame_sample_count,
             timeout_seconds=context.settings.frame_extraction_timeout_seconds,
         )
+        proxy_manager = AnalysisProxyManager(
+            context.cache_dir / "proxies",
+            ffmpeg_binary=context.settings.ffmpeg_binary,
+            ffprobe_binary=context.settings.ffprobe_binary,
+            mode=context.settings.analysis_proxy_mode,
+            max_dimension=context.settings.analysis_proxy_max_dimension,
+            video_bitrate_mbps=context.settings.analysis_proxy_video_bitrate_mbps,
+            timeout_seconds=context.settings.analysis_proxy_timeout_seconds,
+        )
+        analysis_assets, generated_proxies, cached_proxies = _prepare_analysis_assets(
+            assets,
+            proxy_manager,
+            workers=min(2, max(1, frame_workers)),
+            progress=_scaled_progress(context.progress, 0, 25),
+        )
         scenes, extracted_count, cached_count = _extract_frames(
             source_scenes,
-            assets,
+            analysis_assets,
             extractor,
             context.frames_dir,
             frame_workers,
+            progress=_scaled_progress(context.progress, 25, 100),
         )
 
         repository.synchronize_scenes(scenes)
@@ -122,11 +144,18 @@ class FrameSamplingStage(Stage):
         )
         return StageResult(
             stage=self.name,
-            skipped=extracted_count == 0,
+            status=(
+                StageStatus.CACHED
+                if extracted_count == 0 and cached_count > 0
+                else StageStatus.NO_INPUT
+                if not scenes
+                else StageStatus.COMPLETED
+            ),
             artifacts=[context.database_path, artifact, cache_artifact],
             message=(
                 f"Frame sampling prepared {len(scenes)} scene(s): "
                 f"{extracted_count} extracted, {cached_count} cached, "
+                f"proxies={generated_proxies} generated/{cached_proxies} cached, "
                 f"workers={min(max(1, frame_workers), max(1, len(scenes)))}, "
                 f"decode={'NVDEC' if use_cuda_decode else 'CPU'}."
             ),
@@ -151,6 +180,7 @@ def _extract_frames(
     extractor: RepresentativeFrameExtractor,
     frames_dir: Path,
     workers: int,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> tuple[list[Scene], int, int]:
     jobs = [
         (index, scene, asset)
@@ -162,25 +192,125 @@ def _extract_frames(
 
     worker_count = min(max(1, workers), len(jobs))
     results: dict[int, tuple[Scene, bool]] = {}
-    with ThreadPoolExecutor(
+    if progress is not None:
+        progress(0, len(jobs), f"Frames: 0/{len(jobs)}")
+    executor = ThreadPoolExecutor(
         max_workers=worker_count,
         thread_name_prefix="travelmovieai-frame-stage",
-    ) as executor:
-        futures = {
-            executor.submit(extractor.extract, scene, asset, frames_dir): (index, scene)
-            for index, scene, asset in jobs
-        }
-        for future in as_completed(futures):
-            index, scene = futures[future]
-            previous = scene.keyframe_path
-            frame_path = future.result()
-            cached = previous == frame_path and frame_path.is_file()
-            results[index] = (scene.model_copy(update={"keyframe_path": frame_path}), cached)
+    )
+    futures: dict[Future[Path], tuple[int, Scene]] = {}
+    job_iterator = iter(jobs)
+
+    def submit_next() -> bool:
+        try:
+            index, scene, asset = next(job_iterator)
+        except StopIteration:
+            return False
+        futures[executor.submit(extractor.extract, scene, asset, frames_dir)] = (index, scene)
+        return True
+
+    completed = 0
+    try:
+        for _ in range(worker_count):
+            if not submit_next():
+                break
+        while futures:
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                index, scene = futures.pop(future)
+                previous = scene.keyframe_path
+                frame_path = future.result()
+                cached = previous == frame_path and frame_path.is_file()
+                results[index] = (scene.model_copy(update={"keyframe_path": frame_path}), cached)
+                completed += 1
+                if progress is not None:
+                    progress(completed, len(jobs), f"Frames: {completed}/{len(jobs)}")
+                submit_next()
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
 
     ordered = [results[index] for index in sorted(results)]
     scenes = [scene for scene, _ in ordered]
     cached_count = sum(1 for _, cached in ordered if cached)
     return scenes, len(scenes) - cached_count, cached_count
+
+
+def _prepare_analysis_assets(
+    assets: Mapping[UUID, MediaAsset],
+    manager: AnalysisProxyManager,
+    *,
+    workers: int,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> tuple[dict[UUID, MediaAsset], int, int]:
+    if not assets:
+        return {}, 0, 0
+    ordered_assets = sorted(assets.values(), key=lambda asset: str(asset.id))
+    worker_count = min(max(1, workers), len(ordered_assets))
+    resolved: dict[UUID, AnalysisMedia] = {}
+    if progress is not None:
+        progress(0, len(ordered_assets), f"Analysis proxies: 0/{len(ordered_assets)}")
+    executor = ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="travelmovieai-proxy-stage",
+    )
+    futures: dict[Future[AnalysisMedia], UUID] = {}
+    asset_iterator = iter(ordered_assets)
+
+    def submit_next() -> bool:
+        try:
+            asset = next(asset_iterator)
+        except StopIteration:
+            return False
+        futures[executor.submit(manager.resolve, asset)] = asset.id
+        return True
+
+    completed = 0
+    try:
+        for _ in range(worker_count):
+            if not submit_next():
+                break
+        while futures:
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                asset_id = futures.pop(future)
+                resolved[asset_id] = future.result()
+                completed += 1
+                if progress is not None:
+                    progress(
+                        completed,
+                        len(ordered_assets),
+                        f"Analysis proxies: {completed}/{len(ordered_assets)}",
+                    )
+                submit_next()
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    prepared: dict[UUID, MediaAsset] = {}
+    for asset in ordered_assets:
+        media = resolved[asset.id]
+        if not media.proxied:
+            prepared[asset.id] = asset
+            continue
+        prepared[asset.id] = asset.model_copy(
+            update={
+                "path": media.analysis_path,
+                "width": media.width,
+                "height": media.height,
+                "duration_seconds": media.duration_seconds,
+                "probe_metadata": {
+                    **asset.probe_metadata,
+                    "analysis_proxy_fingerprint": media.cache_key,
+                    "video_duration_seconds": media.duration_seconds,
+                },
+            }
+        )
+    generated = sum(1 for media in resolved.values() if media.proxied and not media.cache_hit)
+    cached = sum(1 for media in resolved.values() if media.proxied and media.cache_hit)
+    return prepared, generated, cached
 
 
 def _asset_inputs(assets: list[MediaAsset]) -> list[dict[str, object]]:
@@ -209,3 +339,20 @@ def _scene_inputs(scenes: list[Scene]) -> list[dict[str, object]]:
         }
         for scene in sorted(scenes, key=lambda item: str(item.id))
     ]
+
+
+def _scaled_progress(
+    progress: Callable[[int, int, str], None] | None,
+    start_percent: int,
+    end_percent: int,
+) -> Callable[[int, int, str], None] | None:
+    if progress is None:
+        return None
+
+    def report(current: int, total: int, message: str) -> None:
+        fraction = current / total if total > 0 else 0.0
+        bounded = max(0.0, min(1.0, fraction))
+        percent = start_percent + (end_percent - start_percent) * bounded
+        progress(round(percent * 10), 1000, message)
+
+    return report

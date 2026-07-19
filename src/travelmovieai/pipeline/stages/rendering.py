@@ -5,9 +5,10 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from travelmovieai.application.context import ProjectContext
+from travelmovieai.application.disk_space import ensure_render_disk_space
 from travelmovieai.application.validation import validate_output_path
 from travelmovieai.core.exceptions import MontageError, TravelMovieError
-from travelmovieai.domain.enums import PipelineStage
+from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import MontageQualityReport, QuickMontagePlan, StageResult
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
@@ -26,8 +27,8 @@ from travelmovieai.infrastructure.ffmpeg import FFprobeClient
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "rendering-v3"
-RENDERER_BEHAVIOR_VERSION = "safe-transitions-quality-gate-v5"
+ARTIFACT_SCHEMA_VERSION = "rendering-v6-media-revisions"
+RENDERER_BEHAVIOR_VERSION = "safe-transitions-quality-gate-v8-portable-overlays"
 
 
 class RenderingStage(Stage):
@@ -38,7 +39,7 @@ class RenderingStage(Stage):
         if not timeline_artifact.is_file():
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.NO_INPUT,
                 message="Rendering needs quick_timeline.json.",
             )
 
@@ -51,7 +52,7 @@ class RenderingStage(Stage):
         if not plan.clips:
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.NO_INPUT,
                 artifacts=[timeline_artifact],
                 message="Rendering skipped because the timeline has no clips.",
             )
@@ -64,7 +65,11 @@ class RenderingStage(Stage):
         )
         quality_artifact = context.artifacts_dir / "montage_quality_report.json"
         cache_artifact = context.artifacts_dir / "rendering.cache.json"
-        input_fingerprint = artifact_fingerprint(plan)
+        input_fingerprint = artifact_fingerprint(
+            plan,
+            _file_revision(plan.music_path),
+            _file_revision(plan.narration_path),
+        )
         config_fingerprint = artifact_fingerprint(
             {
                 "ffmpeg_binary": context.settings.ffmpeg_binary,
@@ -91,11 +96,18 @@ class RenderingStage(Stage):
         ):
             return StageResult(
                 stage=self.name,
-                skipped=True,
+                status=StageStatus.CACHED,
                 artifacts=[output_path, quality_artifact, cache_artifact],
                 message="Rendering reused cached movie and quality report.",
             )
 
+        ensure_render_disk_space(
+            workspace=context.workspace,
+            output_path=output_path,
+            settings=plan.settings,
+            reserve_mb=context.settings.render_disk_reserve_mb,
+            safety_factor=context.settings.render_disk_safety_factor,
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         resources = detect_resource_profile(
             context.settings.ffmpeg_binary,
@@ -105,13 +117,18 @@ class RenderingStage(Stage):
             gpu_memory_reserve_mb=context.settings.gpu_memory_reserve_mb,
             max_gpu_processes=context.settings.max_gpu_processes,
         )
-        encoder = QuickMontageRenderer(
+        renderer = QuickMontageRenderer(
             context.settings.ffmpeg_binary,
             context.settings.ffprobe_binary,
             workers=resources.render_workers,
             ffmpeg_threads=resources.ffmpeg_threads,
             timeout_seconds=context.settings.render_timeout_seconds,
-        ).render(plan, output_path, context.cache_dir)
+        )
+        encoder = (
+            renderer.render(plan, output_path, context.cache_dir, context.progress)
+            if context.progress is not None
+            else renderer.render(plan, output_path, context.cache_dir)
+        )
 
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()
@@ -123,8 +140,16 @@ class RenderingStage(Stage):
             ffmpeg_binary=context.settings.ffmpeg_binary,
             timeout_seconds=context.settings.render_timeout_seconds,
         )
+        quality_report = quality_report.model_copy(update={"render_encoder": encoder})
         write_json_atomic(quality_artifact, quality_report)
         enforce_montage_quality(quality_report)
+        repository.record_timeline_version(
+            plan,
+            phase="rendered",
+            variant_name=context.variant_name,
+            variant_slug=context.variant_slug,
+            output_path=output_path,
+        )
         write_stage_cache_manifest(
             cache_artifact,
             stage=self.name,
@@ -175,3 +200,17 @@ def _cached_render_artifacts_valid(
         report.rendered_duration_seconds is not None
         and abs(probe.duration_seconds - report.rendered_duration_seconds) > 0.5
     )
+
+
+def _file_revision(path: Path | None) -> dict[str, object] | None:
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError as error:
+        raise MontageError("Could not inspect a timeline audio source.") from error
+    return {
+        "path": path,
+        "size": stat.st_size,
+        "modified_ns": stat.st_mtime_ns,
+    }

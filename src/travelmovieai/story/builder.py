@@ -21,9 +21,7 @@ def build_multimodal_descriptions(
     """Combine available modality outputs without inventing missing context."""
     descriptions: list[MultimodalSceneDescription] = []
     for scene in scenes:
-        vision = str(
-            scene.metadata.get("detailed_description") or scene.caption or ""
-        ).strip()
+        vision = str(scene.metadata.get("detailed_description") or scene.caption or "").strip()
         if not vision:
             continue
         parts = [vision]

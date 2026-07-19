@@ -102,6 +102,8 @@ class LocalQwenVisionProvider:
         image_paths: list[Path],
         style: StoryStyle,
     ) -> list[SceneUnderstanding]:
+        if not image_paths:
+            return []
         self._ensure_loaded()
         prompt = (
             "You are the Vision AI module of a travel film editor. Analyze only "
@@ -146,7 +148,8 @@ class LocalQwenVisionProvider:
             ) from error
         except (OSError, RuntimeError, ValueError, KeyError, IndexError) as error:
             raise VisionAnalysisError(
-                f"The local Qwen model could not analyze {image_path.name}. "
+                f"The local Qwen model could not analyze the scene image batch "
+                f"({len(image_paths)} image(s)). "
                 "Check available RAM/VRAM and choose the 3B model if needed."
             ) from error
 
@@ -350,9 +353,7 @@ class Florence2VisionProvider:
                     image_size=image_size,
                 )
         except (OSError, RuntimeError, ValueError, KeyError) as error:
-            raise VisionAnalysisError(
-                f"Florence-2 could not analyze {image_path.name}."
-            ) from error
+            raise VisionAnalysisError(f"Florence-2 could not analyze {image_path.name}.") from error
         caption = str(parsed.get(task, generated)).strip()
         return _understanding_from_caption(caption, style)
 

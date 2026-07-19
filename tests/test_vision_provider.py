@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from travelmovieai.domain.enums import StoryStyle
 from travelmovieai.infrastructure.vision import (
     LocalQwenVisionProvider,
     _parse_local_qwen_understanding,
@@ -53,6 +54,16 @@ def test_local_provider_factory_is_lazy(tmp_path: Path) -> None:
     assert provider.batch_size == 2
     assert provider._loaded_model is None
     assert not provider.cache_dir.exists()
+
+
+def test_local_qwen_empty_batch_does_not_load_model(tmp_path: Path) -> None:
+    provider = LocalQwenVisionProvider(
+        "Qwen/Qwen2.5-VL-3B-Instruct",
+        cache_dir=tmp_path / "models",
+    )
+
+    assert provider.analyze_batch([], StoryStyle.CINEMATIC) == []
+    assert provider._loaded_model is None
 
 
 def test_large_local_model_uses_gpu_and_ram_offload_on_six_gb_gpu(

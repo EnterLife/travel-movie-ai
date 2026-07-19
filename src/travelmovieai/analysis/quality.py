@@ -104,9 +104,7 @@ class TorchCudaQualityAnalyzer:
             .to("cuda", non_blocking=True)
         )
         panels = (
-            list(tensor.chunk(3, dim=3))
-            if tensor.shape[3] >= tensor.shape[2] * 2.2
-            else [tensor]
+            list(tensor.chunk(3, dim=3)) if tensor.shape[3] >= tensor.shape[2] * 2.2 else [tensor]
         )
         static = [self._panel_metrics(panel) for panel in panels]
         panel_scores = [_panel_quality_score(*item) for item in static]
@@ -155,11 +153,9 @@ class TorchCudaQualityAnalyzer:
         red_green = red - green
         yellow_blue = 0.5 * (red + green) - blue
         colorfulness_raw = math.sqrt(
-            float(red_green.std().item() * 255) ** 2
-            + float(yellow_blue.std().item() * 255) ** 2
+            float(red_green.std().item() * 255) ** 2 + float(yellow_blue.std().item() * 255) ** 2
         ) + 0.3 * math.sqrt(
-            float(red_green.mean().item() * 255) ** 2
-            + float(yellow_blue.mean().item() * 255) ** 2
+            float(red_green.mean().item() * 255) ** 2 + float(yellow_blue.mean().item() * 255) ** 2
         )
         colorfulness = _clamp(colorfulness_raw / 90 * 100)
         blurred = self._functional.avg_pool2d(gray, kernel_size=5, stride=1, padding=2)
@@ -184,9 +180,7 @@ def analyze_scene_quality(
 ) -> QualityAnalysisReport:
     resolved_analyzer = analyzer or _default_quality_analyzer()
     backend_label = (
-        "CUDA quality"
-        if isinstance(resolved_analyzer, TorchCudaQualityAnalyzer)
-        else "OpenCV"
+        "CUDA quality" if isinstance(resolved_analyzer, TorchCudaQualityAnalyzer) else "OpenCV"
     )
     if isinstance(resolved_analyzer, TorchCudaQualityAnalyzer):
         workers = 1
@@ -324,9 +318,7 @@ def _panel_details(
             "colorfulness": metrics[4],
             "noise_score": metrics[5],
         }
-        for index, (metrics, score) in enumerate(
-            zip(panel_metrics, panel_scores, strict=True)
-        )
+        for index, (metrics, score) in enumerate(zip(panel_metrics, panel_scores, strict=True))
     ]
 
 

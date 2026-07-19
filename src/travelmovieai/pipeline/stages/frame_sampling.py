@@ -84,9 +84,7 @@ class FrameSamplingStage(Stage):
         frame_workers = (
             min(
                 resources.frame_workers,
-                1
-                if resources.resource_mode == "safe"
-                else context.settings.max_gpu_processes,
+                1 if resources.resource_mode == "safe" else context.settings.max_gpu_processes,
             )
             if use_cuda_decode
             else resources.frame_workers

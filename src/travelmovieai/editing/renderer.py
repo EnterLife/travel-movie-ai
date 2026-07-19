@@ -41,6 +41,7 @@ class QuickMontageRenderer:
         work_dir: Path,
         progress: ProgressCallback | None = None,
     ) -> str:
+        _validate_output_target(plan, output_path, work_dir)
         if plan.music_path is not None and not plan.music_path.is_file():
             raise MontageError(f"Soundtrack file does not exist: {plan.music_path}")
         self._render_device = plan.settings.render_device
@@ -454,6 +455,38 @@ class QuickMontageRenderer:
 
 def _decimal(value: float) -> str:
     return f"{value:.3f}"
+
+
+def _validate_output_target(
+    plan: QuickMontagePlan,
+    output_path: Path,
+    work_dir: Path,
+) -> None:
+    output_key = _path_key(output_path)
+    input_paths = [clip.source_path for clip in plan.clips]
+    if plan.music_path is not None:
+        input_paths.append(plan.music_path)
+    if any(_path_key(path) == output_key for path in input_paths):
+        raise MontageError("Movie output must not overwrite source media or the soundtrack.")
+    reserved_paths = (
+        work_dir / "quick_montage_filters.txt",
+        work_dir / "quick_montage_concat.txt",
+    )
+    if any(_path_key(path) == output_key for path in reserved_paths) or _is_within(
+        output_path,
+        work_dir / "quick_montage_segments",
+    ):
+        raise MontageError("Movie output conflicts with the renderer working files.")
+
+
+def _path_key(path: Path) -> str:
+    return os.path.normcase(str(path.expanduser().resolve()))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    normalized_path = Path(_path_key(path))
+    normalized_root = Path(_path_key(root))
+    return normalized_path.is_relative_to(normalized_root)
 
 
 def _seek_start_seconds(source_start_seconds: float) -> float:

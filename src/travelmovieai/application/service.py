@@ -17,7 +17,11 @@ from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, frame_sa
 from travelmovieai.analysis.speech import analyze_speech
 from travelmovieai.analysis.vision import VisionProvider, analyze_scenes
 from travelmovieai.application.context import ProjectContext
-from travelmovieai.application.validation import ProjectPaths, validate_project_paths
+from travelmovieai.application.validation import (
+    ProjectPaths,
+    validate_output_path,
+    validate_project_paths,
+)
 from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage, StoryStyle
@@ -145,6 +149,13 @@ class TravelMovieService:
         tracker = _ProgressTracker(progress)
         tracker.emit(0, f"Resource profile: {resources.summary}")
         context = self._context(input_path=input_path, workspace=workspace)
+        default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
+        resolved_output = validate_output_path(
+            output_path or context.artifacts_dir / default_name,
+            context.input_path,
+            workspace=context.workspace,
+            database_path=context.database_path,
+        )
         tracker.emit(1, "Checking media library and updating index")
         self.analyze(input_path=context.input_path, workspace=context.workspace)
         tracker.emit(5, "Media scan complete, reading metadata")
@@ -187,8 +198,6 @@ class TravelMovieService:
             write_json_atomic(quality_report_path, quality_report)
             tracker.emit(80, "Quick edit plan created")
         timeline_path = context.artifacts_dir / "quick_timeline.json"
-        default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
-        resolved_output = (output_path or context.artifacts_dir / default_name).resolve()
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(timeline_path, plan)
         tracker.emit(84, f"Timeline saved: {len(plan.clips)} clip(s)")
@@ -325,18 +334,10 @@ class TravelMovieService:
         )
         tracker.emit(
             45,
-            f"Vision AI: loading {vision_provider.model}. "
-            "The first run may download the model into the local cache",
+            f"Vision AI: checking cache for {vision_provider.model}. "
+            "The model loads only when a scene still needs analysis",
         )
         try:
-            prepare = getattr(vision_provider, "prepare", None)
-            if callable(prepare):
-                prepare()
-            runtime = getattr(vision_provider, "runtime_description", "ready")
-            tracker.emit(
-                45,
-                f"Vision AI: model loaded ({runtime}), starting scene analysis",
-            )
             vision_report = analyze_scenes(
                 quality_report.scenes,
                 vision_provider,
@@ -344,6 +345,12 @@ class TravelMovieService:
                 tracker.range(45, 70),
                 cached_report=cached_vision_report,
                 checkpoint=lambda partial: write_json_atomic(vision_path, partial),
+            )
+            runtime = getattr(vision_provider, "runtime_description", "ready")
+            tracker.emit(
+                70,
+                f"Vision AI complete: {vision_report.analyzed_count} analyzed, "
+                f"{vision_report.cached_count} cached ({runtime})",
             )
         finally:
             release = getattr(vision_provider, "release", None)
@@ -573,7 +580,7 @@ class TravelMovieService:
         return StageResult(
             stage=PipelineStage.EVENT_DETECTION,
             skipped=True,
-            artifacts=[report_path],
+            artifacts=[],
             message=(
                 "Project structure is ready. Report generation will be implemented "
                 f"in a later milestone: {report_path}"

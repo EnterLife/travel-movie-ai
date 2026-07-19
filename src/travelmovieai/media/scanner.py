@@ -70,6 +70,8 @@ class MediaScanner:
 
             probed_count += 1
             asset = self._inspect_asset(root, path, stat)
+            if cached is not None:
+                asset = asset.model_copy(update={"id": cached.id})
             if asset.scan_error:
                 error_count += 1
             assets.append(asset)

@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from travelmovieai.application.context import ProjectContext
+from travelmovieai.application.validation import validate_output_path
 from travelmovieai.core.exceptions import MontageError, TravelMovieError
 from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.models import MontageQualityReport, QuickMontagePlan, StageResult
@@ -55,7 +56,12 @@ class RenderingStage(Stage):
                 message="Rendering skipped because the timeline has no clips.",
             )
 
-        output_path = (context.output_path or context.artifacts_dir / "final.mp4").resolve()
+        output_path = validate_output_path(
+            context.output_path or context.artifacts_dir / "final.mp4",
+            context.input_path,
+            workspace=context.workspace,
+            database_path=context.database_path,
+        )
         quality_artifact = context.artifacts_dir / "montage_quality_report.json"
         cache_artifact = context.artifacts_dir / "rendering.cache.json"
         input_fingerprint = artifact_fingerprint(plan)

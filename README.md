@@ -446,6 +446,11 @@ travelmovieai create `
 Story styles: `cinematic`, `documentary`, `family`, `vlog`, `adventure`, and
 `romantic`.
 
+The `.mp4` output movie must be outside the source media folder and the
+workspace `cache` and `frames` folders. Rendering rejects an output path that
+would overwrite a source clip, soundtrack, project database, or renderer working
+file. Custom render width and height values must be even for H.264 compatibility.
+
 The `create --semantic` command and web AI Edit use the same movie use case, so
 they share Vision lifecycle, music generation, timeline, rendering, and quality
 gate behavior. `run_until` and the `storyboard`, `render`, and `report` commands

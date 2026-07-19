@@ -7,7 +7,13 @@ from pydantic import ValidationError
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage
-from travelmovieai.domain.models import MusicPlan, QuickMontageSettings, StageResult
+from travelmovieai.domain.models import (
+    MusicPlan,
+    QuickMontagePlan,
+    QuickMontageSettings,
+    SceneSelectionReport,
+    StageResult,
+)
 from travelmovieai.editing.timeline import (
     apply_music_directing,
     build_selection_report,
@@ -33,7 +39,13 @@ class TimelineBuilderStage(Stage):
         repository.initialize()
         assets = repository.list_assets()
         scenes = repository.list_scenes()
+        timeline_artifact = context.artifacts_dir / "quick_timeline.json"
+        decisions_artifact = context.artifacts_dir / "selection_decisions.json"
+        cache_artifact = context.artifacts_dir / "quick_timeline.cache.json"
         if not assets or not scenes:
+            timeline_artifact.unlink(missing_ok=True)
+            decisions_artifact.unlink(missing_ok=True)
+            cache_artifact.unlink(missing_ok=True)
             return StageResult(
                 stage=self.name,
                 skipped=True,
@@ -43,9 +55,6 @@ class TimelineBuilderStage(Stage):
         settings = _semantic_montage_settings(context)
         music_artifact = context.artifacts_dir / "music_plan.json"
         music_plan = _read_music_plan(music_artifact)
-        timeline_artifact = context.artifacts_dir / "quick_timeline.json"
-        decisions_artifact = context.artifacts_dir / "selection_decisions.json"
-        cache_artifact = context.artifacts_dir / "quick_timeline.cache.json"
         input_fingerprint = artifact_fingerprint(assets, scenes, music_plan)
         config_fingerprint = artifact_fingerprint(settings, ARTIFACT_SCHEMA_VERSION)
         if stage_cache_manifest_matches(
@@ -55,7 +64,7 @@ class TimelineBuilderStage(Stage):
             input_fingerprint=input_fingerprint,
             config_fingerprint=config_fingerprint,
             artifacts=[timeline_artifact, decisions_artifact],
-        ):
+        ) and _cached_timeline_artifacts_valid(timeline_artifact, decisions_artifact):
             return StageResult(
                 stage=self.name,
                 skipped=True,
@@ -104,6 +113,15 @@ def _read_music_plan(path: Path) -> MusicPlan | None:
     if music_plan.mode != "none" and music_plan.source_path is None:
         raise MontageError("Music plan is missing a soundtrack file path.")
     return music_plan
+
+
+def _cached_timeline_artifacts_valid(timeline_path: Path, decisions_path: Path) -> bool:
+    try:
+        QuickMontagePlan.model_validate_json(timeline_path.read_text(encoding="utf-8"))
+        SceneSelectionReport.model_validate_json(decisions_path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError):
+        return False
+    return True
 
 
 def _semantic_montage_settings(context: ProjectContext) -> QuickMontageSettings:

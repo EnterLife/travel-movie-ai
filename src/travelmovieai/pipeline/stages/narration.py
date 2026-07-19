@@ -43,18 +43,28 @@ class NarrationStage(Stage):
             events,
         )
         config_fingerprint = artifact_fingerprint(ARTIFACT_SCHEMA_VERSION)
-        if stage_cache_manifest_matches(
-            cache_artifact,
-            stage=self.name,
-            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            input_fingerprint=input_fingerprint,
-            config_fingerprint=config_fingerprint,
-            artifacts=[artifact],
-        ) and _cached_narration_valid(artifact):
+        cached_report = _read_cached_narration(artifact)
+        if (
+            stage_cache_manifest_matches(
+                cache_artifact,
+                stage=self.name,
+                artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+                input_fingerprint=input_fingerprint,
+                config_fingerprint=config_fingerprint,
+                artifacts=[artifact],
+            )
+            and cached_report is not None
+        ):
+            narration = [line.text for line in cached_report.lines]
+            if storyboard.narration != narration:
+                write_json_atomic(
+                    storyboard_path,
+                    storyboard.model_copy(update={"narration": narration}),
+                )
             return StageResult(
                 stage=self.name,
                 skipped=True,
-                artifacts=[artifact, cache_artifact],
+                artifacts=[storyboard_path, artifact, cache_artifact],
                 message="Narration reused cached story text.",
             )
         report = build_narration(storyboard, events)
@@ -86,9 +96,8 @@ def _read_storyboard(path: Path) -> Storyboard:
         raise PipelineStageError("Could not read storyboard.json for narration.") from error
 
 
-def _cached_narration_valid(path: Path) -> bool:
+def _read_cached_narration(path: Path) -> NarrationReport | None:
     try:
-        NarrationReport.model_validate_json(path.read_text(encoding="utf-8"))
+        return NarrationReport.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError):
-        return False
-    return True
+        return None

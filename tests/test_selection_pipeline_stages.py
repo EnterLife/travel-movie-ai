@@ -24,6 +24,7 @@ from travelmovieai.domain.models import (
     SceneSelectionReport,
     SpeechAnalysisReport,
     StageCacheManifest,
+    Storyboard,
     VisionAnalysisReport,
 )
 from travelmovieai.infrastructure.database import MediaAssetRepository
@@ -363,12 +364,25 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
     monkeypatch.setattr(vision_analysis, "analyze_scenes", fake_analyze)
 
     first = VisionAnalysisStage().run(context)
+    repository = MediaAssetRepository(context.database_path)
+    stored = repository.list_scenes()[0]
+    repository.synchronize_scenes(
+        [
+            stored.model_copy(
+                update={
+                    "transcript": "Later speech result",
+                    "metadata": {**stored.metadata, "speech_cache_key": "speech"},
+                }
+            )
+        ]
+    )
     second = VisionAnalysisStage().run(context)
 
     assert first.skipped is False
     assert second.skipped is True
     assert calls == 1
     assert releases == 1
+    assert repository.list_scenes()[0].transcript == "Later speech result"
     assert (context.artifacts_dir / "vision_analysis.cache.json").is_file()
 
 
@@ -536,6 +550,22 @@ def test_timeline_builder_stage_reuses_cached_artifacts(
     assert first.skipped is False
     assert second.skipped is True
     assert (context.artifacts_dir / "quick_timeline.cache.json").is_file()
+
+
+def test_timeline_builder_stage_rebuilds_corrupt_cached_artifact(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "corrupt-cache.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    TimelineBuilderStage().run(context)
+    timeline_path = context.artifacts_dir / "quick_timeline.json"
+    timeline_path.write_text("not json", encoding="utf-8")
+
+    result = TimelineBuilderStage().run(context)
+    plan = QuickMontagePlan.model_validate_json(timeline_path.read_text(encoding="utf-8"))
+
+    assert result.skipped is False
+    assert plan.clips[0].scene_id == scene.id
 
 
 def test_timeline_builder_stage_rejects_pre_safe_transition_cache(
@@ -744,6 +774,48 @@ def test_music_selection_stage_reuses_current_cache_and_rejects_legacy_schema(
     legacy = MusicSelectionStage().run(context)
 
     assert legacy.skipped is False
+    assert calls == 2
+
+
+def test_music_selection_stage_rebuilds_after_disable_then_enable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "music-toggle.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    calls = 0
+
+    def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
+        nonlocal calls
+        calls += 1
+        soundtrack = context.artifacts_dir / "toggle-theme.wav"
+        soundtrack.write_bytes(b"fake wav")
+        return MusicPlan(
+            mode="generated",
+            source_path=soundtrack,
+            duration_seconds=6,
+        )
+
+    monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
+    first = MusicSelectionStage().run(context)
+    disabled_context = ProjectContext(
+        input_path=context.input_path,
+        workspace=context.workspace,
+        settings=context.settings,
+        montage_settings=QuickMontageSettings(music_enabled=False),
+    )
+    disabled = MusicSelectionStage().run(disabled_context)
+    cache_path = context.artifacts_dir / "music_plan.cache.json"
+
+    assert first.skipped is False
+    assert disabled.skipped is True
+    assert not cache_path.exists()
+
+    enabled_again = MusicSelectionStage().run(context)
+
+    assert enabled_again.skipped is False
     assert calls == 2
 
 
@@ -1266,6 +1338,12 @@ def test_narration_stage_writes_and_reuses_story_text(tmp_path: Path) -> None:
     StoryBuilderStage().run(context)
 
     first = NarrationStage().run(context)
+    storyboard_path = context.artifacts_dir / "storyboard.json"
+    storyboard = Storyboard.model_validate_json(storyboard_path.read_text(encoding="utf-8"))
+    timeline_builder.write_json_atomic(
+        storyboard_path,
+        storyboard.model_copy(update={"narration": []}),
+    )
     second = NarrationStage().run(context)
     report = NarrationReport.model_validate_json(
         (context.artifacts_dir / "narration.json").read_text(encoding="utf-8")
@@ -1274,17 +1352,27 @@ def test_narration_stage_writes_and_reuses_story_text(tmp_path: Path) -> None:
     assert first.skipped is False
     assert second.skipped is True
     assert report.lines[0].section_role == "opening"
+    restored = Storyboard.model_validate_json(storyboard_path.read_text(encoding="utf-8"))
+    assert restored.narration == [line.text for line in report.lines]
 
 
 def test_timeline_builder_stage_skips_without_assets_or_scenes(tmp_path: Path) -> None:
     context = _context(tmp_path)
     context.prepare()
+    for name in (
+        "quick_timeline.json",
+        "selection_decisions.json",
+        "quick_timeline.cache.json",
+    ):
+        (context.artifacts_dir / name).write_text("stale", encoding="utf-8")
 
     result = TimelineBuilderStage().run(context)
 
     assert result.stage is PipelineStage.TIMELINE_BUILDER
     assert result.skipped is True
     assert not (context.artifacts_dir / "quick_timeline.json").exists()
+    assert not (context.artifacts_dir / "selection_decisions.json").exists()
+    assert not (context.artifacts_dir / "quick_timeline.cache.json").exists()
 
 
 def _context(tmp_path: Path, *, settings: Settings | None = None) -> ProjectContext:

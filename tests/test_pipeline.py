@@ -73,3 +73,16 @@ def test_semantic_create_uses_shared_movie_use_case(
     assert isinstance(settings, QuickMontageSettings)
     assert settings.semantic_analysis is True
     assert settings.story_style is StoryStyle.CINEMATIC
+
+
+def test_report_does_not_claim_uncreated_artifact(tmp_path: Path) -> None:
+    input_path = tmp_path / "media"
+    input_path.mkdir()
+
+    result = TravelMovieService(Settings()).report(
+        input_path=input_path,
+        workspace=tmp_path / "workspace",
+    )
+
+    assert result.skipped is True
+    assert result.artifacts == []

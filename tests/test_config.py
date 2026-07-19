@@ -115,3 +115,13 @@ def test_quick_montage_settings_default_to_auto_rendering() -> None:
     settings = QuickMontageSettings()
 
     assert settings.render_device == "auto"
+
+
+def test_quick_montage_settings_require_even_render_dimensions() -> None:
+    settings = QuickMontageSettings(width=1280, height=720)
+
+    assert (settings.width, settings.height) == (1280, 720)
+    with pytest.raises(ValueError, match="multiple of 2"):
+        QuickMontageSettings(width=1279)
+    with pytest.raises(ValueError, match="multiple of 2"):
+        QuickMontageSettings(height=719)

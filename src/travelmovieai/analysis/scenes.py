@@ -296,6 +296,8 @@ def scene_cache_key(asset: MediaAsset, settings: QuickMontageSettings) -> str:
         "min": settings.min_scene_duration_seconds,
         "max": settings.max_scene_duration_seconds,
     }
+    if asset.media_type is MediaType.PHOTO:
+        payload["photo_duration"] = settings.photo_duration_seconds
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 

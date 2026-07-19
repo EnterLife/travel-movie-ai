@@ -36,7 +36,11 @@ class MusicSelectionStage(Stage):
         repository.initialize()
         assets = repository.list_assets()
         scenes = repository.list_scenes()
+        music_artifact = context.artifacts_dir / "music_plan.json"
+        cache_artifact = context.artifacts_dir / "music_plan.cache.json"
         if not assets or not scenes:
+            music_artifact.unlink(missing_ok=True)
+            cache_artifact.unlink(missing_ok=True)
             return StageResult(
                 stage=self.name,
                 skipped=True,
@@ -50,8 +54,8 @@ class MusicSelectionStage(Stage):
                 duration_seconds=0,
                 reasoning="Music disabled by montage settings.",
             )
-            music_artifact = context.artifacts_dir / "music_plan.json"
             write_json_atomic(music_artifact, music_plan)
+            cache_artifact.unlink(missing_ok=True)
             return StageResult(
                 stage=self.name,
                 skipped=True,
@@ -60,8 +64,6 @@ class MusicSelectionStage(Stage):
             )
 
         draft_plan = build_semantic_montage_plan(assets, scenes, settings)
-        music_artifact = context.artifacts_dir / "music_plan.json"
-        cache_artifact = context.artifacts_dir / "music_plan.cache.json"
         input_fingerprint = artifact_fingerprint(
             assets,
             scenes,

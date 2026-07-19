@@ -131,7 +131,10 @@ def _cached_vision_analysis_valid(artifact: Path, scenes: list[Scene]) -> bool:
         return False
     if {scene.id for scene in report.scenes} != {scene.id for scene in scenes}:
         return False
-    return all(scene.caption and scene.importance_score is not None for scene in scenes)
+    return all(
+        scene.keyframe_path is None or (scene.caption and scene.importance_score is not None)
+        for scene in scenes
+    )
 
 
 def _vision_inputs(scenes: list[Scene]) -> list[dict[str, object]]:
@@ -143,10 +146,8 @@ def _vision_inputs(scenes: list[Scene]) -> list[dict[str, object]]:
             "end_seconds": scene.end_seconds,
             "keyframe_path": scene.keyframe_path,
             "quality_score": scene.quality_score,
-            "transcript": scene.transcript,
             "scene_cache_key": scene.metadata.get("cache_key"),
             "quality_metrics": scene.metadata.get("quality_metrics"),
-            "speech_cache_key": scene.metadata.get("speech_cache_key"),
         }
         for scene in sorted(scenes, key=lambda item: str(item.id))
     ]

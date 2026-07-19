@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from travelmovieai.analysis.quality import (
@@ -59,10 +60,10 @@ def test_quality_analysis_persists_explainable_metrics(tmp_path: Path) -> None:
 
 
 def test_cuda_quality_analyzer_uses_gpu_when_available(tmp_path: Path) -> None:
-    import torch
+    torch = pytest.importorskip("torch", reason="Torch is an optional Vision dependency")
 
     if not torch.cuda.is_available():
-        return
+        pytest.skip("CUDA is unavailable")
     image_path = tmp_path / "contact.png"
     Image.new("RGB", (480, 90), (120, 180, 220)).save(image_path)
 

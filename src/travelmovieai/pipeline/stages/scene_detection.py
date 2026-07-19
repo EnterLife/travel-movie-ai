@@ -28,8 +28,10 @@ class SceneDetectionStage(Stage):
         self._detector = detector or SceneDetector()
 
     def run(self, context: ProjectContext) -> StageResult:
-        settings = self._settings or context.montage_settings or QuickMontageSettings(
-            story_style=context.style
+        settings = (
+            self._settings
+            or context.montage_settings
+            or QuickMontageSettings(story_style=context.style)
         )
         repository = MediaAssetRepository(context.database_path)
         repository.initialize()

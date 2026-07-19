@@ -13,6 +13,33 @@ class ProjectPaths:
     workspace: Path
 
 
+def validate_output_path(
+    output_path: Path,
+    input_path: Path,
+    *,
+    workspace: Path | None = None,
+    database_path: Path | None = None,
+) -> Path:
+    resolved_output = output_path.expanduser().resolve()
+    resolved_input = input_path.expanduser().resolve()
+    if resolved_output.suffix.casefold() != ".mp4":
+        raise InvalidProjectPathError("Movie output must use the .mp4 extension.")
+    if resolved_output.is_relative_to(resolved_input):
+        raise InvalidProjectPathError("Movie output must be outside the source media folder.")
+    if database_path is not None and resolved_output == database_path.expanduser().resolve():
+        raise InvalidProjectPathError("Movie output must not overwrite the project database.")
+    if workspace is not None:
+        resolved_workspace = workspace.expanduser().resolve()
+        reserved_roots = (resolved_workspace / "cache", resolved_workspace / "frames")
+        if any(resolved_output.is_relative_to(root) for root in reserved_roots):
+            raise InvalidProjectPathError(
+                "Movie output must be outside workspace cache and frame folders."
+            )
+    if resolved_output.exists() and not resolved_output.is_file():
+        raise InvalidProjectPathError("Movie output path must be a file.")
+    return resolved_output
+
+
 def validate_project_paths(input_path: Path, workspace: Path) -> ProjectPaths:
     resolved_input = input_path.expanduser().resolve()
     resolved_workspace = workspace.expanduser().resolve()

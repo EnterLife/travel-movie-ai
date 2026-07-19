@@ -402,8 +402,8 @@ class QuickMontageSettings(BaseModel):
     target_duration_seconds: float = Field(default=90, ge=5, le=3600)
     max_video_clip_seconds: float = Field(default=6, ge=1, le=60)
     photo_duration_seconds: float = Field(default=3, ge=1, le=15)
-    width: int = Field(default=1280, ge=320, le=3840)
-    height: int = Field(default=720, ge=240, le=2160)
+    width: int = Field(default=1280, ge=320, le=3840, multiple_of=2)
+    height: int = Field(default=720, ge=240, le=2160, multiple_of=2)
     fps: int = Field(default=30, ge=15, le=60)
     semantic_analysis: bool = False
     quality_analysis: bool = True

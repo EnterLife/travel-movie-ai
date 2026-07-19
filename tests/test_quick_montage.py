@@ -420,6 +420,37 @@ def test_renderer_rejects_missing_soundtrack_before_ffmpeg(tmp_path: Path) -> No
         QuickMontageRenderer().render(plan, tmp_path / "out.mp4", tmp_path)
 
 
+def test_renderer_rejects_output_that_overwrites_source_media(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(),
+        clips=[
+            MontageClip(
+                asset_id=uuid4(),
+                source_path=source,
+                relative_path=Path("clip.mp4"),
+                media_type=MediaType.VIDEO,
+                duration_seconds=2,
+            )
+        ],
+        total_duration_seconds=2,
+    )
+
+    with pytest.raises(MontageError, match="must not overwrite source media"):
+        QuickMontageRenderer().render(plan, source, tmp_path / "render")
+
+    soundtrack = tmp_path / "soundtrack.wav"
+    plan_with_music = plan.model_copy(update={"music_path": soundtrack})
+    with pytest.raises(MontageError, match="or the soundtrack"):
+        QuickMontageRenderer().render(plan_with_music, soundtrack, tmp_path / "render")
+
+    work_dir = tmp_path / "render"
+    work_output = work_dir / "quick_montage_segments" / "final.mp4"
+    with pytest.raises(MontageError, match="renderer working files"):
+        QuickMontageRenderer().render(plan, work_output, work_dir)
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
 def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     media = tmp_path / "Моя поездка"

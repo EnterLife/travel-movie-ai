@@ -102,3 +102,19 @@ def test_vision_cache_invalidates_when_measured_quality_changes(tmp_path: Path) 
     assert provider.calls == 1
     assert second.cached_count == 0
     assert second.scenes[0].metadata["vision_score_factors"]["visual_quality"] == 25
+
+
+def test_vision_analysis_preserves_scene_without_keyframe() -> None:
+    scene = Scene(
+        asset_id=uuid4(),
+        start_seconds=0,
+        end_seconds=1,
+        metadata={"cache_key": "missing-frame"},
+    )
+    provider = _VisionProvider()
+
+    report = analyze_scenes([scene], provider, StoryStyle.CINEMATIC)
+
+    assert report.scenes == [scene]
+    assert report.analyzed_count == 0
+    assert provider.calls == 0

@@ -177,12 +177,8 @@ def detect_resource_profile(
     memory_mb = _system_memory_mb()
     resolved_cuda = cuda or check_cuda(ffmpeg_binary)
     resolved_mode = _resolve_resource_mode(resource_mode, resolved_cuda, memory_mb)
-    resolved_device: Literal["cuda", "cpu"] = (
-        "cuda" if resolved_cuda.torch_cuda else "cpu"
-    )
-    effective_gpu_processes = (
-        1 if resolved_mode == "safe" else max(1, max_gpu_processes)
-    )
+    resolved_device: Literal["cuda", "cpu"] = "cuda" if resolved_cuda.torch_cuda else "cpu"
+    effective_gpu_processes = 1 if resolved_mode == "safe" else max(1, max_gpu_processes)
 
     memory_factor = {
         "safe": 0.65,

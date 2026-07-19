@@ -47,6 +47,23 @@ def test_scan_discovers_supported_files_and_reuses_cache(tmp_path: Path) -> None
     assert probe.paths == [video.resolve()]
 
 
+def test_scan_preserves_asset_identity_when_existing_file_changes(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    video = media / "clip.mp4"
+    video.write_bytes(b"first version")
+    probe = FakeProbe()
+    scanner = MediaScanner(probe)
+
+    first = scanner.scan(media)
+    video.write_bytes(b"second version with a different size")
+    second = scanner.scan(media, cached_assets=first.assets)
+
+    assert second.probed_count == 1
+    assert second.cached_count == 0
+    assert second.assets[0].id == first.assets[0].id
+
+
 def test_scan_excludes_workspace_inside_media_folder(tmp_path: Path) -> None:
     media = tmp_path / "media"
     workspace = media / "workspace"

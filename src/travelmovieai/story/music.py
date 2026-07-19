@@ -303,9 +303,7 @@ def build_music_cue_sections(
     transition = _effective_transition(plan)
     starts = _clip_starts(plan)
     highlight_times = {
-        round(accent.time_seconds, 2)
-        for accent in accents
-        if accent.kind == "highlight"
+        round(accent.time_seconds, 2) for accent in accents if accent.kind == "highlight"
     }
     boundaries = {0.0, duration}
     for start in starts[1:]:
@@ -321,9 +319,7 @@ def build_music_cue_sections(
         if end - start < 0.35:
             continue
         role = _cue_section_role(index, start, end, duration, accents)
-        section_accents = [
-            accent for accent in accents if start <= accent.time_seconds < end
-        ]
+        section_accents = [accent for accent in accents if start <= accent.time_seconds < end]
         intensity = _cue_section_intensity(role, section_accents)
         sections.append(
             MusicCueSection(
@@ -483,9 +479,7 @@ def apply_music_accents(
             sample_rate = source.getframerate()
             source_channels = source.getnchannels()
             if source.getnframes() <= 0 or source_channels <= 0:
-                raise MusicGenerationError(
-                    "The local music model returned an empty WAV file."
-                )
+                raise MusicGenerationError("The local music model returned an empty WAV file.")
             target_frames = round(duration_seconds * sample_rate)
             with wave.open(str(temporary_path), "wb") as target:
                 target.setnchannels(2)
@@ -739,9 +733,7 @@ def generate_ambient_soundtrack(
             accent, energy = _accent_layers(time, cue_sheet)
             section_energy, section_lead = _section_layers(time, sections)
             arc = 0.78 + 0.16 * np.sin(np.pi * np.minimum(1.0, time / max(duration_seconds, 0.001)))
-            rhythm_level = (
-                0.32 if profile == "calm" else 0.72 if profile == "energetic" else 0.48
-            )
+            rhythm_level = 0.32 if profile == "calm" else 0.72 if profile == "energetic" else 0.48
             dynamics = (arc + energy) * section_energy
             width = 0.035 * np.sin(2 * np.pi * time / 7.0)
             left = (
@@ -822,11 +814,7 @@ def _warm_tone(
     phase: float,
 ) -> FloatArray:
     base = 2 * np.pi * frequency * time + phase
-    tone = (
-        np.sin(base)
-        + 0.28 * np.sin(base * 2 + 0.2)
-        + 0.08 * np.sin(base * 3 + 0.5)
-    )
+    tone = np.sin(base) + 0.28 * np.sin(base * 2 + 0.2) + 0.08 * np.sin(base * 3 + 0.5)
     return cast(FloatArray, np.tanh(tone * 0.82))
 
 
@@ -837,11 +825,7 @@ def _electric_piano_tone(
     phase: float,
 ) -> FloatArray:
     base = 2 * np.pi * frequency * time + phase
-    tone = (
-        np.sin(base)
-        + 0.22 * np.sin(base * 2 + 0.6)
-        + 0.1 * np.sin(base * 3 + 1.1)
-    )
+    tone = np.sin(base) + 0.22 * np.sin(base * 2 + 0.6) + 0.1 * np.sin(base * 3 + 1.1)
     return cast(FloatArray, np.tanh(tone * 0.78))
 
 

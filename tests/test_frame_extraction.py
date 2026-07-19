@@ -6,10 +6,32 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from travelmovieai.analysis.scenes import RepresentativeFrameExtractor
+from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, scene_cache_key
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
-from travelmovieai.domain.models import MediaAsset, Scene
+from travelmovieai.domain.models import MediaAsset, QuickMontageSettings, Scene
+
+
+def test_photo_scene_cache_invalidates_when_duration_changes(tmp_path: Path) -> None:
+    asset = MediaAsset(
+        path=tmp_path / "photo.jpg",
+        relative_path=Path("photo.jpg"),
+        media_type=MediaType.PHOTO,
+        extension=".jpg",
+        size_bytes=1,
+        modified_at=datetime.now(UTC),
+        modified_ns=1,
+    )
+
+    short_key = scene_cache_key(asset, QuickMontageSettings(photo_duration_seconds=2))
+    long_key = scene_cache_key(asset, QuickMontageSettings(photo_duration_seconds=5))
+
+    assert short_key != long_key
+    video = asset.model_copy(update={"media_type": MediaType.VIDEO, "extension": ".mp4"})
+    assert scene_cache_key(
+        video,
+        QuickMontageSettings(photo_duration_seconds=2),
+    ) == scene_cache_key(video, QuickMontageSettings(photo_duration_seconds=5))
 
 
 def test_frame_extraction_times_out_hung_ffmpeg(

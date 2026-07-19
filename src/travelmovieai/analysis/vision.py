@@ -46,6 +46,9 @@ def analyze_scenes(
     )
     for index, scene in enumerate(scenes, start=1):
         if scene.keyframe_path is None:
+            analyzed_by_index[index] = scene
+            if progress:
+                progress(index, total, f"AI skipped: scene {index}/{total} has no frame")
             continue
         cache_key = _vision_cache_key(scene, provider.model, style)
         cached_scene = cached_by_id.get(scene.id, scene)

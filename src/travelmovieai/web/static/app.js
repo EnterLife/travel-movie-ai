@@ -157,9 +157,31 @@ async function requestJson(url, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(payload?.detail || `HTTP error ${response.status}`);
+    const requestId = response.headers.get("X-Request-ID") || payload?.request_id;
+    const detail = formatErrorDetail(payload?.detail) || `HTTP error ${response.status}`;
+    const error = new Error(requestId ? `${detail} (request ${requestId})` : detail);
+    error.status = response.status;
+    error.requestId = requestId || null;
+    throw error;
   }
   return payload;
+}
+
+function formatErrorDetail(detail) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((issue) => {
+        if (typeof issue === "string") return issue;
+        const location = Array.isArray(issue?.loc) ? issue.loc.slice(1).join(" → ") : "input";
+        return `${location || "input"}: ${issue?.msg || "invalid value"}`;
+      })
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    return detail.message || JSON.stringify(detail);
+  }
+  return "";
 }
 
 async function pickDirectory(purpose, field, button) {
@@ -201,8 +223,10 @@ async function checkHealth() {
         ? "Server ready"
         : "Scans ready · FFmpeg not found";
     serverState.querySelector("span:last-child").textContent = statusText;
-    submitButton.disabled = !serverReady;
-    movieButton.disabled = !movieReady;
+    submitButton.disabled =
+      !serverReady || ["queued", "running"].includes(currentJob?.status);
+    movieButton.disabled =
+      !movieReady || ["queued", "running", "paused"].includes(currentMovieJob?.status);
     if (!serverReady) {
       showError(
         health.ffprobe.error ||
@@ -279,7 +303,7 @@ function renderCapabilities(capabilities) {
     capabilityChip(
       capabilities.music_ai.runtime_installed
         ? `Music AI · ${shortModelName(capabilities.music_ai.resolved_model)}`
-        : "Music AI · installs on first run",
+        : "Music AI unavailable · procedural music ready",
       capabilities.music_ai.available,
     ),
     capabilityChip(
@@ -489,10 +513,13 @@ form.addEventListener("submit", async (event) => {
 });
 
 async function pollJob(jobId) {
+  let retryDelay = 700;
   while (currentJob && currentJob.id === jobId) {
-    await sleep(700);
+    await sleep(retryDelay);
     try {
       currentJob = await requestJson(`/api/scans/${jobId}`);
+      retryDelay = 700;
+      hideError();
       showJob(currentJob);
 
       if (currentJob.status === "completed") {
@@ -511,20 +538,36 @@ async function pollJob(jobId) {
         return;
       }
     } catch (error) {
-      showError(error.message);
-      submitButton.disabled = false;
-      stopTimer();
-      return;
+      if (error.status === 404) {
+        currentJob = null;
+        submitButton.disabled = false;
+        stopTimer();
+        showError("The active scan is no longer available. Start a new scan.");
+        return;
+      }
+      retryDelay = Math.min(retryDelay * 2, 8000);
+      showError(`${error.message} Retrying the active scan…`);
     }
   }
 }
 
-async function loadHistory() {
+async function loadHistory(attempt = 0) {
   try {
     const history = await requestJson("/api/scans?limit=6");
-    renderHistory(history.jobs || []);
-  } catch {
+    const jobs = history.jobs || [];
+    renderHistory(jobs);
+    const active = jobs.find((job) => ["queued", "running"].includes(job.status));
+    if (!currentJob && active) {
+      submitButton.disabled = true;
+      await openHistoryJob(active);
+    }
+  } catch (error) {
     recentJobs.classList.add("hidden");
+    if (attempt < 4 && !currentJob) {
+      await sleep(Math.min(500 * 2 ** attempt, 4000));
+      return loadHistory(attempt + 1);
+    }
+    showError(`${error.message} Could not restore scan history.`);
   }
 }
 
@@ -696,10 +739,13 @@ movieButton.addEventListener("click", async () => {
 });
 
 async function pollMovie(jobId) {
+  let retryDelay = 500;
   while (currentMovieJob && currentMovieJob.id === jobId) {
-    await sleep(500);
+    await sleep(retryDelay);
     try {
       currentMovieJob = await requestJson(`/api/movies/${jobId}`);
+      retryDelay = 500;
+      hideError();
       showMovieProgress(currentMovieJob);
       if (currentMovieJob.status === "completed") {
         showMovieResult(currentMovieJob);
@@ -716,10 +762,41 @@ async function pollMovie(jobId) {
         return;
       }
     } catch (error) {
-      showError(error.message);
-      movieButton.disabled = false;
-      return;
+      if (error.status === 404) {
+        currentMovieJob = null;
+        movieButton.disabled = false;
+        showError("The active edit is no longer available. Start a new edit.");
+        return;
+      }
+      retryDelay = Math.min(retryDelay * 2, 8000);
+      showError(`${error.message} The edit is still running; reconnecting…`);
     }
+  }
+}
+
+async function restoreActiveMovieJob(attempt = 0) {
+  try {
+    const history = await requestJson("/api/movies?limit=20");
+    const active = (history.jobs || []).find((job) =>
+      ["queued", "running", "paused"].includes(job.status),
+    );
+    if (!active || currentMovieJob) return;
+    currentMovieJob = active;
+    currentJob = {
+      status: "completed",
+      input_path: active.input_path,
+      workspace: active.workspace,
+    };
+    movieButton.disabled = true;
+    showMovieProgress(active);
+    await pollMovie(active.id);
+  } catch (error) {
+    if (attempt < 4 && !currentMovieJob) {
+      showError(`${error.message} Could not restore the active edit yet; retrying…`);
+      await sleep(Math.min(500 * 2 ** attempt, 4000));
+      return restoreActiveMovieJob(attempt + 1);
+    }
+    showError(`${error.message} Could not restore the active edit.`);
   }
 }
 
@@ -814,6 +891,20 @@ function renderMovieLogs(logs) {
 
 function showMovieResult(job) {
   const downloadUrl = `/api/movies/${job.id}/download`;
+  const qualityDetails = [
+    job.quality_gate_status ? `gate ${job.quality_gate_status}` : null,
+    job.semantic_score_p10 == null ? null : `semantic p10 ${Math.round(job.semantic_score_p10)}`,
+    job.dominant_event_ratio == null
+      ? null
+      : `dominant event ${Math.round(job.dominant_event_ratio * 100)}%`,
+    job.adjacent_source_repeat_ratio == null
+      ? null
+      : `adjacent repeats ${Math.round(job.adjacent_source_repeat_ratio * 100)}%`,
+    job.center_cut_ratio == null
+      ? null
+      : `center cuts ${Math.round(job.center_cut_ratio * 100)}%`,
+    job.full_media_qa_completed ? "full-media QA" : null,
+  ].filter(Boolean);
   movieResultSummary.textContent =
     `${job.clip_count} clips · ${formatDuration(job.duration_seconds)} · ${
       job.selection_mode === "semantic" ? "AI selection" : "quick mode"
@@ -821,7 +912,9 @@ function showMovieResult(job) {
       job.music_profile || job.music_mode || "no music"
     } · ${job.music_generator || "music file"} · quality ${
       job.quality_score == null ? "n/a" : Math.round(job.quality_score)
-    }/100 (${job.quality_issue_count || 0} issues)`;
+    }/100 (${job.quality_issue_count || 0} issues)${
+      qualityDetails.length ? ` · ${qualityDetails.join(" · ")}` : ""
+    }`;
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");
@@ -1417,3 +1510,4 @@ submitButton.disabled = true;
 checkHealth();
 loadCapabilities();
 loadHistory();
+restoreActiveMovieJob();

@@ -1,3 +1,4 @@
+import hashlib
 import shutil
 import subprocess
 from datetime import UTC, datetime
@@ -8,7 +9,12 @@ from uuid import uuid4
 import pytest
 from PIL import Image
 
-from travelmovieai.analysis.scenes import RepresentativeFrameExtractor, scene_cache_key
+from travelmovieai.analysis.scenes import (
+    CONTACT_SHEET_SCHEMA_VERSION,
+    RepresentativeFrameExtractor,
+    contact_sheet_file_valid,
+    scene_cache_key,
+)
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MediaAsset, QuickMontageSettings, Scene
@@ -35,6 +41,26 @@ def test_photo_scene_cache_invalidates_when_duration_changes(tmp_path: Path) -> 
         video,
         QuickMontageSettings(photo_duration_seconds=2),
     ) == scene_cache_key(video, QuickMontageSettings(photo_duration_seconds=5))
+
+
+def test_scene_cache_key_normalizes_equivalent_numeric_settings(tmp_path: Path) -> None:
+    asset = MediaAsset(
+        path=tmp_path / "clip.mp4",
+        relative_path=Path("clip.mp4"),
+        media_type=MediaType.VIDEO,
+        extension=".mp4",
+        size_bytes=1,
+        modified_at=datetime.now(UTC),
+        modified_ns=1,
+    )
+    defaults = QuickMontageSettings()
+    explicit_floats = QuickMontageSettings(
+        scene_threshold=float(defaults.scene_threshold),
+        min_scene_duration_seconds=float(defaults.min_scene_duration_seconds),
+        max_scene_duration_seconds=float(defaults.max_scene_duration_seconds),
+    )
+
+    assert scene_cache_key(asset, defaults) == scene_cache_key(asset, explicit_floats)
 
 
 def test_parallel_frame_extraction_does_not_start_queued_work_after_cancel(
@@ -124,6 +150,72 @@ def test_frame_extraction_times_out_hung_ffmpeg(
         extractor.extract(scene, asset, tmp_path / "frames")
 
     assert calls == [0.25, 0.25]
+
+
+def test_frame_extractor_does_not_reuse_untracked_nonempty_png(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset = MediaAsset(
+        path=tmp_path / "clip.mp4",
+        relative_path=Path("clip.mp4"),
+        media_type=MediaType.VIDEO,
+        extension=".mp4",
+        size_bytes=1,
+        modified_at=datetime.now(UTC),
+        modified_ns=1,
+        duration_seconds=3,
+        width=640,
+        height=360,
+        fps=24,
+        probe_metadata={"video_duration_seconds": 3.0},
+    )
+    scene = Scene(asset_id=asset.id, start_seconds=0, end_seconds=3)
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    cached_path = frames_dir / f"{scene.id}-contact-v4-3.png"
+    Image.new("RGB", (1440, 270), (255, 0, 0)).save(cached_path)
+    calls = 0
+
+    def fake_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        nonlocal calls
+        calls += 1
+        Image.new("RGB", (1440, 270), (0, 255, 0)).save(Path(command[-1]))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("travelmovieai.analysis.scenes.subprocess.run", fake_run)
+
+    output = RepresentativeFrameExtractor().extract(scene, asset, frames_dir)
+
+    assert calls == 1
+    with Image.open(output) as regenerated:
+        assert regenerated.getpixel((0, 0)) == (0, 255, 0)
+
+
+def test_cached_contact_sheet_rejects_wrong_geometry_with_matching_digest(
+    tmp_path: Path,
+) -> None:
+    contact_sheet = tmp_path / "wrong-geometry.png"
+    Image.new("RGB", (480, 270), (0, 0, 0)).save(contact_sheet)
+    metadata: dict[str, object] = {
+        "schema_version": CONTACT_SHEET_SCHEMA_VERSION,
+        "sample_count": 3,
+        "sample_positions": [0.12, 0.5, 0.88],
+        "sample_timestamps_seconds": [0.12, 0.5, 0.88],
+        "columns": 3,
+        "rows": 1,
+        "content_sha256": hashlib.sha256(contact_sheet.read_bytes()).hexdigest(),
+    }
+
+    assert not contact_sheet_file_valid(
+        contact_sheet,
+        metadata,
+        expected_sample_count=3,
+    )
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
@@ -268,12 +360,22 @@ def test_deep_contact_sheet_extracts_nine_frames(tmp_path: Path) -> None:
     )
     scene = Scene(asset_id=asset.id, start_seconds=0, end_seconds=3)
 
-    output = RepresentativeFrameExtractor(frame_sample_count=9).extract(
+    extractor = RepresentativeFrameExtractor(frame_sample_count=9)
+    output = extractor.extract(
         scene,
         asset,
         tmp_path / "frames",
     )
+    metadata = extractor.sampling_metadata(scene, asset, output)
 
     assert output.name.endswith("-contact-v4-9.png")
     with Image.open(output) as image:
         assert image.size == (1440, 810)
+    assert metadata["sample_count"] == 9
+    positions = metadata["sample_positions"]
+    timestamps = metadata["sample_timestamps_seconds"]
+    assert isinstance(positions, list)
+    assert isinstance(timestamps, list)
+    assert positions == sorted(positions)
+    assert positions == pytest.approx([timestamp / 3 for timestamp in timestamps])
+    assert len(str(metadata["content_sha256"])) == 64

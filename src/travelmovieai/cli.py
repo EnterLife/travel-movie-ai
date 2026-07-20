@@ -12,6 +12,7 @@ from travelmovieai.core.config import load_settings
 from travelmovieai.core.exceptions import TravelMovieError
 from travelmovieai.domain.enums import PipelineStage, StoryStyle
 from travelmovieai.domain.models import QuickMontageSettings, StageResult
+from travelmovieai.pipeline.progress import LegacyProgressCallback
 
 app = typer.Typer(
     name="travelmovieai",
@@ -48,9 +49,33 @@ def _service() -> TravelMovieService:
     return TravelMovieService(load_settings())
 
 
-def _run(operation: Callable[[], StageResult]) -> None:
+class _CliProgress:
+    def __init__(self) -> None:
+        self._last_percent = -1
+        self._last_message = ""
+
+    def __call__(self, current: int, total: int, message: str) -> None:
+        percent = round(current / total * 100) if total > 0 else 0
+        terminal = total > 0 and current >= total
+        stage_boundary = message.startswith("Starting ")
+        if (
+            not terminal
+            and not stage_boundary
+            and percent <= self._last_percent
+            and message == self._last_message
+        ):
+            return
+        if not terminal and not stage_boundary and percent < self._last_percent + 1:
+            return
+        self._last_percent = max(self._last_percent, percent)
+        self._last_message = message
+        typer.echo(f"[{percent:3d}%] {message}", err=True)
+
+
+def _run(operation: Callable[[LegacyProgressCallback], StageResult]) -> None:
+    progress = _CliProgress()
     try:
-        result = operation()
+        result = operation(progress)
     except (TravelMovieError, ValidationError) as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
@@ -91,6 +116,32 @@ def create(
         float,
         typer.Option("--max-clip", min=1, max=60, help="Maximum video clip duration."),
     ] = 6,
+    width: Annotated[
+        int,
+        typer.Option("--width", min=320, max=3840, help="Output width in pixels."),
+    ] = 1280,
+    height: Annotated[
+        int,
+        typer.Option("--height", min=240, max=2160, help="Output height in pixels."),
+    ] = 720,
+    fps: Annotated[
+        int,
+        typer.Option("--fps", min=15, max=60, help="Output frame rate."),
+    ] = 30,
+    validate_full_render_decode: Annotated[
+        bool,
+        typer.Option(
+            "--validate-full-render-decode/--no-validate-full-render-decode",
+            help="Decode the complete rendered movie before reporting success.",
+        ),
+    ] = False,
+    analysis_quality: Annotated[
+        str,
+        typer.Option(
+            "--analysis-quality",
+            help="Contact-sheet depth for semantic analysis: fast, balanced, or deep.",
+        ),
+    ] = "balanced",
     speech: Annotated[
         bool,
         typer.Option("--speech/--no-speech", help="Run local Faster Whisper analysis."),
@@ -150,11 +201,16 @@ def create(
 ) -> None:
     """Create a quick or locally AI-directed montage."""
 
-    def operation() -> StageResult:
+    def operation(progress: LegacyProgressCallback) -> StageResult:
         settings = QuickMontageSettings.model_validate(
             {
                 "target_duration_seconds": target_duration,
                 "max_video_clip_seconds": max_clip_duration,
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "validate_full_render_decode": validate_full_render_decode,
+                "analysis_quality_mode": analysis_quality,
                 "semantic_analysis": semantic,
                 "speech_analysis": speech,
                 "narration_enabled": narration,
@@ -182,6 +238,7 @@ def create(
             semantic=semantic,
             montage_settings=settings,
             variant_name=variant_name,
+            progress=progress,
         )
 
     _run(operation)
@@ -194,9 +251,10 @@ def analyze(
 ) -> None:
     """Scan media and persist the currently implemented analysis metadata."""
     _run(
-        lambda: _service().analyze(
+        lambda progress: _service().analyze(
             input_path=input_path,
             workspace=workspace,
+            progress=progress,
         )
     )
 
@@ -252,11 +310,12 @@ def storyboard(
 ) -> None:
     """Build a storyboard from previously analyzed media."""
     _run(
-        lambda: _service().run_until(
+        lambda progress: _service().run_until(
             PipelineStage.STORY_BUILDER,
             input_path=input_path,
             workspace=workspace,
             style=style,
+            progress=progress,
         )
     )
 
@@ -272,11 +331,12 @@ def render(
 ) -> None:
     """Render a movie from the generated timeline."""
     _run(
-        lambda: _service().run_until(
+        lambda progress: _service().run_until(
             PipelineStage.RENDERING,
             input_path=input_path,
             output_path=output,
             workspace=workspace,
+            progress=progress,
         )
     )
 
@@ -287,7 +347,7 @@ def report(
     workspace: WorkspaceOption = None,
 ) -> None:
     """Generate an HTML project report."""
-    _run(lambda: _service().report(input_path=input_path, workspace=workspace))
+    _run(lambda _progress: _service().report(input_path=input_path, workspace=workspace))
 
 
 @app.command()
@@ -343,7 +403,7 @@ def export_project(
 ) -> None:
     """Export a checksummed local project backup without source media."""
     _run(
-        lambda: _service().export_project(
+        lambda _progress: _service().export_project(
             input_path=input_path,
             workspace=workspace,
             output_path=output,
@@ -379,7 +439,12 @@ def restore_project(
     ],
 ) -> None:
     """Restore a validated project archive into a new or empty workspace."""
-    _run(lambda: _service().restore_project(archive_path=archive, workspace=workspace))
+    _run(
+        lambda _progress: _service().restore_project(
+            archive_path=archive,
+            workspace=workspace,
+        )
+    )
 
 
 @app.command()

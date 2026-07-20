@@ -128,6 +128,14 @@ def test_quick_montage_settings_validate_analysis_quality_mode() -> None:
         QuickMontageSettings(analysis_quality_mode="extreme")
 
 
+def test_quick_montage_settings_validate_narration_speech_rate() -> None:
+    settings = QuickMontageSettings(narration_characters_per_second=8)
+
+    assert settings.narration_characters_per_second == 8
+    with pytest.raises(ValueError, match="narration_characters_per_second"):
+        QuickMontageSettings(narration_characters_per_second=7.9)
+
+
 def test_quick_montage_settings_default_to_safe_cinematic_transitions() -> None:
     settings = QuickMontageSettings()
 

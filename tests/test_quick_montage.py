@@ -3,6 +3,7 @@ import math
 import shutil
 import struct
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier
@@ -16,7 +17,9 @@ from travelmovieai.core.exceptions import MediaProbeError, MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MediaAsset,
+    MediaScanReport,
     MontageClip,
+    MontageQualityReport,
     QuickMontagePlan,
     QuickMontageSettings,
     SceneUnderstanding,
@@ -24,6 +27,9 @@ from travelmovieai.domain.models import (
 from travelmovieai.editing.renderer import (
     QuickMontageRenderer,
     _build_filter_graph,
+    _build_hard_cut_audio_graph,
+    _is_nvenc_unavailable_error,
+    _NvencUnavailableError,
     _transition_duration,
 )
 from travelmovieai.editing.timeline import build_quick_montage_plan
@@ -301,8 +307,22 @@ def test_renderer_uses_preroll_and_trim_for_video_segments(tmp_path: Path) -> No
     filter_graph = command[command.index("-filter_complex") + 1]
     assert command[command.index("-ss") + 1] == "4.200"
     assert command[command.index("-t") + 1] == "3.250"
+    assert command[command.index("-c:a") + 1] == "alac"
     assert "trim=start=1.000:duration=2.000" in filter_graph
     assert "atrim=start=1.000:duration=2.000" in filter_graph
+
+
+def test_transition_segments_use_lossless_cpu_mezzanine_before_final_encode() -> None:
+    renderer = QuickMontageRenderer(ffmpeg_threads=3)
+    renderer._encoder = "h264_nvenc"
+    renderer._mezzanine_segments = True
+
+    arguments = renderer._segment_video_encoder_args()
+
+    assert arguments[arguments.index("-c:v") + 1] == "libx264"
+    assert arguments[arguments.index("-qp") + 1] == "0"
+    assert arguments[arguments.index("-threads") + 1] == "3"
+    assert "-cq" not in arguments
 
 
 def test_renderer_resumes_from_atomic_segment_checkpoints(tmp_path: Path) -> None:
@@ -310,7 +330,13 @@ def test_renderer_resumes_from_atomic_segment_checkpoints(tmp_path: Path) -> Non
     fail_second_once = True
 
     class CheckpointRenderer(QuickMontageRenderer):
-        def _valid_cached_segment(self, path: Path) -> bool:
+        def _valid_cached_segment(
+            self,
+            path: Path,
+            clip: MontageClip | None = None,
+            plan: QuickMontagePlan | None = None,
+        ) -> bool:
+            del clip, plan
             return path.is_file() and path.stat().st_size > 0
 
         def _render_segment(
@@ -367,9 +393,14 @@ def test_parallel_renderer_does_not_start_queued_clips_after_cancel(tmp_path: Pa
     calls: list[Path] = []
 
     class BlockingRenderer(QuickMontageRenderer):
-        def _valid_cached_segment(self, path: Path) -> bool:
-            del path
-            return False
+        def _valid_cached_segment(
+            self,
+            path: Path,
+            clip: MontageClip | None = None,
+            plan: QuickMontagePlan | None = None,
+        ) -> bool:
+            del clip, plan
+            return path.is_file() and path.stat().st_size > 0
 
         def _render_segment(
             self,
@@ -461,21 +492,313 @@ def test_cached_segment_requires_valid_probed_video_and_audio(
     assert renderer._valid_cached_segment(segment) is True
 
 
-def test_renderer_reports_ffmpeg_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[float] = []
+def test_cached_segment_must_match_planned_delivery_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment = tmp_path / "segment.mp4"
+    segment.write_bytes(b"prepared")
 
-    def fake_run(*args: object, **kwargs: object) -> object:
-        timeout = kwargs["timeout"]
-        assert isinstance(timeout, int | float)
-        calls.append(float(timeout))
-        raise subprocess.TimeoutExpired(cmd=args[0], timeout=timeout)
+    class DetailedProbe:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
 
-    monkeypatch.setattr("travelmovieai.editing.renderer.subprocess.run", fake_run)
+        def probe(self, path: Path) -> object:
+            del path
+            return type(
+                "Probe",
+                (),
+                {
+                    "duration_seconds": 2.0,
+                    "width": 320,
+                    "height": 240,
+                    "fps": 24.0,
+                    "metadata": {
+                        "streams": [
+                            {
+                                "codec_type": "video",
+                                "codec_name": "h264",
+                                "profile": "High",
+                                "pix_fmt": "yuv420p",
+                            },
+                            {"codec_type": "audio", "codec_name": "alac"},
+                        ]
+                    },
+                },
+            )()
 
+    monkeypatch.setattr("travelmovieai.editing.renderer.FFprobeClient", DetailedProbe)
+    clip = MontageClip(
+        asset_id=uuid4(),
+        source_path=tmp_path / "source.mp4",
+        relative_path=Path("source.mp4"),
+        media_type=MediaType.VIDEO,
+        duration_seconds=2,
+    )
+    valid_plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(width=320, height=240, fps=24),
+        clips=[clip],
+        total_duration_seconds=2,
+    )
+
+    renderer = QuickMontageRenderer()
+    assert renderer._valid_cached_segment(segment, clip, valid_plan) is True
+    wrong_size = valid_plan.model_copy(
+        update={"settings": valid_plan.settings.model_copy(update={"width": 640})}
+    )
+    assert renderer._valid_cached_segment(segment, clip, wrong_size) is False
+
+
+def test_transition_cache_rejects_lossy_h264_and_accepts_qp0_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment = tmp_path / "transition-segment.mp4"
+    segment.write_bytes(b"prepared")
+    profile = "High"
+    audio_codec = "aac"
+
+    class DetailedProbe:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def probe(self, path: Path) -> object:
+            del path
+            return type(
+                "Probe",
+                (),
+                {
+                    "duration_seconds": 2.0,
+                    "width": 320,
+                    "height": 240,
+                    "fps": 24.0,
+                    "metadata": {
+                        "streams": [
+                            {
+                                "codec_type": "video",
+                                "codec_name": "h264",
+                                "profile": profile,
+                                "pix_fmt": "yuv420p",
+                            },
+                            {"codec_type": "audio", "codec_name": audio_codec},
+                        ]
+                    },
+                },
+            )()
+
+    first = MontageClip(
+        asset_id=uuid4(),
+        source_path=tmp_path / "first.mp4",
+        relative_path=Path("first.mp4"),
+        media_type=MediaType.VIDEO,
+        duration_seconds=2,
+    )
+    second = first.model_copy(
+        update={
+            "asset_id": uuid4(),
+            "source_path": tmp_path / "second.mp4",
+            "relative_path": Path("second.mp4"),
+            "transition": "fade",
+        }
+    )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(
+            width=320,
+            height=240,
+            fps=24,
+            transition="fade",
+            transition_duration_seconds=0.25,
+        ),
+        clips=[first, second],
+        total_duration_seconds=3.75,
+    )
+    monkeypatch.setattr("travelmovieai.editing.renderer.FFprobeClient", DetailedProbe)
+    renderer = QuickMontageRenderer()
+
+    assert renderer._valid_cached_segment(segment, first, plan) is False
+    profile = "High 4:4:4 Predictive"
+    assert renderer._valid_cached_segment(segment, first, plan) is False
+    audio_codec = "alac"
+    assert renderer._valid_cached_segment(segment, first, plan) is True
+
+
+def test_full_decode_validation_uses_both_required_streams(tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+
+    class CapturingRenderer(QuickMontageRenderer):
+        def _run(self, command: list[str], message: str) -> None:
+            del message
+            commands.append(command)
+
+    movie = tmp_path / "movie.mp4"
+    CapturingRenderer()._validate_full_decode(movie)
+
+    assert commands[0][commands[0].index("-map") + 1] == "0:v:0"
+    second_map = commands[0].index("-map", commands[0].index("-map") + 1)
+    assert commands[0][second_map + 1] == "0:a:0"
+
+
+def test_renderer_reports_ffmpeg_timeout_and_stops_process_tree() -> None:
     with pytest.raises(MontageError, match="timed out after 0.25s"):
-        QuickMontageRenderer(timeout_seconds=0.25)._run(["ffmpeg"], "Could not render")
+        QuickMontageRenderer(timeout_seconds=0.25)._run(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            "Could not render",
+        )
 
-    assert calls == [0.25]
+
+def test_renderer_honors_process_cancellation() -> None:
+    with pytest.raises(MontageError, match="rendering was cancelled"):
+        QuickMontageRenderer(cancel_requested=lambda: True)._run(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            "Could not render",
+        )
+
+
+def test_renderer_progress_heartbeat_can_cancel_active_ffmpeg() -> None:
+    renderer = QuickMontageRenderer(timeout_seconds=10)
+
+    def cancel_from_progress() -> None:
+        raise MontageError("cancelled by progress callback")
+
+    renderer._heartbeat_callback = cancel_from_progress
+
+    with pytest.raises(MontageError, match="cancelled by progress callback"):
+        renderer._run(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            "Could not render",
+        )
+
+
+def test_renderer_classifies_only_confirmed_nvenc_runtime_failures() -> None:
+    command = ["ffmpeg", "-c:v", "h264_nvenc", "out.mp4"]
+
+    assert _is_nvenc_unavailable_error(command, "Cannot load nvcuda.dll") is True
+    assert (
+        _is_nvenc_unavailable_error(
+            command,
+            "Error initializing complex filters: No such file or directory",
+        )
+        is False
+    )
+
+
+def test_renderer_auto_falls_back_only_for_typed_nvenc_failure(tmp_path: Path) -> None:
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"source")
+    clip = MontageClip(
+        asset_id=uuid4(),
+        source_path=source,
+        relative_path=Path("clip.mp4"),
+        media_type=MediaType.VIDEO,
+        duration_seconds=1,
+    )
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(render_device="auto", music_enabled=False),
+        clips=[clip],
+        total_duration_seconds=1,
+    )
+
+    class StubRenderer(QuickMontageRenderer):
+        def __init__(self, failure: MontageError) -> None:
+            super().__init__()
+            self.failure = failure
+            self.calls = 0
+
+        def _select_encoder(self, render_device: str) -> str:
+            del render_device
+            return "h264_nvenc"
+
+        def _render_segments(
+            self,
+            montage_plan: QuickMontagePlan,
+            segments_dir: Path,
+            progress: object,
+            total_steps: int,
+        ) -> list[Path]:
+            del montage_plan, segments_dir, progress, total_steps
+            self.calls += 1
+            if self.calls == 1:
+                raise self.failure
+            return []
+
+        def _compose_segments(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def _validate_output(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    unavailable = StubRenderer(_NvencUnavailableError("NVENC unavailable"))
+    assert unavailable.render(plan, tmp_path / "fallback.mp4", tmp_path / "work") == "libx264"
+    assert unavailable.calls == 2
+
+    source_error = StubRenderer(MontageError("invalid source filter"))
+    with pytest.raises(MontageError, match="invalid source filter"):
+        source_error.render(plan, tmp_path / "failed.mp4", tmp_path / "other-work")
+    assert source_error.calls == 1
+
+
+def test_hard_cut_audio_mix_stream_copies_prepared_video(tmp_path: Path) -> None:
+    segments = [tmp_path / "one.mp4", tmp_path / "two.mp4"]
+    for segment in segments:
+        segment.write_bytes(b"prepared")
+    music = tmp_path / "music.wav"
+    music.write_bytes(b"music")
+    clips = [
+        MontageClip(
+            asset_id=uuid4(),
+            source_path=tmp_path / f"source-{index}.mp4",
+            relative_path=Path(f"source-{index}.mp4"),
+            media_type=MediaType.VIDEO,
+            duration_seconds=1,
+        )
+        for index in range(2)
+    ]
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(transition="none"),
+        clips=clips,
+        total_duration_seconds=2,
+        music_path=music,
+    )
+    commands: list[list[str]] = []
+    graphs: list[str] = []
+
+    class CapturingRenderer(QuickMontageRenderer):
+        def _run(self, command: list[str], message: str) -> None:
+            del message
+            commands.append(command)
+            graph_path = Path(command[command.index("-filter_complex_script") + 1])
+            graphs.append(graph_path.read_text(encoding="utf-8"))
+            Path(command[-1]).write_bytes(b"movie")
+
+    output = tmp_path / "movie.mp4"
+    CapturingRenderer()._compose_segments(segments, plan, output, tmp_path)
+
+    assert output.read_bytes() == b"movie"
+    assert commands[0][commands[0].index("-c:v") + 1] == "copy"
+    assert "h264_nvenc" not in commands[0]
+    assert "libx264" not in commands[0]
+    assert "loudnorm=I=-16.0:TP=-1.5" in graphs[0]
+    assert _build_hard_cut_audio_graph(plan) == graphs[0]
+
+    commands.clear()
+    graphs.clear()
+    plan_without_music = plan.model_copy(update={"music_path": None})
+    dry_output = tmp_path / "movie-with-source-audio-only.mp4"
+    CapturingRenderer()._compose_segments(
+        segments,
+        plan_without_music,
+        dry_output,
+        tmp_path,
+    )
+
+    assert dry_output.read_bytes() == b"movie"
+    assert commands[0][commands[0].index("-c:v") + 1] == "copy"
+    assert "volume=0.550" in graphs[0]
+    assert "loudnorm=I=-16.0:TP=-1.5" in graphs[0]
 
 
 def test_renderer_auto_uses_nvenc_when_available(
@@ -614,6 +937,149 @@ def test_service_rejects_requested_narration_when_piper_is_disabled(tmp_path: Pa
         )
 
 
+@pytest.mark.parametrize("reject_quality", [False, True], ids=["publish", "reject"])
+def test_nonsemantic_service_publishes_only_after_quality_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reject_quality: bool,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    source = media / "clip.mp4"
+    source.write_bytes(b"source")
+    workspace = tmp_path / "workspace"
+    delivery = tmp_path / "delivery.mp4"
+    delivery.write_bytes(b"previous movie")
+    service = TravelMovieService(Settings())
+    context = service._context(input_path=media, workspace=workspace)
+    context.prepare()
+    asset = _asset(
+        source,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        duration=6,
+    )
+    analysis = MediaScanReport(
+        input_path=media.resolve(),
+        scanned_at=datetime.now(UTC),
+        assets=[asset],
+        discovered_count=1,
+        probed_count=1,
+    )
+    (context.artifacts_dir / "analysis.json").write_text(
+        analysis.model_dump_json(),
+        encoding="utf-8",
+    )
+    timeline_path = context.artifacts_dir / "quick_timeline.json"
+    quality_path = context.artifacts_dir / "montage_quality_report.json"
+    timeline_path.write_bytes(b"previous timeline")
+    quality_path.write_bytes(b"previous quality report")
+    render_targets: list[Path] = []
+
+    class FakeRenderer:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def render(
+            self,
+            plan: QuickMontagePlan,
+            candidate_path: Path,
+            work_dir: Path,
+            progress: object,
+        ) -> str:
+            del plan, work_dir, progress
+            assert candidate_path.parent == delivery.parent
+            assert candidate_path != delivery
+            assert delivery.read_bytes() == b"previous movie"
+            render_targets.append(candidate_path)
+            candidate_path.write_bytes(b"validated movie")
+            return "fake-encoder"
+
+    def fake_enrich(
+        report: MontageQualityReport,
+        candidate_path: Path,
+        **kwargs: object,
+    ) -> MontageQualityReport:
+        return report.model_copy(
+            update={
+                "rendered_path": candidate_path,
+                "rendered_duration_seconds": report.planned_duration_seconds,
+                "rendered_has_video": True,
+                "rendered_has_audio": True,
+            }
+        )
+
+    def quality_gate(report: MontageQualityReport) -> None:
+        assert report.rendered_path == render_targets[0]
+        assert delivery.read_bytes() == b"previous movie"
+        assert timeline_path.read_bytes() == b"previous timeline"
+        assert quality_path.read_bytes() == b"previous quality report"
+        if reject_quality:
+            raise MontageError("simulated quality gate failure")
+
+    profile = type(
+        "Profile",
+        (),
+        {
+            "summary": "test resources",
+            "render_workers": 1,
+            "ffmpeg_threads": 1,
+        },
+    )()
+    monkeypatch.setattr(service, "get_resource_profile", lambda *, refresh=False: profile)
+    monkeypatch.setattr(service, "analyze", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "travelmovieai.application.service.ensure_render_disk_space",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr("travelmovieai.application.service.QuickMontageRenderer", FakeRenderer)
+    monkeypatch.setattr(
+        "travelmovieai.application.service.enrich_montage_quality_report_with_render",
+        fake_enrich,
+    )
+    monkeypatch.setattr(
+        "travelmovieai.application.service.enforce_montage_quality",
+        quality_gate,
+    )
+    monkeypatch.setattr(
+        "travelmovieai.application.service._record_timeline_version",
+        lambda *args, **kwargs: None,
+    )
+    settings = QuickMontageSettings(
+        target_duration_seconds=5,
+        transition="none",
+        music_enabled=False,
+        music_mode="none",
+    )
+
+    if reject_quality:
+        with pytest.raises(MontageError, match="quality gate failure"):
+            service.create_quick_montage(
+                input_path=media,
+                workspace=workspace,
+                settings=settings,
+                output_path=delivery,
+            )
+        assert delivery.read_bytes() == b"previous movie"
+        assert timeline_path.read_bytes() == b"previous timeline"
+        assert quality_path.read_bytes() == b"previous quality report"
+    else:
+        result = service.create_quick_montage(
+            input_path=media,
+            workspace=workspace,
+            settings=settings,
+            output_path=delivery,
+        )
+        quality = MontageQualityReport.model_validate_json(quality_path.read_text(encoding="utf-8"))
+        assert result.output_path == delivery
+        assert delivery.read_bytes() == b"validated movie"
+        assert QuickMontagePlan.model_validate_json(timeline_path.read_text(encoding="utf-8")).clips
+        assert quality.rendered_path == delivery
+        assert quality.render_encoder == "fake-encoder"
+
+    assert len(render_targets) == 1
+    assert not render_targets[0].exists()
+
+
 def test_renderer_rejects_output_that_overwrites_source_media(tmp_path: Path) -> None:
     source = tmp_path / "clip.mp4"
     plan = QuickMontagePlan(
@@ -696,7 +1162,7 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     music_plan = timeline["music_plan"]
     assert music_plan["generated"] is True
     assert music_plan["duration_seconds"] == pytest.approx(result.duration_seconds)
-    assert music_plan["arrangement_version"] == "adaptive-lounge-v6"
+    assert music_plan["arrangement_version"] == "adaptive-lounge-v7-content-revision"
     assert music_plan["accents"][0]["kind"] == "intro"
     assert music_plan["accents"][-1]["kind"] == "finale"
 

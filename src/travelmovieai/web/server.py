@@ -2,16 +2,27 @@
 
 import argparse
 import webbrowser
+from pathlib import Path
 from threading import Timer
 
 import uvicorn
 
 from travelmovieai.core.config import load_settings, validate_loopback_web_host
+from travelmovieai.core.logging import configure_local_logging
 from travelmovieai.web.app import create_app
 
 
 def main() -> None:
     settings = load_settings()
+    configure_local_logging(
+        settings.workspace / ".web" / "travelmovieai.log",
+        private_paths=(
+            Path.home(),
+            settings.workspace,
+            settings.model_cache,
+            settings.music_library,
+        ),
+    )
     parser = argparse.ArgumentParser(description="Run the TravelMovieAI web interface.")
     parser.add_argument(
         "--host",

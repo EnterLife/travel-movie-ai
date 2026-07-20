@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy.pool import NullPool
 
 from travelmovieai.core.exceptions import PipelineStageError
 from travelmovieai.domain.enums import ActivityType, LocationType, MediaType
@@ -39,6 +40,18 @@ def test_repository_synchronizes_updates_and_deletions(tmp_path: Path) -> None:
     assert len(assets) == 1
     assert assets[0].id == first.id
     assert assets[0].duration_seconds == 9.0
+
+
+def test_repository_does_not_retain_sqlite_connections_between_operations(
+    tmp_path: Path,
+) -> None:
+    repository = MediaAssetRepository(tmp_path / "project.db")
+
+    assert isinstance(repository._engine.pool, NullPool)
+
+    repository.initialize()
+    repository.list_assets()
+    assert "NullPool" in repository._engine.pool.status()
 
 
 def test_repository_persists_scenes_and_cascades_deleted_assets(tmp_path: Path) -> None:

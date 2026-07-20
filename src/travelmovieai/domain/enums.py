@@ -42,6 +42,7 @@ class StageStatus(StrEnum):
 
     COMPLETED = "completed"
     CACHED = "cached"
+    DEGRADED = "degraded"
     DISABLED = "disabled"
     NO_INPUT = "no_input"
 

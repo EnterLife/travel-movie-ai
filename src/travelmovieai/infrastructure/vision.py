@@ -22,10 +22,15 @@ from travelmovieai.domain.enums import (
     PersonGroup,
     StoryStyle,
 )
-from travelmovieai.domain.models import SceneUnderstanding, VisionScoreFactors
+from travelmovieai.domain.models import (
+    SceneUnderstanding,
+    TemporalHighlightWindow,
+    VisionScoreFactors,
+)
 from travelmovieai.infrastructure.model_pool import BoundedModelPool, ModelLease, ModelPoolStats
 
-PROMPT_VERSION = "scene-understanding-v5-focus-point"
+PROMPT_VERSION = "scene-understanding-v6-temporal-highlights"
+PARSER_VERSION = "scene-understanding-parser-v3-temporal"
 LOCAL_QWEN_MODELS = (
     "Qwen/Qwen2.5-VL-3B-Instruct",
     "Qwen/Qwen2.5-VL-7B-Instruct",
@@ -47,7 +52,9 @@ people_count, people_groups (none|adults|children|family|group|solo|mixed),
 landmarks [{name, confidence 0-1, evidence}],
 vision_score 0-100,
 score_factors {uniqueness, people, emotion, visual_quality, landmark,
-unusual_event}, story_relevance, tags.
+unusual_event}, story_relevance, tags,
+highlight_windows [{relative_start, relative_end, relative_position, confidence,
+label}] (0-1 normalized chronology; return up to 3 only for clearly visible moments).
 """.strip()
 
 
@@ -105,6 +112,16 @@ class LocalQwenVisionProvider:
         placement = ", GPU + RAM offload" if self.use_cpu_offload else ""
         return f"{device}, {precision}{placement}"
 
+    def cache_identity(self) -> dict[str, object]:
+        return {
+            "provider": self.name,
+            "model": self.model,
+            "device": self.device,
+            "quantize_4bit": self.quantize_4bit,
+            "use_cpu_offload": self.use_cpu_offload,
+            "batch_size": self.batch_size,
+        }
+
     def prepare(self) -> None:
         self._ensure_loaded()
 
@@ -133,8 +150,10 @@ class LocalQwenVisionProvider:
             "visible evidence. Do not identify unknown people or invent landmarks. "
             "A landmark requires visible architectural or textual evidence. "
             f"Evaluate this scene for a {style.value} travel movie. The contact "
-            "sheet contains chronological frames from one scene (start, middle, "
-            "end), so describe meaningful changes across them. Return only compact "
+            "sheet contains 3, 5, or 9 chronological frames in row-major order "
+            "from earliest to latest. Describe meaningful changes and identify up "
+            "to three strongest visible moments as normalized temporal windows. "
+            "Return only compact "
             "valid JSON without markdown. people_groups and landmarks must be arrays. "
             "vision_score must be one number. story_relevance must be text. "
             "Use 0-100 for vision_score and every score factor. Set visual_quality "
@@ -147,7 +166,7 @@ class LocalQwenVisionProvider:
                 with Image.open(image_path) as source:
                     image = source.convert("RGB")
                 images.append(image)
-            contents = self._generate_contents(images, prompt, max_new_tokens=320)
+            contents = self._generate_contents(images, prompt, max_new_tokens=400)
             results = []
             for image, content in zip(images, contents, strict=True):
                 try:
@@ -160,7 +179,7 @@ class LocalQwenVisionProvider:
                     retry = self._generate_contents(
                         [image],
                         retry_prompt,
-                        max_new_tokens=480,
+                        max_new_tokens=560,
                     )[0]
                     results.append(_parse_local_qwen_understanding(retry))
             return results
@@ -435,6 +454,16 @@ class Florence2VisionProvider:
         caption = str(parsed.get(task, generated)).strip()
         return _understanding_from_caption(caption, style)
 
+    def prepare(self) -> None:
+        self._ensure_loaded()
+
+    def cache_identity(self) -> dict[str, object]:
+        return {
+            "provider": self.name,
+            "model": self.model,
+            "device": self.device,
+        }
+
     def release(self) -> None:
         lease = self._runtime_lease
         self._runtime_lease = None
@@ -622,6 +651,54 @@ def build_vision_provider(
     )
 
 
+def resolve_vision_provider_identity(
+    *,
+    provider: str,
+    model: str | None,
+    device: str,
+    gpu_memory_mb: int | None,
+    system_memory_mb: int | None,
+    model_batch_size: int,
+) -> dict[str, object]:
+    """Resolve output-affecting provider settings without loading a model."""
+
+    configured_model = model or "auto"
+    if provider == "florence":
+        return {
+            "provider": "florence-2",
+            "model": (
+                configured_model if configured_model != "auto" else "microsoft/Florence-2-large"
+            ),
+            "device": device,
+        }
+    resolved_model = resolve_local_vision_model(
+        configured_model,
+        gpu_memory_mb=gpu_memory_mb,
+        system_memory_mb=system_memory_mb,
+    )
+    model_size = _model_size_billions(resolved_model)
+    gpu_memory = gpu_memory_mb or 0
+    quantize_4bit = (
+        device in {"auto", "cuda"} and gpu_memory > 0 and gpu_memory < model_size * 2048 + 1536
+    )
+    use_cpu_offload = quantize_4bit and model_size >= 7 and gpu_memory < model_size * 768 + 1536
+    batch_size = (
+        1
+        if model_size >= 7
+        else min(2, model_batch_size)
+        if gpu_memory < 10 * 1024
+        else model_batch_size
+    )
+    return {
+        "provider": "local-qwen",
+        "model": resolved_model,
+        "device": device,
+        "quantize_4bit": quantize_4bit,
+        "use_cpu_offload": use_cpu_offload,
+        "batch_size": max(1, batch_size),
+    }
+
+
 def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
     normalized_content = _extract_json(_strip_json_fence(content))
     try:
@@ -679,6 +756,7 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
     if not isinstance(tags, list):
         tags = []
     focus_x, focus_y, focus_source = _normalized_focus(payload)
+    highlight_windows = _normalized_highlight_windows(payload.get("highlight_windows"))
 
     payload.update(
         {
@@ -780,6 +858,7 @@ def _parse_local_qwen_understanding(content: str) -> SceneUnderstanding:
             "score_factors": normalized_factors,
             "story_relevance": str(relevance)[:500],
             "tags": [str(tag)[:100] for tag in tags[:20]],
+            "highlight_windows": highlight_windows,
         }
     )
     return SceneUnderstanding.model_validate(payload)
@@ -799,6 +878,62 @@ def _normalized_focus(payload: dict[str, Any]) -> tuple[float | None, float | No
     if x is None or y is None or not source:
         return None, None, None
     return x, y, source
+
+
+def _normalized_highlight_windows(value: Any) -> list[TemporalHighlightWindow]:
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    windows: list[TemporalHighlightWindow] = []
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        start = _unit_coordinate(item.get("relative_start", item.get("start")))
+        end = _unit_coordinate(item.get("relative_end", item.get("end")))
+        position = _unit_coordinate(item.get("relative_position", item.get("position")))
+        if position is None and start is not None and end is not None and end > start:
+            position = (start + end) / 2
+        if position is None:
+            continue
+        if start is None or end is None:
+            start = max(0.0, position - 0.1)
+            end = min(1.0, position + 0.1)
+            if start == end:
+                start, end = (0.0, 0.1) if position <= 0 else (0.9, 1.0)
+        confidence = _normalized_confidence(item.get("confidence"))
+        raw_score = item.get("score")
+        score = _score(raw_score, confidence * 100) if raw_score is not None else None
+        try:
+            windows.append(
+                TemporalHighlightWindow(
+                    relative_start=start,
+                    relative_end=end,
+                    relative_position=position,
+                    confidence=confidence,
+                    source="vision",
+                    score=score,
+                    label=str(item.get("label") or item.get("description") or "")[:200],
+                )
+            )
+        except ValidationError:
+            continue
+    strongest = sorted(
+        windows,
+        key=lambda window: (window.score or window.confidence * 100, window.confidence),
+        reverse=True,
+    )[:3]
+    return sorted(strongest, key=lambda window: window.relative_position)
+
+
+def _normalized_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.65
+    if 1 < confidence <= 100:
+        confidence /= 100
+    return min(1.0, max(0.0, confidence))
 
 
 def _unit_coordinate(value: Any) -> float | None:

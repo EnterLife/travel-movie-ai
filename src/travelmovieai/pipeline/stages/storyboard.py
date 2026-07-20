@@ -5,7 +5,12 @@ from pathlib import Path
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.exceptions import DependencyUnavailableError, StoryGenerationError
 from travelmovieai.domain.enums import PipelineStage, StageStatus
-from travelmovieai.domain.models import Scene, StageResult, Storyboard
+from travelmovieai.domain.models import (
+    Scene,
+    StageExecutionMetadata,
+    StageResult,
+    Storyboard,
+)
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
     stage_cache_manifest_matches,
@@ -18,7 +23,15 @@ from travelmovieai.pipeline.base import Stage
 from travelmovieai.story.builder import build_storyboard
 from travelmovieai.story.optimizer import apply_story_structure
 
-ARTIFACT_SCHEMA_VERSION = "story-builder-v2"
+ARTIFACT_SCHEMA_VERSION = "story-builder-v3-balanced-sections"
+_STORY_METADATA_KEYS = frozenset(
+    {
+        "story_role_order",
+        "story_section_index",
+        "story_section_role",
+        "story_section_title",
+    }
+)
 
 
 class StoryBuilderStage(Stage):
@@ -50,19 +63,34 @@ class StoryBuilderStage(Stage):
             provider_config,
             ARTIFACT_SCHEMA_VERSION,
         )
-        if stage_cache_manifest_matches(
-            cache_artifact,
-            stage=self.name,
-            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            input_fingerprint=input_fingerprint,
-            config_fingerprint=config_fingerprint,
-            artifacts=[artifact],
-        ) and _cached_storyboard_valid(artifact, scenes):
+        cached_storyboard = _read_storyboard(artifact)
+        if (
+            stage_cache_manifest_matches(
+                cache_artifact,
+                stage=self.name,
+                artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+                input_fingerprint=input_fingerprint,
+                config_fingerprint=config_fingerprint,
+                artifacts=[artifact],
+            )
+            and cached_storyboard is not None
+            and _storyboard_cache_valid(
+                cached_storyboard,
+                scenes,
+            )
+        ):
+            restored_scenes = _apply_storyboard_state(scenes, cached_storyboard)
+            if restored_scenes != scenes:
+                repository.synchronize_scenes(restored_scenes)
             return StageResult(
                 stage=self.name,
                 status=StageStatus.CACHED,
                 artifacts=[context.database_path, artifact, cache_artifact],
                 message="Story builder reused cached story structure.",
+                execution=StageExecutionMetadata(
+                    provider=cached_storyboard.provider,
+                    model=cached_storyboard.model,
+                ),
             )
         fallback_used = False
         if provider_name == "local" and events:
@@ -93,7 +121,7 @@ class StoryBuilderStage(Stage):
                 context.progress(1, 1, "Story model: complete")
         else:
             storyboard = build_storyboard(events, scenes, context.style)
-        scenes = apply_story_structure(scenes, storyboard)
+        scenes = _apply_storyboard_state(scenes, storyboard)
         repository.synchronize_scenes(scenes)
         write_json_atomic(artifact, storyboard)
         if fallback_used:
@@ -112,7 +140,13 @@ class StoryBuilderStage(Stage):
             artifacts.append(cache_artifact)
         return StageResult(
             stage=self.name,
-            status=StageStatus.COMPLETED if storyboard.sections else StageStatus.NO_INPUT,
+            status=(
+                StageStatus.DEGRADED
+                if fallback_used
+                else StageStatus.COMPLETED
+                if storyboard.sections
+                else StageStatus.NO_INPUT
+            ),
             artifacts=artifacts,
             message=(
                 f"Story builder created {len(storyboard.sections)} section(s)"
@@ -122,19 +156,52 @@ class StoryBuilderStage(Stage):
                     else f" using {storyboard.provider}."
                 )
             ),
+            execution=StageExecutionMetadata(
+                fallback_count=int(fallback_used),
+                provider=storyboard.provider,
+                fallback_provider="deterministic" if fallback_used else None,
+                model=storyboard.model,
+            ),
         )
 
 
 def _cached_storyboard_valid(path: Path, scenes: list[Scene]) -> bool:
+    storyboard = _read_storyboard(path)
+    return storyboard is not None and _storyboard_cache_valid(storyboard, scenes)
+
+
+def _read_storyboard(path: Path) -> Storyboard | None:
     try:
-        storyboard = Storyboard.model_validate_json(path.read_text(encoding="utf-8"))
+        return Storyboard.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
+        return None
+
+
+def _storyboard_cache_valid(storyboard: Storyboard, scenes: list[Scene]) -> bool:
     if storyboard.fallback_used:
         return False
     if not storyboard.sections:
         return not scenes
-    return all(scene.metadata.get("story_section_role") for scene in scenes)
+    referenced_scene_ids = {
+        scene_id for section in storyboard.sections for scene_id in section.scene_ids
+    }
+    return {scene.id for scene in scenes}.issubset(referenced_scene_ids)
+
+
+def _apply_storyboard_state(scenes: list[Scene], storyboard: Storyboard) -> list[Scene]:
+    cleaned = [
+        scene.model_copy(
+            update={
+                "metadata": {
+                    key: value
+                    for key, value in scene.metadata.items()
+                    if key not in _STORY_METADATA_KEYS
+                }
+            }
+        )
+        for scene in scenes
+    ]
+    return apply_story_structure(cleaned, storyboard)
 
 
 def _story_scene_inputs(

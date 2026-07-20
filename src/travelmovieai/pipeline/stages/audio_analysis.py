@@ -16,7 +16,7 @@ from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
 from travelmovieai.pipeline.state import AUDIO_STATE, clear_stage_owned_state
 
-ARTIFACT_SCHEMA_VERSION = "audio-analysis-v2"
+ARTIFACT_SCHEMA_VERSION = "audio-analysis-v3"
 
 
 class AudioAnalysisStage(Stage):
@@ -31,50 +31,52 @@ class AudioAnalysisStage(Stage):
                 message="Audio analysis disabled by montage settings.",
             )
 
-        repository = MediaAssetRepository(context.database_path)
-        repository.initialize()
-        scenes = repository.list_scenes()
-        assets = repository.list_assets()
-        artifact = context.artifacts_dir / "audio_analysis.json"
-        cache_artifact = context.artifacts_dir / "audio_analysis.cache.json"
-        if not _has_eligible_audio_scene(scenes, assets):
-            clear_stage_owned_state(context, AUDIO_STATE)
-            return StageResult(
-                stage=self.name,
-                status=StageStatus.NO_INPUT,
-                message="Audio analysis needs a video scene with an audio stream.",
+        with MediaAssetRepository(context.database_path) as repository:
+            repository.initialize()
+            scenes = repository.list_scenes()
+            assets = repository.list_assets()
+            artifact = context.artifacts_dir / "audio_analysis.json"
+            cache_artifact = context.artifacts_dir / "audio_analysis.cache.json"
+            if not _has_eligible_audio_scene(scenes, assets):
+                clear_stage_owned_state(context, AUDIO_STATE)
+                return StageResult(
+                    stage=self.name,
+                    status=StageStatus.NO_INPUT,
+                    message="Audio analysis needs a video scene with an audio stream.",
+                )
+            input_fingerprint = artifact_fingerprint(
+                _audio_scene_inputs(scenes), _asset_inputs(assets)
             )
-        input_fingerprint = artifact_fingerprint(_audio_scene_inputs(scenes), _asset_inputs(assets))
-        config_fingerprint = artifact_fingerprint(
-            {
-                "ffmpeg_binary": context.settings.ffmpeg_binary,
-                "timeout_seconds": context.settings.frame_extraction_timeout_seconds,
-                "schema": ARTIFACT_SCHEMA_VERSION,
-            }
-        )
-        if stage_cache_manifest_matches(
-            cache_artifact,
-            stage=self.name,
-            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            input_fingerprint=input_fingerprint,
-            config_fingerprint=config_fingerprint,
-            artifacts=[artifact],
-        ) and _cached_audio_analysis_valid(artifact, scenes):
-            return StageResult(
-                stage=self.name,
-                status=StageStatus.CACHED,
-                artifacts=[context.database_path, artifact, cache_artifact],
-                message="Audio analysis reused cached scene audio metadata.",
+            config_fingerprint = artifact_fingerprint(
+                {
+                    "ffmpeg_binary": context.settings.ffmpeg_binary,
+                    "timeout_seconds": context.settings.frame_extraction_timeout_seconds,
+                    "schema": ARTIFACT_SCHEMA_VERSION,
+                }
             )
+            if stage_cache_manifest_matches(
+                cache_artifact,
+                stage=self.name,
+                artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+                input_fingerprint=input_fingerprint,
+                config_fingerprint=config_fingerprint,
+                artifacts=[artifact],
+            ) and _cached_audio_analysis_valid(artifact, scenes):
+                return StageResult(
+                    stage=self.name,
+                    status=StageStatus.CACHED,
+                    artifacts=[context.database_path, artifact, cache_artifact],
+                    message="Audio analysis reused cached scene audio metadata.",
+                )
 
-        report = analyze_audio(
-            scenes,
-            assets,
-            context.settings.ffmpeg_binary,
-            timeout_seconds=context.settings.frame_extraction_timeout_seconds,
-            progress=context.progress,
-        )
-        repository.synchronize_scenes(report.scenes)
+            report = analyze_audio(
+                scenes,
+                assets,
+                context.settings.ffmpeg_binary,
+                timeout_seconds=context.settings.frame_extraction_timeout_seconds,
+                progress=context.progress,
+            )
+            repository.synchronize_scenes(report.scenes)
         write_json_atomic(artifact, report)
         write_stage_cache_manifest(
             cache_artifact,

@@ -188,7 +188,17 @@ def test_story_builder_stage_uses_local_provider_and_reuses_cache(
     )
 
     assert first.status is StageStatus.COMPLETED
+    assert first.cache_hit is False
+    assert first.execution.provider == "local-transformers"
+    assert first.execution.model == "local-test-model"
+    assert first.execution.fallback_count == 0
+    assert first.execution.fallback_provider is None
     assert second.status is StageStatus.CACHED
+    assert second.cache_hit is True
+    assert second.execution.provider == "local-transformers"
+    assert second.execution.model == "local-test-model"
+    assert second.execution.fallback_count == 0
+    assert second.execution.fallback_provider is None
     assert storyboard.provider == "local-transformers"
     assert storyboard.fallback_used is False
     assert factory_calls == 1
@@ -220,6 +230,8 @@ def test_story_builder_cache_invalidates_when_local_provider_is_enabled(
     changed = StoryBuilderStage().run(local_context)
 
     assert first.status is StageStatus.COMPLETED
+    assert first.execution.provider == "deterministic"
+    assert first.execution.model is None
     assert changed.status is StageStatus.COMPLETED
     assert provider.build_calls == 1
     assert "local-transformers" in changed.message
@@ -282,8 +294,18 @@ def test_story_builder_falls_back_without_poisoning_local_cache(
         (context.artifacts_dir / "storyboard.json").read_text(encoding="utf-8")
     )
 
-    assert first.status is StageStatus.COMPLETED
-    assert second.status is StageStatus.COMPLETED
+    assert first.status is StageStatus.DEGRADED
+    assert first.cache_hit is False
+    assert first.execution.fallback_count == 1
+    assert first.execution.provider == "local-transformers"
+    assert first.execution.fallback_provider == "deterministic"
+    assert first.execution.model == "local-test-model"
+    assert second.status is StageStatus.DEGRADED
+    assert second.cache_hit is False
+    assert second.execution.fallback_count == 1
+    assert second.execution.provider == "local-transformers"
+    assert second.execution.fallback_provider == "deterministic"
+    assert second.execution.model == "local-test-model"
     assert storyboard.fallback_used is True
     assert storyboard.provider == "local-transformers"
     assert "will be retried" in first.message

@@ -12,6 +12,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
+from travelmovieai.application.workspace_lease import (
+    WORKSPACE_LEASE_FILENAME,
+    WORKSPACE_LEASE_METADATA_FILENAME,
+)
 from travelmovieai.core.exceptions import WorkspaceIdentityError
 from travelmovieai.domain.models import MediaScanReport
 
@@ -69,7 +73,12 @@ def validate_existing_workspace_identity(input_path: Path, workspace: Path) -> N
             raise WorkspaceIdentityError("Workspace is already bound to a different source folder.")
         return
     try:
-        has_entries = next(resolved_workspace.iterdir(), None) is not None
+        lease_files = {WORKSPACE_LEASE_FILENAME, WORKSPACE_LEASE_METADATA_FILENAME}
+        has_entries = any(
+            entry.name not in lease_files
+            and not entry.name.startswith(f"{WORKSPACE_LEASE_METADATA_FILENAME}.")
+            for entry in resolved_workspace.iterdir()
+        )
     except OSError as error:
         raise WorkspaceIdentityError("Could not inspect the workspace identity.") from error
     if has_entries and not _legacy_analysis_matches(resolved_workspace, input_path):

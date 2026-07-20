@@ -91,6 +91,9 @@ def test_project_report_is_local_self_contained_and_escapes_private_text(tmp_pat
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
     assert "Sea &amp; sky" in rendered
     assert "Best &lt;opening&gt; &amp; stable shot" in rendered
+    assert "Quality gate" in rendered
+    assert "Semantic p10" in rendered
+    assert "Full media QA" in rendered
     assert "<script>alert(1)</script>" not in rendered
     assert "https://" not in rendered
 

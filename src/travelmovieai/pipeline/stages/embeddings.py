@@ -13,6 +13,7 @@ from travelmovieai.domain.models import (
     EmbeddingAnalysisReport,
     Scene,
     SemanticIndexManifest,
+    StageExecutionMetadata,
     StageResult,
 )
 from travelmovieai.infrastructure.artifacts import (
@@ -29,7 +30,7 @@ from travelmovieai.infrastructure.embeddings import (
 from travelmovieai.infrastructure.semantic_index import build_semantic_index
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "embeddings-v2"
+ARTIFACT_SCHEMA_VERSION = "embeddings-v3-artifact-vectors"
 EmbeddingProviderFactory = Callable[[ProjectContext], TextEmbeddingProvider]
 
 
@@ -98,11 +99,15 @@ class EmbeddingsStage(Stage):
                 or _cached_index_valid(index_manifest, index_artifact, artifact, scenes)
             )
         ):
+            cleaned_scenes = _without_persisted_vectors(scenes)
+            if cleaned_scenes != scenes:
+                repository.synchronize_scenes(cleaned_scenes)
             return StageResult(
                 stage=self.name,
                 status=StageStatus.CACHED,
                 artifacts=[context.database_path, *expected_artifacts, cache_artifact],
                 message="Embeddings reused cached semantic features and index.",
+                execution=StageExecutionMetadata(provider=backend, model=model),
             )
 
         provider = (
@@ -117,7 +122,7 @@ class EmbeddingsStage(Stage):
                 provider.release()
         if context.progress is not None:
             context.progress(1, 2, "Embeddings: updating the local archive")
-        repository.synchronize_scenes(updated)
+        repository.synchronize_scenes(_without_persisted_vectors(updated))
         if index_enabled:
             manifest = build_semantic_index(
                 report,
@@ -150,6 +155,10 @@ class EmbeddingsStage(Stage):
             message=(
                 f"Embeddings prepared {len(report.embeddings)} semantic vector(s); "
                 f"FAISS index={'enabled' if index_enabled else 'disabled'}."
+            ),
+            execution=StageExecutionMetadata(
+                provider=report.backend,
+                model=report.model,
             ),
         )
 
@@ -238,6 +247,15 @@ def _embedding_inputs(scenes: list[Scene]) -> list[dict[str, object]]:
         }
         for scene in sorted(scenes, key=lambda item: str(item.id))
     ]
+
+
+def _without_persisted_vectors(scenes: list[Scene]) -> list[Scene]:
+    cleaned: list[Scene] = []
+    for scene in scenes:
+        metadata = dict(scene.metadata)
+        metadata.pop("semantic_embedding", None)
+        cleaned.append(scene.model_copy(update={"metadata": metadata}))
+    return cleaned
 
 
 def _index_enabled(mode: str) -> bool:

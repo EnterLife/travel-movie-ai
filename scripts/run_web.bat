@@ -12,21 +12,13 @@ if not exist "%PYTHON_EXE%" (
 )
 
 if not defined NEED_SETUP (
-  "%PYTHON_EXE%" -c "import accelerate, bitsandbytes, json_repair, travelmovieai, fastapi, uvicorn, cv2, scenedetect, torch, transformers" >nul 2>&1
+  "%PYTHON_EXE%" -c "import travelmovieai, fastapi, uvicorn, cv2, scenedetect" >nul 2>&1
   if errorlevel 1 set "NEED_SETUP=1"
 )
 
-if not defined NEED_SETUP (
-  where nvidia-smi >nul 2>&1
-  if not errorlevel 1 (
-    "%PYTHON_EXE%" -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
-    if errorlevel 1 set "NEED_SETUP=1"
-  )
-)
-
 if defined NEED_SETUP (
-  echo The virtual environment is incomplete or lacks local AI support. Running setup...
-  call scripts\setup_windows.bat --runtime-only
+  echo The base web and CPU video environment is incomplete. Running setup...
+  call scripts\setup_windows.bat --base-only --non-interactive
   if errorlevel 1 goto :error
 )
 

@@ -132,14 +132,14 @@ def check_cuda(ffmpeg_binary: str = "ffmpeg") -> CudaStatus:
     try:
         cv2 = importlib.import_module("cv2")
         opencv_devices = int(cv2.cuda.getCudaEnabledDeviceCount())
-    except (ImportError, AttributeError, RuntimeError):
+    except (ImportError, AttributeError, OSError, RuntimeError):
         pass
 
     try:
         torch = importlib.import_module("torch")
         torch_version = str(torch.__version__)
         torch_cuda = bool(torch.cuda.is_available())
-    except (ImportError, AttributeError, RuntimeError):
+    except (ImportError, AttributeError, OSError, RuntimeError):
         pass
 
     note = None
@@ -226,22 +226,18 @@ def detect_resource_profile(
         (resolved_cuda.free_memory_mb if resolved_cuda.free_memory_mb is not None else gpu_memory)
         - gpu_memory_reserve_mb,
     )
-    automatic_batch = (
-        8
-        if usable_gpu_memory >= 14 * 1024
-        else 4
-        if usable_gpu_memory >= 8 * 1024
-        else 2
-        if usable_gpu_memory >= 4 * 1024
-        else max(1, min(4, logical_cores // 4))
-        if not resolved_cuda.available
-        else 1
-    )
-    model_batch_size = (
-        min(batch_override, automatic_batch)
-        if batch_override and resolved_cuda.available
-        else batch_override or automatic_batch
-    )
+    automatic_batch = max(1, min(4, logical_cores // 4))
+    if resolved_device == "cuda":
+        automatic_batch = (
+            8
+            if usable_gpu_memory >= 14 * 1024
+            else 4
+            if usable_gpu_memory >= 8 * 1024
+            else 2
+            if usable_gpu_memory >= 4 * 1024
+            else 1
+        )
+    model_batch_size = min(batch_override, automatic_batch) if batch_override else automatic_batch
     accelerator = (
         f"{resolved_cuda.gpu_name}, NVENC"
         if resolved_cuda.available and resolved_cuda.ffmpeg_nvenc
@@ -363,4 +359,31 @@ def _ffmpeg_has_nvenc(ffmpeg_binary: str) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return completed.returncode == 0 and "h264_nvenc" in completed.stdout
+    if completed.returncode != 0 or "h264_nvenc" not in completed.stdout:
+        return False
+    try:
+        functional = subprocess.run(
+            [
+                resolved,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=16x16:rate=1:duration=0.1",
+                "-frames:v",
+                "1",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=12,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return functional.returncode == 0

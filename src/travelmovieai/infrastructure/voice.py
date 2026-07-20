@@ -2,13 +2,20 @@
 
 import os
 import subprocess
+import time
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from travelmovieai.core.exceptions import DependencyUnavailableError, PipelineStageError
 from travelmovieai.core.security import sanitize_process_error
+from travelmovieai.infrastructure.processes import (
+    release_process_resources,
+    start_process,
+    terminate_process_tree,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +48,13 @@ class PiperVoiceProvider:
     def model(self) -> str:
         return self.model_path.name
 
-    def synthesize(self, text: str, output_path: Path) -> SynthesizedVoice:
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        *,
+        heartbeat: Callable[[], bool] | None = None,
+    ) -> SynthesizedVoice:
         normalized_text = " ".join(text.split())
         if not normalized_text:
             raise PipelineStageError("Voice synthesis needs non-empty narration text.")
@@ -62,36 +75,64 @@ class PiperVoiceProvider:
             "--output_file",
             str(temporary_output),
         ]
+        process: subprocess.Popen[str] | None = None
         try:
-            completed = subprocess.run(
+            process = start_process(
                 command,
-                input=normalized_text,
-                capture_output=True,
-                check=False,
+                popen_factory=subprocess.Popen,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.timeout_seconds,
+                text=True,
             )
         except FileNotFoundError as error:
+            temporary_output.unlink(missing_ok=True)
             raise DependencyUnavailableError(
                 f"Piper executable was not found: {self.executable}"
             ) from error
-        except subprocess.TimeoutExpired as error:
-            raise PipelineStageError(
-                f"Piper voice synthesis timed out after {self.timeout_seconds:g}s."
-            ) from error
+        except OSError as error:
+            temporary_output.unlink(missing_ok=True)
+            raise DependencyUnavailableError("The Piper process could not be started.") from error
 
+        stderr = ""
+        process_input: str | None = normalized_text
+        deadline = time.monotonic() + self.timeout_seconds
         try:
-            if completed.returncode != 0:
+            while True:
+                if heartbeat is not None and heartbeat():
+                    raise PipelineStageError(
+                        "Piper voice synthesis was cancelled; the process tree was stopped."
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PipelineStageError(
+                        f"Piper voice synthesis timed out after {self.timeout_seconds:g}s; "
+                        "the process tree was stopped."
+                    )
+                try:
+                    _, stderr = process.communicate(
+                        input=process_input,
+                        timeout=min(0.2, remaining),
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    process_input = None
+            if process.returncode != 0:
                 detail = sanitize_process_error(
-                    completed.stderr,
+                    stderr,
                     private_paths=[self.model_path, temporary_output],
                     fallback="unknown local Piper error",
                 )
                 raise PipelineStageError(f"Piper voice synthesis failed: {detail}")
             duration, sample_rate, channels = _probe_wave(temporary_output)
             os.replace(temporary_output, resolved_output)
+        except BaseException:
+            terminate_process_tree(process)
+            raise
         finally:
+            release_process_resources(process)
             temporary_output.unlink(missing_ok=True)
 
         return SynthesizedVoice(

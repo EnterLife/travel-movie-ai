@@ -54,37 +54,38 @@ def clear_stage_owned_state(context: ProjectContext, ownership: StageOwnedState)
     for name in ownership.artifact_names:
         (context.artifacts_dir / name).unlink(missing_ok=True)
 
-    repository = MediaAssetRepository(context.database_path)
-    repository.initialize()
-    scenes = repository.list_scenes()
-    updated = []
-    changed = False
-    owned_window_sources = set(ownership.candidate_window_sources)
-    for scene in scenes:
-        metadata = dict(scene.metadata)
-        for key in ownership.metadata_keys:
-            metadata.pop(key, None)
-        if owned_window_sources:
-            windows = metadata.get("candidate_windows")
-            if isinstance(windows, list):
-                retained = [
-                    window
-                    for window in windows
-                    if not (
-                        isinstance(window, dict) and window.get("source") in owned_window_sources
-                    )
-                ]
-                if retained:
-                    metadata["candidate_windows"] = retained
-                else:
-                    metadata.pop("candidate_windows", None)
-        replacements: dict[str, object] = {"metadata": metadata}
-        if ownership.clear_quality_score:
-            replacements["quality_score"] = None
-        if ownership.clear_transcript:
-            replacements["transcript"] = None
-        cleaned = scene.model_copy(update=replacements)
-        changed = changed or cleaned != scene
-        updated.append(cleaned)
-    if changed:
-        repository.synchronize_scenes(updated)
+    with MediaAssetRepository(context.database_path) as repository:
+        repository.initialize()
+        scenes = repository.list_scenes()
+        updated = []
+        changed = False
+        owned_window_sources = set(ownership.candidate_window_sources)
+        for scene in scenes:
+            metadata = dict(scene.metadata)
+            for key in ownership.metadata_keys:
+                metadata.pop(key, None)
+            if owned_window_sources:
+                windows = metadata.get("candidate_windows")
+                if isinstance(windows, list):
+                    retained = [
+                        window
+                        for window in windows
+                        if not (
+                            isinstance(window, dict)
+                            and window.get("source") in owned_window_sources
+                        )
+                    ]
+                    if retained:
+                        metadata["candidate_windows"] = retained
+                    else:
+                        metadata.pop("candidate_windows", None)
+            replacements: dict[str, object] = {"metadata": metadata}
+            if ownership.clear_quality_score:
+                replacements["quality_score"] = None
+            if ownership.clear_transcript:
+                replacements["transcript"] = None
+            cleaned = scene.model_copy(update=replacements)
+            changed = changed or cleaned != scene
+            updated.append(cleaned)
+        if changed:
+            repository.synchronize_scenes(updated)

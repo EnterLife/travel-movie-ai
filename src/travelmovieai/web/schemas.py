@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from travelmovieai.application.variants import validate_variant_name
+from travelmovieai.domain.enums import PipelineStage
 from travelmovieai.domain.manual_editing import (
     EditableEvent,
     EditableScene,
@@ -52,6 +53,10 @@ class ScanJobResponse(BaseModel):
     finished_at: datetime | None = None
     message: str = ""
     error: str | None = None
+    progress_current: int = Field(default=0, ge=0)
+    progress_total: int = Field(default=0, ge=0)
+    progress_percent: float = Field(default=0, ge=0, le=100)
+    persistence_degraded: bool = False
 
 
 class ScanJobHistory(BaseModel):
@@ -187,6 +192,7 @@ class MovieJobResponse(BaseModel):
     message: str = ""
     error: str | None = None
     phase: str = "queued"
+    pipeline_stage: PipelineStage | None = None
     progress_current: int = 0
     progress_total: int = 0
     progress_percent: float = Field(default=0, ge=0, le=100)
@@ -208,6 +214,13 @@ class MovieJobResponse(BaseModel):
     music_model: str | None = None
     quality_score: float | None = Field(default=None, ge=0, le=100)
     quality_issue_count: int = Field(default=0, ge=0)
+    quality_gate_status: Literal["passed", "degraded", "failed"] | None = None
+    semantic_score_p10: float | None = Field(default=None, ge=0, le=100)
+    dominant_event_ratio: float | None = Field(default=None, ge=0, le=1)
+    adjacent_source_repeat_ratio: float | None = Field(default=None, ge=0, le=1)
+    center_cut_ratio: float | None = Field(default=None, ge=0, le=1)
+    full_media_qa_completed: bool = False
+    persistence_degraded: bool = False
 
 
 class MovieJobHistory(BaseModel):
@@ -235,11 +248,13 @@ class MovieJobState(BaseModel):
     progress_current: int = Field(default=0, ge=0)
     progress_total: int = Field(default=0, ge=0)
     phase: str = "queued"
+    pipeline_stage: PipelineStage | None = None
     resources: ResourceProfileResponse | None = None
     subtasks: list[JobSubtaskProgress] = Field(default_factory=list)
     logs: list[JobLogEntry] = Field(default_factory=list)
     result: QuickMontageResult | None = None
     paused_seconds: float = Field(default=0, ge=0)
+    persistence_degraded: bool = False
 
 
 class MovieJobStateHistory(BaseModel):

@@ -38,6 +38,8 @@ def test_project_archive_round_trip_excludes_large_media_by_default(tmp_path: Pa
     assert (restored / "artifacts" / "analysis.json").read_text(encoding="utf-8") == (
         '{"count": 1}'
     )
+    assert not (restored / ".travelmovieai.lock").exists()
+    assert not (restored / ".travelmovieai.lock.json").exists()
     assert not (restored / "artifacts" / "final.mp4").exists()
     with zipfile.ZipFile(archive_path) as archive:
         assert WORKSPACE_IDENTITY_FILENAME in archive.namelist()

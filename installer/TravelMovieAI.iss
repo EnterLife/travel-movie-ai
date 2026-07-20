@@ -14,6 +14,7 @@ AppId={{9BA2E17B-81F3-49C1-B099-B4046A22230E}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=TravelMovieAI
+AppMutex=TravelMovieAI-9BA2E17B-81F3-49C1-B099-B4046A22230E
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

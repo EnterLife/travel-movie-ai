@@ -1,8 +1,10 @@
 """Scene detection and representative frame sampling."""
 
 import hashlib
+import hmac
 import importlib
 import json
+import math
 import os
 import subprocess
 from collections.abc import Sequence
@@ -10,6 +12,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+from PIL import Image
 
 from travelmovieai.core.exceptions import (
     DependencyUnavailableError,
@@ -22,7 +26,10 @@ from travelmovieai.domain.models import MediaAsset, QuickMontageSettings, Scene
 from travelmovieai.infrastructure.ffmpeg import FFprobeClient
 
 _SCENE_ID_NAMESPACE = uuid5(NAMESPACE_URL, "https://travelmovieai.local/scene/v1")
-_SCENE_IDENTITY_VERSION = "deterministic-scene-id-v2-proxy-aware"
+_SCENE_IDENTITY_VERSION = "deterministic-scene-id-v3-start-in-scene"
+CONTACT_SHEET_SCHEMA_VERSION = "contact-sheet-v1-temporal"
+_CONTACT_SHEET_PANEL_WIDTH = 480
+_CONTACT_SHEET_PANEL_HEIGHT = 270
 
 
 class SceneDetector:
@@ -67,14 +74,13 @@ class SceneDetector:
                     ),
                 ),
                 show_progress=False,
+                start_in_scene=True,
             )
         except Exception:
             return self._uniform_scenes(asset, settings), True
 
         ranges = [
-            (start.get_seconds(), end.get_seconds())
-            for start, end in boundaries
-            if end.get_seconds() > start.get_seconds()
+            (start.seconds, end.seconds) for start, end in boundaries if end.seconds > start.seconds
         ]
         if not ranges:
             return self._uniform_scenes(asset, settings), True
@@ -142,7 +148,9 @@ class RepresentativeFrameExtractor:
     ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
         self.use_cuda_decode = use_cuda_decode
-        self.frame_sample_count = max(3, min(9, frame_sample_count))
+        self.frame_sample_count = frame_sample_count_for_mode(
+            "fast" if frame_sample_count <= 3 else "balanced" if frame_sample_count <= 5 else "deep"
+        )
         self.timeout_seconds = timeout_seconds
         self._probe = FFprobeClient(ffprobe_binary)
         self._video_durations: dict[Path, float | None] = {}
@@ -166,8 +174,14 @@ class RepresentativeFrameExtractor:
         frame_path = (
             frames_dir / f"{scene.id}-contact-v4-{self.frame_sample_count}{proxy_variant}.png"
         )
-        if frame_path.is_file() and frame_path.stat().st_size > 0:
+        cached_metadata = scene.metadata.get("contact_sheet")
+        if isinstance(cached_metadata, dict) and contact_sheet_file_valid(
+            frame_path,
+            cached_metadata,
+            expected_sample_count=self.frame_sample_count,
+        ):
             return frame_path
+        frame_path.unlink(missing_ok=True)
         temporary_path = frame_path.with_name(f".{frame_path.stem}.{uuid4().hex}.tmp.png")
         timestamps = _sample_timestamps(
             scene,
@@ -203,7 +217,10 @@ class RepresentativeFrameExtractor:
                 except subprocess.TimeoutExpired:
                     timed_out_backends.append(backend)
                     continue
-                if completed.returncode == 0 and temporary_path.is_file():
+                if completed.returncode == 0 and _generated_contact_sheet_valid(
+                    temporary_path,
+                    self.frame_sample_count,
+                ):
                     with self._backend_lock:
                         if self.use_cuda_decode and candidate is commands[0]:
                             self._nvdec_count += 1
@@ -232,6 +249,51 @@ class RepresentativeFrameExtractor:
             raise MontageError(f"Could not extract a frame from {asset.relative_path}: {detail}")
         finally:
             temporary_path.unlink(missing_ok=True)
+
+    def sampling_metadata(
+        self,
+        scene: Scene,
+        asset: MediaAsset,
+        image_path: Path,
+    ) -> dict[str, object]:
+        """Describe the exact chronological samples represented by an extracted sheet."""
+
+        timestamps: tuple[float, ...]
+        positions: tuple[float, ...]
+        if asset.media_type is MediaType.PHOTO:
+            timestamps = (0.0,)
+            positions = (0.5,)
+            columns = rows = 1
+        else:
+            timestamps = tuple(
+                round(timestamp, 3)
+                for timestamp in _sample_timestamps(
+                    scene,
+                    asset,
+                    self._video_duration(asset),
+                    self.frame_sample_count,
+                )
+            )
+            duration = max(0.0, scene.end_seconds - scene.start_seconds)
+            positions = (
+                tuple(
+                    max(0.0, min(1.0, (timestamp - scene.start_seconds) / duration))
+                    for timestamp in timestamps
+                )
+                if duration > 0
+                else tuple(0.5 for _ in timestamps)
+            )
+            columns = min(3, len(timestamps))
+            rows = math.ceil(len(timestamps) / columns)
+        return {
+            "schema_version": CONTACT_SHEET_SCHEMA_VERSION,
+            "sample_count": len(positions),
+            "sample_positions": list(positions),
+            "sample_timestamps_seconds": list(timestamps),
+            "columns": columns,
+            "rows": rows,
+            "content_sha256": _file_sha256(image_path),
+        }
 
     def _command(
         self,
@@ -325,16 +387,21 @@ def scene_cache_key(
         "asset_id": str(asset.id),
         "size": asset.size_bytes,
         "modified_ns": asset.modified_ns,
-        "threshold": settings.scene_threshold,
-        "min": settings.min_scene_duration_seconds,
-        "max": settings.max_scene_duration_seconds,
+        "threshold": _canonical_cache_number(settings.scene_threshold),
+        "min": _canonical_cache_number(settings.min_scene_duration_seconds),
+        "max": _canonical_cache_number(settings.max_scene_duration_seconds),
         "analysis_fingerprint": analysis_fingerprint
         or asset.probe_metadata.get("scene_analysis_fingerprint"),
     }
     if asset.media_type is MediaType.PHOTO:
-        payload["photo_duration"] = settings.photo_duration_seconds
+        payload["photo_duration"] = _canonical_cache_number(settings.photo_duration_seconds)
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _canonical_cache_number(value: float) -> int | float:
+    numeric = float(value)
+    return int(numeric) if numeric.is_integer() else numeric
 
 
 def _scene_id(asset: MediaAsset, start_seconds: float, end_seconds: float) -> UUID:
@@ -375,12 +442,106 @@ def frame_sample_count_for_mode(mode: str) -> int:
     return 5
 
 
+def sample_positions_for_count(count: int) -> tuple[float, ...]:
+    """Return the canonical sampling positions for supported contact-sheet sizes."""
+
+    if count <= 1:
+        return (0.5,)
+    return _sample_positions(count)
+
+
 def _sample_positions(count: int) -> tuple[float, ...]:
     if count <= 3:
         return (0.12, 0.5, 0.88)
     if count <= 5:
         return (0.08, 0.3, 0.5, 0.7, 0.92)
     return (0.06, 0.17, 0.29, 0.4, 0.5, 0.6, 0.71, 0.83, 0.94)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def contact_sheet_file_valid(
+    path: Path,
+    metadata: dict[str, object],
+    *,
+    expected_sample_count: int | None = None,
+) -> bool:
+    """Verify that cached contact-sheet metadata still describes the file on disk."""
+
+    sample_count = metadata.get("sample_count")
+    columns = metadata.get("columns")
+    rows = metadata.get("rows")
+    sample_positions = metadata.get("sample_positions")
+    sample_timestamps = metadata.get("sample_timestamps_seconds")
+    expected_digest = metadata.get("content_sha256")
+    if (
+        metadata.get("schema_version") != CONTACT_SHEET_SCHEMA_VERSION
+        or not isinstance(sample_count, int)
+        or isinstance(sample_count, bool)
+        or sample_count < 1
+        or (expected_sample_count is not None and sample_count != expected_sample_count)
+        or not isinstance(columns, int)
+        or isinstance(columns, bool)
+        or columns < 1
+        or not isinstance(rows, int)
+        or isinstance(rows, bool)
+        or rows < 1
+        or not isinstance(sample_positions, list)
+        or len(sample_positions) != sample_count
+        or not isinstance(sample_timestamps, list)
+        or len(sample_timestamps) != sample_count
+        or not isinstance(expected_digest, str)
+        or len(expected_digest) != 64
+        or any(character not in "0123456789abcdef" for character in expected_digest)
+    ):
+        return False
+    if not path.is_file():
+        return False
+
+    expected_columns = min(3, sample_count)
+    expected_rows = math.ceil(sample_count / expected_columns)
+    if columns != expected_columns or rows != expected_rows:
+        return False
+    try:
+        with Image.open(path) as image:
+            image_format = image.format if isinstance(image.format, str) else None
+            image_size = (int(image.width), int(image.height))
+            image.load()
+        actual_digest = _file_sha256(path)
+    except (OSError, ValueError):
+        return False
+    if not hmac.compare_digest(actual_digest, expected_digest):
+        return False
+    if sample_count > 1:
+        return image_format == "PNG" and image_size == (
+            columns * _CONTACT_SHEET_PANEL_WIDTH,
+            rows * _CONTACT_SHEET_PANEL_HEIGHT,
+        )
+    return image_size[0] > 0 and image_size[1] > 0
+
+
+def _generated_contact_sheet_valid(path: Path, sample_count: int) -> bool:
+    if not path.is_file():
+        return False
+    columns = min(3, sample_count)
+    rows = math.ceil(sample_count / columns)
+    try:
+        with Image.open(path) as image:
+            image_format = image.format if isinstance(image.format, str) else None
+            image_size = (int(image.width), int(image.height))
+            image.load()
+    except (OSError, ValueError):
+        return False
+    return image_format == "PNG" and image_size == (
+        columns * _CONTACT_SHEET_PANEL_WIDTH,
+        rows * _CONTACT_SHEET_PANEL_HEIGHT,
+    )
 
 
 def _optional_positive_float(value: object) -> float | None:

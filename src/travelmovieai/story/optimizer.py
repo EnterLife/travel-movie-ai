@@ -1,6 +1,8 @@
 """Story-aware timeline metadata, budgets, and ordering helpers."""
 
 from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import UTC
 from uuid import UUID
 
 from travelmovieai.domain.enums import MediaType
@@ -24,6 +26,15 @@ ROLE_BUDGET_RATIOS = {
     "finale": 0.14,
 }
 STORY_ROLES = ("opening", "journey", "highlight", "finale")
+_BUDGET_EPSILON_SECONDS = 0.05
+
+
+@dataclass(frozen=True)
+class SelectionCaps:
+    """Typed automatic-selection limits; explicit user includes may exceed them."""
+
+    max_scenes_per_event: int
+    max_scenes_per_source: int | None
 
 
 def apply_story_structure(
@@ -72,18 +83,32 @@ def optimize_story_timeline_candidates(
 
     roles = {_story_role(scene) for scene in scenes}
     budgets = _role_budgets(settings.target_duration_seconds, roles)
+    caps = SelectionCaps(
+        max_scenes_per_event=settings.max_scenes_per_event,
+        max_scenes_per_source=(
+            settings.max_scenes_per_source if settings.strict_source_diversity else None
+        ),
+    )
     forced = [scene for scene in scenes if scene.metadata.get("selection_override") == "include"]
     forced_ids = {scene.id for scene in forced}
     available = [scene for scene in scenes if scene.id not in forced_ids]
     selected: list[Scene] = []
     selected_ids: set[UUID] = set()
     used_by_role = {role: 0.0 for role in STORY_ROLES}
+    event_counts: dict[str, int] = {}
+    source_counts: dict[UUID, int] = {}
 
-    for scene in sorted(forced, key=_story_order_key):
-        selected.append(scene)
-        selected_ids.add(scene.id)
-        role = _story_role(scene)
-        used_by_role[role] += _estimated_scene_duration(scene, assets_by_id, settings)
+    for scene in sorted(forced, key=lambda item: _chronology_key(item, assets_by_id)):
+        _record_selection(
+            scene,
+            selected=selected,
+            selected_ids=selected_ids,
+            event_counts=event_counts,
+            source_counts=source_counts,
+            used_by_role=used_by_role,
+            assets_by_id=assets_by_id,
+            settings=settings,
+        )
 
     for role in STORY_ROLES:
         role_pool = [
@@ -97,29 +122,59 @@ def optimize_story_timeline_candidates(
             settings,
             budget_seconds=budgets.get(role, 0.0),
             selected_so_far=selected,
+            event_counts=event_counts,
+            source_counts=source_counts,
+            caps=caps,
+            used_seconds=used_by_role[role],
         )
         for scene in role_selected:
-            selected.append(scene)
-            selected_ids.add(scene.id)
-            used_by_role[role] += _estimated_scene_duration(scene, assets_by_id, settings)
+            _record_selection(
+                scene,
+                selected=selected,
+                selected_ids=selected_ids,
+                event_counts=event_counts,
+                source_counts=source_counts,
+                used_by_role=used_by_role,
+                assets_by_id=assets_by_id,
+                settings=settings,
+            )
 
     selected_duration = _estimated_timeline_duration(selected, assets_by_id, settings)
     remaining_pool = [scene for scene in scenes if scene.id not in selected_ids]
     while selected_duration < settings.target_duration_seconds - 0.05 and remaining_pool:
-        scene = _best_diverse_scene(remaining_pool, selected, settings)
-        selected.append(scene)
-        selected_ids.add(scene.id)
+        eligible = [
+            scene
+            for scene in remaining_pool
+            if _within_caps(scene, event_counts, source_counts, caps)
+            and _within_role_budget(
+                scene,
+                used_by_role,
+                budgets,
+            )
+        ]
+        if not eligible:
+            break
+        scene = _best_role_deficit_scene(
+            eligible,
+            selected,
+            used_by_role,
+            budgets,
+            settings,
+        )
+        _record_selection(
+            scene,
+            selected=selected,
+            selected_ids=selected_ids,
+            event_counts=event_counts,
+            source_counts=source_counts,
+            used_by_role=used_by_role,
+            assets_by_id=assets_by_id,
+            settings=settings,
+        )
         remaining_pool = [item for item in remaining_pool if item.id != scene.id]
         selected_duration = _estimated_timeline_duration(selected, assets_by_id, settings)
 
-    selected_order = {scene.id: index for index, scene in enumerate(selected)}
-    ordered = sorted(
-        selected,
-        key=lambda scene: (
-            ROLE_ORDER[_story_role(scene)],
-            selected_order[scene.id],
-        ),
-    )
+    ordered = _order_selected_scenes(selected, assets_by_id, settings)
     return [
         scene.model_copy(
             update={
@@ -131,6 +186,11 @@ def optimize_story_timeline_candidates(
                     "story_section_budget_seconds": budgets.get(_story_role(scene), 0.0),
                     "story_section_used_seconds": used_by_role.get(_story_role(scene), 0.0),
                     "story_diversity_signature": _diversity_signature(scene),
+                    "story_selection_caps": {
+                        "max_scenes_per_event": caps.max_scenes_per_event,
+                        "max_scenes_per_source": caps.max_scenes_per_source,
+                    },
+                    "story_cap_override": scene.id in forced_ids,
                 }
             }
         )
@@ -145,22 +205,113 @@ def _select_role_scenes(
     *,
     budget_seconds: float,
     selected_so_far: list[Scene],
+    event_counts: dict[str, int],
+    source_counts: dict[UUID, int],
+    caps: SelectionCaps,
+    used_seconds: float,
 ) -> list[Scene]:
     selected: list[Scene] = []
-    used = 0.0
+    used = used_seconds
+    local_event_counts = dict(event_counts)
+    local_source_counts = dict(source_counts)
     remaining = list(pool)
     while remaining:
-        scene = _best_diverse_scene(remaining, [*selected_so_far, *selected], settings)
-        duration = _estimated_scene_duration(scene, assets_by_id, settings)
-        would_exceed = used + duration > budget_seconds
-        if selected and would_exceed:
+        eligible = [
+            scene
+            for scene in remaining
+            if _within_caps(scene, local_event_counts, local_source_counts, caps)
+            and (
+                used <= 0
+                or used + _estimated_scene_duration(scene, assets_by_id, settings)
+                <= budget_seconds + _BUDGET_EPSILON_SECONDS
+            )
+        ]
+        if not eligible:
             break
+        scene = _best_diverse_scene(eligible, [*selected_so_far, *selected], settings)
+        duration = _estimated_scene_duration(scene, assets_by_id, settings)
         selected.append(scene)
         used += duration
+        _increment_counts(scene, local_event_counts, local_source_counts)
         remaining = [item for item in remaining if item.id != scene.id]
         if used >= budget_seconds:
             break
     return selected
+
+
+def _record_selection(
+    scene: Scene,
+    *,
+    selected: list[Scene],
+    selected_ids: set[UUID],
+    event_counts: dict[str, int],
+    source_counts: dict[UUID, int],
+    used_by_role: dict[str, float],
+    assets_by_id: dict[UUID, MediaAsset],
+    settings: QuickMontageSettings,
+) -> None:
+    selected.append(scene)
+    selected_ids.add(scene.id)
+    _increment_counts(scene, event_counts, source_counts)
+    used_by_role[_story_role(scene)] += _estimated_scene_duration(
+        scene,
+        assets_by_id,
+        settings,
+    )
+
+
+def _increment_counts(
+    scene: Scene,
+    event_counts: dict[str, int],
+    source_counts: dict[UUID, int],
+) -> None:
+    event_key = _event_key(scene)
+    event_counts[event_key] = event_counts.get(event_key, 0) + 1
+    source_counts[scene.asset_id] = source_counts.get(scene.asset_id, 0) + 1
+
+
+def _within_caps(
+    scene: Scene,
+    event_counts: dict[str, int],
+    source_counts: dict[UUID, int],
+    caps: SelectionCaps,
+) -> bool:
+    if event_counts.get(_event_key(scene), 0) >= caps.max_scenes_per_event:
+        return False
+    return caps.max_scenes_per_source is None or (
+        source_counts.get(scene.asset_id, 0) < caps.max_scenes_per_source
+    )
+
+
+def _within_role_budget(
+    scene: Scene,
+    used_by_role: dict[str, float],
+    budgets: dict[str, float],
+) -> bool:
+    role = _story_role(scene)
+    return used_by_role.get(role, 0.0) < budgets.get(role, 0.0) + _BUDGET_EPSILON_SECONDS
+
+
+def _best_role_deficit_scene(
+    pool: list[Scene],
+    selected: list[Scene],
+    used_by_role: dict[str, float],
+    budgets: dict[str, float],
+    settings: QuickMontageSettings,
+) -> Scene:
+    previous = selected[-1] if selected else None
+    recent = selected[-3:]
+
+    def key(scene: Scene) -> tuple[float, float, int]:
+        role = _story_role(scene)
+        budget = max(budgets.get(role, 0.0), 0.001)
+        deficit = max(0.0, budget - used_by_role.get(role, 0.0)) / budget
+        adjusted_score = _ranking_score(scene) - (
+            _diversity_penalty(scene, previous, recent) * settings.semantic_diversity_weight
+        )
+        return deficit, adjusted_score, -ROLE_ORDER[role]
+
+    return max(pool, key=key)
 
 
 def _best_diverse_scene(
@@ -193,6 +344,99 @@ def _role_budgets(
         role: target_duration_seconds * ROLE_BUDGET_RATIOS[role] / ratio_sum
         for role in active_roles
     }
+
+
+def _order_selected_scenes(
+    selected: list[Scene],
+    assets_by_id: dict[UUID, MediaAsset],
+    settings: QuickMontageSettings,
+) -> list[Scene]:
+    ordered: list[Scene] = []
+    for role in STORY_ROLES:
+        role_scenes = [scene for scene in selected if _story_role(scene) == role]
+        ordered.extend(_order_role_scenes(role_scenes, assets_by_id, settings))
+    return ordered
+
+
+def _order_role_scenes(
+    scenes: list[Scene],
+    assets_by_id: dict[UUID, MediaAsset],
+    settings: QuickMontageSettings,
+) -> list[Scene]:
+    chronological = sorted(scenes, key=lambda scene: _chronology_key(scene, assets_by_id))
+    if len(chronological) < 2:
+        return chronological
+    if not settings.preserve_chronology:
+        return _greedy_diverse_order(chronological, settings)
+
+    events: dict[str, list[Scene]] = {}
+    for scene in chronological:
+        events.setdefault(_event_key(scene), []).append(scene)
+    return [
+        scene
+        for event_scenes in events.values()
+        for scene in _greedy_source_order(event_scenes, assets_by_id, settings)
+    ]
+
+
+def _greedy_diverse_order(
+    scenes: list[Scene],
+    settings: QuickMontageSettings,
+) -> list[Scene]:
+    remaining = list(scenes)
+    ordered: list[Scene] = []
+    while remaining:
+        scene = _best_diverse_scene(remaining, ordered, settings)
+        ordered.append(scene)
+        remaining = [item for item in remaining if item.id != scene.id]
+    return ordered
+
+
+def _greedy_source_order(
+    scenes: list[Scene],
+    assets_by_id: dict[UUID, MediaAsset],
+    settings: QuickMontageSettings,
+) -> list[Scene]:
+    """Diversify one event while retaining order inside every source file."""
+
+    chronological = sorted(scenes, key=lambda item: _chronology_key(item, assets_by_id))
+    queues: dict[UUID, list[Scene]] = {}
+    for scene in chronological:
+        queues.setdefault(scene.asset_id, []).append(scene)
+    first = chronological[0]
+    ordered = [first]
+    queues[first.asset_id].pop(0)
+    if not queues[first.asset_id]:
+        del queues[first.asset_id]
+    while queues:
+        heads = [queue[0] for queue in queues.values()]
+        scene = _best_diverse_scene(heads, ordered, settings)
+        ordered.append(scene)
+        queue = queues[scene.asset_id]
+        queue.pop(0)
+        if not queue:
+            del queues[scene.asset_id]
+    return ordered
+
+
+def _chronology_key(
+    scene: Scene,
+    assets_by_id: dict[UUID, MediaAsset],
+) -> tuple[float, float, str]:
+    asset = assets_by_id.get(scene.asset_id)
+    captured_at = asset.created_at or asset.modified_at if asset is not None else None
+    if captured_at is None:
+        timestamp = 0.0
+    else:
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=UTC)
+        timestamp = captured_at.astimezone(UTC).timestamp()
+    return timestamp + scene.start_seconds, scene.start_seconds, str(scene.id)
+
+
+def _event_key(scene: Scene) -> str:
+    value = scene.metadata.get("event_id")
+    return str(value) if value else str(scene.id)
 
 
 def _story_role(scene: Scene) -> str:

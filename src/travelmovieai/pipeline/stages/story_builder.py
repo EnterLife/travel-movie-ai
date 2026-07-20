@@ -15,7 +15,7 @@ from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.base import Stage
 from travelmovieai.story.builder import build_multimodal_descriptions
 
-ARTIFACT_SCHEMA_VERSION = "scene-captioning-v1"
+ARTIFACT_SCHEMA_VERSION = "scene-captioning-v2"
 
 
 class SceneCaptioningStage(Stage):

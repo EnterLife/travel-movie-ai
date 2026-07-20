@@ -3,7 +3,8 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from types import TracebackType
+from typing import Any, Literal, Self, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -22,6 +23,7 @@ from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.engine import Connection, CursorResult
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from travelmovieai.core.exceptions import PipelineStageError
 from travelmovieai.domain.enums import ActivityType, LocationType, MediaType
@@ -133,7 +135,8 @@ class MediaAssetRepository:
         database_path.parent.mkdir(parents=True, exist_ok=True)
         engine = create_engine(
             f"sqlite+pysqlite:///{database_path.resolve().as_posix()}",
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": 30.0},
+            poolclass=NullPool,
         )
 
         @sqlalchemy_event.listens_for(engine, "connect")
@@ -141,15 +144,28 @@ class MediaAssetRepository:
             cursor = connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.close()
 
         self._engine = engine
         self._session_factory = sessionmaker(self._engine, expire_on_commit=False)
 
     def close(self) -> None:
-        """Release pooled SQLite handles, primarily for bounded benchmark lifetimes."""
+        """Dispose the engine; NullPool already releases every completed connection."""
 
         self._engine.dispose()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        self.close()
 
     def initialize(self) -> None:
         try:

@@ -1,4 +1,5 @@
-import subprocess
+import hashlib
+import sys
 import wave
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ from travelmovieai.infrastructure.music_generation import (
     AceStepMusicGenerator,
     resolve_local_music_model,
 )
-from travelmovieai.story.music import build_music_plan
+from travelmovieai.story.music import MusicPlanExecution, build_music_plan
 
 
 class FakeMusicGenerator:
@@ -253,17 +254,29 @@ def test_ace_step_normalization_loops_short_model_output(
     output = tmp_path / "full.wav"
     commands: list[list[str]] = []
 
-    def run_ffmpeg(
-        command: list[str],
-        **kwargs: object,
-    ) -> object:
+    class FinishedProcess:
+        returncode: int | None = None
+
+        def __init__(self, command: list[str]) -> None:
+            self.command = command
+
+        def poll(self) -> int:
+            Path(self.command[-1]).write_bytes(b"normalized")
+            self.returncode = 0
+            return 0
+
+        def communicate(self, timeout: float) -> tuple[str, str]:
+            assert timeout == 5
+            return "", ""
+
+    def start_ffmpeg(command: list[str], **kwargs: object) -> FinishedProcess:
+        del kwargs
         commands.append(command)
-        Path(command[-1]).write_bytes(b"normalized")
-        return type("Completed", (), {"returncode": 0})()
+        return FinishedProcess(command)
 
     monkeypatch.setattr(
-        "travelmovieai.infrastructure.music_generation.subprocess.run",
-        run_ffmpeg,
+        "travelmovieai.infrastructure.music_generation.subprocess.Popen",
+        start_ffmpeg,
     )
 
     generator._normalize(source, output, 90)
@@ -289,24 +302,71 @@ def test_ace_step_normalization_reports_ffmpeg_timeout(
     source = tmp_path / "short.wav"
     source.touch()
     output = tmp_path / "full.wav"
-    timeouts: list[float] = []
+    terminated: list[object] = []
 
-    def run_ffmpeg(command: list[str], **kwargs: object) -> object:
-        timeout = kwargs["timeout"]
-        assert isinstance(timeout, int | float)
-        timeouts.append(float(timeout))
-        Path(command[-1]).write_bytes(b"partial")
-        raise subprocess.TimeoutExpired(cmd=command, timeout=timeout)
+    class HangingProcess:
+        returncode: int | None = None
+
+        def poll(self) -> None:
+            return None
+
+    hanging = HangingProcess()
 
     monkeypatch.setattr(
-        "travelmovieai.infrastructure.music_generation.subprocess.run",
-        run_ffmpeg,
+        "travelmovieai.infrastructure.music_generation.subprocess.Popen",
+        lambda *args, **kwargs: hanging,
+    )
+    monkeypatch.setattr(
+        "travelmovieai.infrastructure.music_generation.terminate_process_tree",
+        lambda process: terminated.append(process),
     )
 
     with pytest.raises(MusicGenerationError, match="timed out.*0.25s"):
         generator._normalize(source, output, 120)
 
-    assert timeouts == [0.25]
+    assert terminated == [hanging]
+    assert not output.exists()
+
+
+def test_ace_step_normalization_honors_cancellation_and_stops_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=tmp_path / "runtime",
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="auto",
+        gpu_memory_mb=6144,
+        cancel_requested=lambda: True,
+    )
+    source = tmp_path / "short.wav"
+    source.touch()
+    output = tmp_path / "full.wav"
+    terminated: list[object] = []
+
+    class HangingProcess:
+        returncode: int | None = None
+
+        def poll(self) -> None:
+            return None
+
+    hanging = HangingProcess()
+    monkeypatch.setattr(
+        "travelmovieai.infrastructure.music_generation.subprocess.Popen",
+        lambda *args, **kwargs: hanging,
+    )
+    monkeypatch.setattr(
+        "travelmovieai.infrastructure.music_generation.terminate_process_tree",
+        lambda process: terminated.append(process),
+    )
+
+    with pytest.raises(MusicGenerationError, match="normalization was cancelled"):
+        generator._normalize(source, output, 120)
+
+    assert terminated == [hanging]
     assert not output.exists()
 
 
@@ -344,7 +404,72 @@ def test_ace_step_runtime_uses_unified_windows_setup(
     generator._ensure_runtime(None)
 
     assert Path(commands[0][3]).name == "setup_windows.bat"
-    assert commands[0][4:] == ["--music-ai-only", str(runtime)]
+    assert commands[0][4:] == ["--music-ai-only", str(runtime), "--non-interactive"]
+
+
+def test_ace_step_streaming_process_times_out_and_stops_tree(tmp_path: Path) -> None:
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=tmp_path,
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=False,
+        device="cpu",
+        gpu_memory_mb=None,
+        process_timeout_seconds=0.2,
+    )
+
+    with pytest.raises(MusicGenerationError, match="timed out after 0.2s.*process tree"):
+        generator._run_streaming(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            cwd=tmp_path,
+            environment={},
+            progress=None,
+        )
+
+
+def test_ace_step_streaming_process_honors_cancellation(tmp_path: Path) -> None:
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=tmp_path,
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=False,
+        device="cpu",
+        gpu_memory_mb=None,
+        cancel_requested=lambda: True,
+    )
+
+    with pytest.raises(MusicGenerationError, match="was cancelled"):
+        generator._run_streaming(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            cwd=tmp_path,
+            environment={},
+            progress=None,
+        )
+
+
+def test_frozen_ace_step_runtime_reports_missing_packaged_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=tmp_path / "missing-runtime",
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="cpu",
+        gpu_memory_mb=None,
+    )
+    monkeypatch.setattr(
+        "travelmovieai.infrastructure.music_generation._find_setup_script",
+        lambda: None,
+    )
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    with pytest.raises(MusicGenerationError, match="packaged application.*does not include"):
+        generator._ensure_runtime(None)
 
 
 def test_build_music_plan_uses_local_model(tmp_path: Path) -> None:
@@ -427,6 +552,7 @@ def test_generated_music_is_reused_when_timeline_and_model_match(
     )
     generator = FakeMusicGenerator()
     output = tmp_path / "soundtrack.wav"
+    first_execution = MusicPlanExecution()
     first = build_music_plan(
         [],
         [],
@@ -435,12 +561,14 @@ def test_generated_music_is_reused_when_timeline_and_model_match(
         output,
         montage,
         neural_generator=generator,
+        execution=first_execution,
     )
     (tmp_path / "music_plan.json").write_text(
         first.model_dump_json(),
         encoding="utf-8",
     )
 
+    second_execution = MusicPlanExecution()
     second = build_music_plan(
         [],
         [],
@@ -449,8 +577,72 @@ def test_generated_music_is_reused_when_timeline_and_model_match(
         output,
         montage,
         neural_generator=generator,
+        execution=second_execution,
     )
 
     assert generator.calls == 1
+    assert first_execution.cache_hit is False
+    assert second_execution.cache_hit is True
     assert second.cache_key == first.cache_key
     assert "cache" in second.reasoning
+
+    output.write_bytes(b"replaced soundtrack content")
+    third_execution = MusicPlanExecution()
+    third = build_music_plan(
+        [],
+        [],
+        settings,
+        tmp_path / "library",
+        output,
+        montage,
+        neural_generator=generator,
+        execution=third_execution,
+    )
+
+    assert generator.calls == 2
+    assert third_execution.cache_hit is False
+    assert third.source_content_sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
+
+
+def test_procedural_fallback_is_not_reused_as_success(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(
+        target_duration_seconds=5,
+        music_engine="auto",
+        music_profile="lounge",
+    )
+    montage = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        total_duration_seconds=5,
+    )
+    output = tmp_path / "fallback.wav"
+    first_execution = MusicPlanExecution()
+    first = build_music_plan(
+        [],
+        [],
+        settings,
+        tmp_path / "library",
+        output,
+        montage,
+        execution=first_execution,
+    )
+    (tmp_path / "music_plan.json").write_text(first.model_dump_json(), encoding="utf-8")
+
+    second_execution = MusicPlanExecution()
+    second = build_music_plan(
+        [],
+        [],
+        settings,
+        tmp_path / "library",
+        output,
+        montage,
+        execution=second_execution,
+    )
+
+    assert first.generator == "procedural"
+    assert first.fallback_used is True
+    assert first_execution.cache_hit is False
+    assert second.generator == "procedural"
+    assert second.fallback_used is True
+    assert second_execution.cache_hit is False
+    assert "reused from cache" not in second.reasoning.casefold()

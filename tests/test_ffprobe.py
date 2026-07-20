@@ -21,12 +21,19 @@ def test_parse_probe_payload_extracts_video_metadata_and_location() -> None:
                 {
                     "codec_type": "video",
                     "codec_name": "h264",
+                    "profile": "High 4:4:4 Predictive",
                     "duration": "12.25",
                     "width": 1920,
                     "height": 1080,
+                    "pix_fmt": "yuv420p",
                     "avg_frame_rate": "30000/1001",
                 },
-                {"codec_type": "audio", "codec_name": "aac"},
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "sample_rate": "48000",
+                    "channels": 2,
+                },
             ],
         }
     )
@@ -37,6 +44,9 @@ def test_parse_probe_payload_extracts_video_metadata_and_location() -> None:
     assert result.width == 1920
     assert result.height == 1080
     assert result.fps == pytest.approx(29.97, rel=0.001)
+    assert result.metadata["streams"][0]["pix_fmt"] == "yuv420p"
+    assert result.metadata["streams"][0]["profile"] == "High 4:4:4 Predictive"
+    assert result.metadata["streams"][1]["sample_rate"] == 48_000
     assert result.created_at == datetime(2026, 5, 10, 11, 12, 13, tzinfo=UTC)
     assert result.latitude == pytest.approx(55.7558)
     assert result.longitude == pytest.approx(37.6173)

@@ -15,6 +15,7 @@ from travelmovieai.domain.models import (
     MontageClip,
     MusicCueSection,
     MusicPlan,
+    NarrationAudioCue,
     QuickMontagePlan,
     QuickMontageSettings,
     Scene,
@@ -24,7 +25,11 @@ from travelmovieai.editing.renderer import (
     _active_narration_path,
     _build_filter_graph,
     _build_segment_video_graph,
+    _caption_overlay_text,
+    _escape_drawtext,
+    _show_event_title,
     _truncate_overlay_text,
+    overlay_font_revision,
 )
 from travelmovieai.editing.timeline import build_semantic_montage_plan
 from travelmovieai.infrastructure.ffmpeg import parse_probe_payload
@@ -43,10 +48,16 @@ def test_render_feature_settings_are_opt_in_and_validate_safe_area() -> None:
     assert settings.scene_subtitles_enabled is False
     assert settings.music_bpm_analysis is False
     assert settings.music_volume_envelope is False
+    assert settings.delivery_loudness_lufs == -16
+    assert settings.delivery_true_peak_dbfs == -1.5
     with pytest.raises(ValueError, match="overlay_safe_margin"):
         QuickMontageSettings(overlay_safe_margin=0.01)
     with pytest.raises(ValueError, match="photo_zoom_ratio"):
         QuickMontageSettings(photo_zoom_ratio=1.5)
+    with pytest.raises(ValueError, match="delivery_loudness_lufs"):
+        QuickMontageSettings(delivery_loudness_lufs=-40)
+    with pytest.raises(ValueError, match="delivery_true_peak_dbfs"):
+        QuickMontageSettings(delivery_true_peak_dbfs=0)
 
 
 def test_probe_retains_rotation_dimensions_and_hdr_metadata() -> None:
@@ -201,6 +212,7 @@ def test_photo_ken_burns_and_unicode_overlays_are_escaped(tmp_path: Path) -> Non
         event_title="День семьи's",
         focus_x=0.7,
         focus_y=0.4,
+        duration_seconds=6,
     )
     settings = QuickMontageSettings(
         photo_motion="ken_burns",
@@ -251,6 +263,29 @@ def test_overlay_text_at_the_limit_is_not_modified() -> None:
     assert _truncate_overlay_text(text, settings, font_height_divisor=24) == text
 
 
+def test_custom_overlay_font_revision_invalidates_cache_and_rejects_deletion(
+    tmp_path: Path,
+) -> None:
+    font = tmp_path / "custom.ttf"
+    font.write_bytes(b"font revision one")
+    settings = QuickMontageSettings(
+        event_titles_enabled=True,
+        overlay_font_path=font,
+    )
+
+    first = overlay_font_revision(settings)
+    font.write_bytes(b"font revision two")
+    second = overlay_font_revision(settings)
+
+    assert first is not None
+    assert second is not None
+    assert first["content_sha256"] != second["content_sha256"]
+
+    font.unlink()
+    with pytest.raises(MontageError, match="Configured overlay font does not exist"):
+        overlay_font_revision(settings)
+
+
 def test_overlay_text_normalizes_font_fragile_punctuation() -> None:
     settings = QuickMontageSettings()
 
@@ -261,6 +296,155 @@ def test_overlay_text_normalizes_font_fragile_punctuation() -> None:
     )
 
     assert normalized == "TravelMovieAI - Sochi - '2026'..."
+
+
+def test_overlay_rejects_generic_model_text_and_limits_reading_speed(tmp_path: Path) -> None:
+    generic = _clip(
+        tmp_path / "clip.mp4",
+        event_title="town",
+        caption="A series of images",
+    )
+    settings = QuickMontageSettings(
+        event_titles_enabled=True,
+        scene_subtitles_enabled=True,
+        caption_characters_per_second=12,
+    )
+    graph = _build_segment_video_graph(
+        generic,
+        _plan(generic, settings),
+        trim_start=0,
+        show_event_title=True,
+        show_credits=False,
+    )
+
+    assert "drawtext=" not in graph
+    caption = _caption_overlay_text(
+        "A detailed coastal panorama with people walking beside the water at sunset",
+        settings,
+        duration=2,
+    )
+    assert caption is not None
+    assert len(caption.replace("\n", "")) <= 24
+
+
+def test_multiline_caption_escape_and_duplicate_event_title_suppression(tmp_path: Path) -> None:
+    settings = QuickMontageSettings(
+        event_titles_enabled=True,
+        scene_subtitles_enabled=True,
+        caption_characters_per_second=30,
+    )
+    caption = _caption_overlay_text(
+        "A detailed coastal panorama with people walking beside the water at sunset",
+        settings,
+        duration=8,
+    )
+
+    assert caption is not None
+    assert "\n" in caption
+    escaped = _escape_drawtext(caption)
+    assert "\n" in escaped
+    assert r"\n" not in escaped
+
+    first = _clip(tmp_path / "first.mp4", event_id=uuid4(), event_title="Mountain Adventure")
+    repeated = _clip(
+        tmp_path / "second.mp4",
+        event_id=uuid4(),
+        event_title="mountain adventure",
+    )
+    distinct = _clip(tmp_path / "third.mp4", event_id=uuid4(), event_title="Cloud Finale")
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        clips=[first, repeated, distinct],
+        total_duration_seconds=6,
+    )
+
+    assert _show_event_title(plan, 0) is True
+    assert _show_event_title(plan, 1) is False
+    assert _show_event_title(plan, 2) is True
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is not installed")
+def test_multiline_caption_reaches_ffmpeg_drawtext_as_two_lines(tmp_path: Path) -> None:
+    clip = _clip(
+        tmp_path / "source.mp4",
+        caption=(
+            "A detailed coastal panorama with people walking beside the water "
+            "while mountain clouds move across the evening sky"
+        ),
+        duration_seconds=8,
+    )
+    settings = QuickMontageSettings(
+        width=426,
+        height=240,
+        fps=24,
+        scene_subtitles_enabled=True,
+        caption_characters_per_second=30,
+    )
+    graph = _build_segment_video_graph(
+        clip,
+        _plan(clip, settings),
+        trim_start=0,
+        show_event_title=False,
+        show_credits=False,
+    )
+
+    assert "\n" in graph
+    assert r"\n" not in graph
+    rendered = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "debug",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=426x240:d=0.1",
+            "-filter_complex",
+            graph,
+            "-map",
+            "[v]",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+
+    assert rendered.returncode == 0, rendered.stderr
+    assert "Line: 1" in rendered.stderr
+
+
+def test_overlay_uses_explicit_local_font_and_rejects_missing_font(tmp_path: Path) -> None:
+    font = tmp_path / "Local Font.ttf"
+    font.write_bytes(b"font fixture")
+    clip = _clip(tmp_path / "clip.mp4", event_title="Coastal walk")
+    settings = QuickMontageSettings(event_titles_enabled=True, overlay_font_path=font)
+
+    graph = _build_segment_video_graph(
+        clip,
+        _plan(clip, settings),
+        trim_start=0,
+        show_event_title=True,
+        show_credits=False,
+    )
+
+    assert "fontfile='" in graph
+    missing = settings.model_copy(update={"overlay_font_path": tmp_path / "missing.ttf"})
+    with pytest.raises(MontageError, match="overlay font does not exist"):
+        _build_segment_video_graph(
+            clip,
+            _plan(clip, missing),
+            trim_start=0,
+            show_event_title=True,
+            show_credits=False,
+        )
 
 
 def test_renderer_uses_unicode_argv_and_disables_ffmpeg_autorotate(tmp_path: Path) -> None:
@@ -324,6 +508,44 @@ def test_audio_graph_mixes_narration_and_automatic_music_envelope(tmp_path: Path
     assert "volume=1.250,asplit=2[narrationsc][narrationmix]" in graph
     assert "ratio=15.25" in graph
     assert "[duckedbackground][narrationmix]amix=inputs=2" in graph
+    assert "loudnorm=I=-16.0:TP=-1.5:LRA=11" in graph
+    assert "alimiter=limit=0.841395:level=false:latency=true" in graph
+    assert "afade=t=out:st=1.650:d=0.350" in graph
+
+
+def test_audio_graph_applies_per_line_narration_cue_fades(tmp_path: Path) -> None:
+    clip = _clip(tmp_path / "clip.mp4", duration_seconds=5)
+    narration = tmp_path / "narration.wav"
+    narration_line = tmp_path / "narration_lines" / "line-001.wav"
+    narration_line.parent.mkdir()
+    narration.write_bytes(b"composite")
+    narration_line.write_bytes(b"line")
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(
+            narration_enabled=True,
+            narration_fade_seconds=0.1,
+        ),
+        clips=[clip],
+        total_duration_seconds=5,
+        narration_path=narration,
+        narration_cues=[
+            NarrationAudioCue(
+                line_index=0,
+                section_role="opening",
+                audio_path=narration_line,
+                cue_start_seconds=2,
+                cue_end_seconds=3,
+                duration_seconds=1,
+            )
+        ],
+    )
+
+    graph = _build_filter_graph(plan, transition_duration=0)
+
+    assert "between(t,2.000,2.100)" in graph
+    assert "between(t,2.900,3.000)" in graph
+    assert "between(t,2.000,3.000)" in graph
 
 
 def test_disabled_or_missing_narration_is_handled_safely(tmp_path: Path) -> None:

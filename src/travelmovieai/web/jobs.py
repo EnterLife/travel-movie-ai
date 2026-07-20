@@ -14,7 +14,8 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from travelmovieai.application.validation import ProjectPaths
-from travelmovieai.core.exceptions import TravelMovieError, WorkspaceBusyError
+from travelmovieai.core.exceptions import JobPersistenceError, TravelMovieError, WorkspaceBusyError
+from travelmovieai.core.logging import register_private_log_paths
 from travelmovieai.domain.models import MediaScanReport, StageResult
 from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.web.schemas import JobStatus, ScanJobHistory, ScanJobResponse
@@ -47,6 +48,9 @@ class _ScanJob:
     message: str = ""
     error: str | None = None
     report: MediaScanReport | None = None
+    progress_current: int = 0
+    progress_total: int = 0
+    persistence_degraded: bool = False
 
 
 class _ScanInterrupted(Exception):
@@ -75,6 +79,7 @@ class ScanJobManager:
 
     def submit(self, input_path: Path, workspace: Path | None) -> ScanJobResponse:
         project_paths = self.resolve_project_paths(input_path, workspace)
+        register_private_log_paths((project_paths.input_path, project_paths.workspace))
         job = _ScanJob(
             id=uuid4(),
             status=JobStatus.QUEUED,
@@ -90,7 +95,11 @@ class ScanJobManager:
                 )
             self._jobs[job.id] = job
             self._trim_history()
-            self._persist()
+            try:
+                self._persist(required=True)
+            except JobPersistenceError:
+                self._jobs.pop(job.id, None)
+                raise
         self._executor.submit(self._run, job.id)
         return _to_response(job)
 
@@ -136,13 +145,24 @@ class ScanJobManager:
             job.finished_at = None
             job.error = None
             job.message = "Scanning media..."
-            self._persist()
+            try:
+                self._persist(required=True)
+            except JobPersistenceError as error:
+                job.status = JobStatus.FAILED
+                job.finished_at = datetime.now(UTC)
+                job.message = "The scan could not start because job state is not writable."
+                job.error = str(error)
+                job.persistence_degraded = True
+                return
 
         def progress(current: int, total: int, message: str) -> None:
-            del current, total, message
             with self._lock:
                 if self._shutting_down:
                     raise _ScanInterrupted
+                job.progress_current = max(0, current)
+                job.progress_total = max(0, total)
+                job.message = message
+                self._persist()
 
         try:
             result = self._service.analyze(
@@ -167,6 +187,8 @@ class ScanJobManager:
             job.finished_at = datetime.now(UTC)
             job.message = result.message
             job.report = report
+            job.progress_current = 1
+            job.progress_total = 1
             self._persist()
 
     def _fail(self, job: _ScanJob, error: str) -> None:
@@ -238,15 +260,18 @@ class ScanJobManager:
                 message=message,
                 error=error,
                 report=report,
+                progress_current=saved.progress_current,
+                progress_total=saved.progress_total,
+                persistence_degraded=saved.persistence_degraded,
             )
         self._trim_history()
         self._persist()
         for job_id in recovered_ids:
             self._executor.submit(self._run, job_id)
 
-    def _persist(self) -> None:
+    def _persist(self, *, required: bool = False) -> bool:
         if self._state_path is None:
-            return
+            return True
         jobs = sorted(
             (_to_response(job) for job in self._jobs.values()),
             key=lambda job: job.created_at,
@@ -254,8 +279,18 @@ class ScanJobManager:
         )
         try:
             write_json_atomic(self._state_path, ScanJobHistory(jobs=jobs))
-        except OSError:
+        except OSError as error:
             LOGGER.exception("Could not persist web job history")
+            for job in self._jobs.values():
+                if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                    job.persistence_degraded = True
+            if required:
+                raise JobPersistenceError(
+                    "Restart-safe scan state could not be written; check workspace "
+                    "permissions and disk space."
+                ) from error
+            return False
+        return True
 
 
 def _load_report(workspace: Path) -> MediaScanReport | None:
@@ -284,4 +319,12 @@ def _to_response(job: _ScanJob) -> ScanJobResponse:
         finished_at=job.finished_at,
         message=job.message,
         error=job.error,
+        progress_current=job.progress_current,
+        progress_total=job.progress_total,
+        progress_percent=(
+            min(100.0, job.progress_current / job.progress_total * 100)
+            if job.progress_total > 0
+            else 0.0
+        ),
+        persistence_degraded=job.persistence_degraded,
     )

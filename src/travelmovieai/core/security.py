@@ -5,9 +5,17 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(api[_-]?key|authorization|password|secret|token)\b(\s*[:=]\s*)([^\s,;]+)"
+    r"(?ix)\b("
+    r"(?:[a-z0-9]+[_-])*"
+    r"(?:api[_-]?key|authorization|password|passwd|secret|token)"
+    r")(\s*[:=]\s*)"
+    r"(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;]+)"
 )
-_BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_AUTHORIZATION_HEADER = re.compile(
+    r"(?im)\b(authorization|proxy-authorization)(\s*:\s*)(?:basic|bearer)\s+[^\r\n,;]+"
+)
+_COOKIE_HEADER = re.compile(r"(?im)\b(cookie|set-cookie)(\s*:\s*)[^\r\n]+")
+_AUTH_SCHEME = re.compile(r"(?i)\b(basic|bearer)\s+[^\s,;]+")
 
 
 def redact_sensitive_text(
@@ -18,8 +26,10 @@ def redact_sensitive_text(
 ) -> str:
     """Remove common credentials and bound text before it reaches persistent state."""
 
-    without_bearer_tokens = _BEARER_TOKEN.sub("Bearer <redacted>", value)
-    redacted = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", without_bearer_tokens)
+    redacted = _AUTHORIZATION_HEADER.sub(r"\1\2<redacted>", value)
+    redacted = _COOKIE_HEADER.sub(r"\1\2<redacted>", redacted)
+    redacted = _AUTH_SCHEME.sub(r"\1 <redacted>", redacted)
+    redacted = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", redacted)
     redacted = _redact_paths(redacted, private_paths)
     return _bounded_tail(redacted, max_characters)
 

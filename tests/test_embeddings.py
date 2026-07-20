@@ -75,6 +75,8 @@ def test_embeddings_stage_reuses_valid_cache(tmp_path: Path) -> None:
 
     assert first.skipped is False
     assert second.skipped is True
+    assert first.execution.provider == "feature-hash-v1"
+    assert second.execution.provider == "feature-hash-v1"
     assert (context.artifacts_dir / "embeddings.json").is_file()
 
 
@@ -138,11 +140,14 @@ def test_embeddings_stage_uses_configured_sentence_provider_and_releases_it(
     )
 
     assert result.status is StageStatus.COMPLETED
+    assert result.execution.provider == "sentence-transformers"
+    assert result.execution.model == "local-test-model"
     assert report.backend == "sentence-transformers"
     assert report.model == "local-test-model"
     assert report.dimensions == 3
     assert provider.released is True
     assert repository.list_scenes()[0].metadata["embedding_model"] == "local-test-model"
+    assert "semantic_embedding" not in repository.list_scenes()[0].metadata
 
 
 def test_embeddings_stage_removes_stale_artifacts_without_scenes(tmp_path: Path) -> None:

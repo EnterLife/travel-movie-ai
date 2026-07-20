@@ -11,6 +11,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from travelmovieai.core.exceptions import DependencyUnavailableError, PipelineStageError
+from travelmovieai.core.security import sanitize_process_error
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     AudioAnalysisReport,
@@ -198,9 +199,23 @@ def _decode_scene_audio(
             f"FFmpeg timed out after {timeout_seconds:g}s while decoding audio "
             f"from {asset.relative_path}."
         ) from error
-    if completed.returncode != 0 or not completed.stdout:
-        return np.asarray([], dtype=np.float64)
-    pcm = np.frombuffer(completed.stdout, dtype="<i2").astype(np.float64)
+    if completed.returncode != 0:
+        stderr = (
+            completed.stderr.decode("utf-8", errors="replace")
+            if isinstance(completed.stderr, bytes)
+            else str(completed.stderr or "")
+        )
+        detail = sanitize_process_error(
+            stderr,
+            private_paths=[asset.path, asset.relative_path],
+            fallback="unknown FFmpeg audio decode error",
+        )
+        raise PipelineStageError(f"FFmpeg could not decode audio for a scene: {detail}")
+    if completed.stdout and len(completed.stdout) % np.dtype("<i2").itemsize:
+        raise PipelineStageError(
+            "FFmpeg returned an invalid PCM payload while decoding scene audio."
+        )
+    pcm = np.frombuffer(completed.stdout or b"", dtype="<i2").astype(np.float64)
     return pcm / 32768.0
 
 

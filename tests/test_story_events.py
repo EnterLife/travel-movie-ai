@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from travelmovieai.domain.enums import MediaType, StoryStyle
-from travelmovieai.domain.models import MediaAsset, Scene
+from travelmovieai.domain.models import Event, MediaAsset, Scene
 from travelmovieai.story.builder import build_multimodal_descriptions, build_storyboard
 from travelmovieai.story.events import detect_events
 from travelmovieai.story.narration import build_narration
@@ -144,6 +144,57 @@ def test_event_detection_is_deterministic_without_gps_or_embeddings() -> None:
     ]
 
 
+def test_event_detection_caps_long_same_asset_sequence() -> None:
+    asset = _asset("long-roll.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
+    scenes = [
+        _scene(asset, "city", "walking", f"Street moment {index}.").model_copy(
+            update={"start_seconds": index * 5, "end_seconds": index * 5 + 4}
+        )
+        for index in range(10)
+    ]
+
+    report, _ = detect_events(scenes, [asset])
+
+    assert [len(event.scene_ids) for event in report.events] == [8, 2]
+
+
+def test_event_detection_splits_conflicting_locations_inside_one_asset() -> None:
+    asset = _asset("mixed-roll.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
+    first = _scene(asset, "beach", "walking", "Beach walk.")
+    second = _scene(asset, "museum", "sightseeing", "Museum hall.").model_copy(
+        update={"start_seconds": 5, "end_seconds": 10}
+    )
+
+    report, _ = detect_events([first, second], [asset])
+
+    assert len(report.events) == 2
+
+
+def test_event_title_requires_corroborated_non_generic_landmark() -> None:
+    asset = _asset("landmarks.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
+    scenes = []
+    for index, landmark in enumerate(["town", "Sochi Olympic Park", "Sochi Olympic Park"]):
+        scene = _scene(asset, "landmark", "sightseeing", f"View {index}.")
+        scenes.append(
+            scene.model_copy(
+                update={
+                    "start_seconds": index * 4,
+                    "end_seconds": index * 4 + 3,
+                    "metadata": {
+                        **scene.metadata,
+                        "landmarks": [{"name": landmark, "confidence": 0.9}],
+                    },
+                }
+            )
+        )
+
+    report, _ = detect_events(scenes, [asset])
+
+    assert len(report.events) == 1
+    assert report.events[0].title == "Sochi Olympic Park"
+    assert report.events[0].landmarks == ["Sochi Olympic Park"]
+
+
 def test_event_regrouping_removes_stale_manual_event_metadata() -> None:
     asset = _asset("new-group.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC))
     scene = _scene(asset, "beach", "walking", "Fresh grouping.").model_copy(
@@ -230,7 +281,11 @@ def test_storyboard_builds_opening_highlight_and_finale() -> None:
     ]
     assert storyboard.event_ids == [event.id for event in event_report.events]
 
-    narration = build_narration(storyboard, event_report.events)
+    narration = build_narration(
+        storyboard,
+        event_report.events,
+        target_duration_seconds=60,
+    )
 
     assert [line.section_role for line in narration.lines] == [
         "opening",
@@ -238,6 +293,71 @@ def test_storyboard_builds_opening_highlight_and_finale() -> None:
         "finale",
     ]
     assert narration.lines[0].text.startswith("Our journey begins")
+    assert [line.cue_start_seconds for line in narration.lines] == [1, 21, 41]
+    assert [line.cue_end_seconds for line in narration.lines] == [19, 39, 59]
+
+
+def test_storyboard_distributes_large_event_set_across_story_arc() -> None:
+    events = [
+        Event(title=f"Event {index}", importance_score=float(index * 10)) for index in range(10)
+    ]
+    scenes: list[Scene] = []
+    for index, event in enumerate(events):
+        asset = _asset(
+            f"event-{index}.mp4",
+            datetime(2026, 1, index + 1, tzinfo=UTC),
+        )
+        scene = _scene(asset, "city", "sightseeing", f"Event {index}.")
+        scenes.append(
+            scene.model_copy(update={"metadata": {**scene.metadata, "event_id": str(event.id)}})
+        )
+
+    storyboard = build_storyboard(events, scenes, StoryStyle.CINEMATIC)
+
+    sections = {section.role: section for section in storyboard.sections}
+    assert {role: len(section.event_ids) for role, section in sections.items()} == {
+        "opening": 2,
+        "journey": 3,
+        "highlight": 3,
+        "finale": 2,
+    }
+    assert sections["highlight"].event_ids == [events[5].id, events[6].id, events[7].id]
+    assert {event_id for section in storyboard.sections for event_id in section.event_ids} == {
+        event.id for event in events
+    }
+    assert sum(len(section.scene_ids) for section in storyboard.sections) == len(scenes)
+
+
+def test_narration_text_respects_available_speech_budget() -> None:
+    asset = _asset("arrival.mp4", datetime(2026, 1, 1, tzinfo=UTC))
+    event_report, scenes = detect_events(
+        [
+            _scene(
+                asset,
+                "airport",
+                "arriving",
+                "A deliberately detailed arrival summary with more words than the cue can fit.",
+            )
+        ],
+        [asset],
+    )
+    storyboard = build_storyboard(event_report.events, scenes, StoryStyle.CINEMATIC)
+
+    narration = build_narration(
+        storyboard,
+        event_report.events,
+        target_duration_seconds=5,
+        characters_per_second=8,
+    )
+
+    assert narration.lines
+    for line in narration.lines:
+        available_characters = max(
+            1,
+            int((line.cue_end_seconds - line.cue_start_seconds) * 8),
+        )
+        assert len(line.text) <= available_characters
+    assert any(line.text.endswith("...") for line in narration.lines)
 
 
 def _asset(

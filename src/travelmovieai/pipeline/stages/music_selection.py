@@ -9,7 +9,12 @@ from pydantic import ValidationError
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage, StageStatus
-from travelmovieai.domain.models import MusicPlan, QuickMontageSettings, StageResult
+from travelmovieai.domain.models import (
+    MusicPlan,
+    QuickMontageSettings,
+    StageExecutionMetadata,
+    StageResult,
+)
 from travelmovieai.editing.timeline import build_semantic_montage_plan
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
@@ -24,9 +29,14 @@ from travelmovieai.infrastructure.music_generation import (
 )
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
-from travelmovieai.story.music import NeuralMusicGenerator, build_music_plan
+from travelmovieai.story.music import (
+    MusicPlanExecution,
+    NeuralMusicGenerator,
+    build_music_plan,
+    music_source_content_sha256,
+)
 
-ARTIFACT_SCHEMA_VERSION = "music-selection-v2"
+ARTIFACT_SCHEMA_VERSION = "music-selection-v3-execution"
 MusicGeneratorFactory = Callable[
     [ProjectContext, QuickMontageSettings],
     NeuralMusicGenerator | None,
@@ -88,21 +98,33 @@ class MusicSelectionStage(Stage):
                 "schema": ARTIFACT_SCHEMA_VERSION,
             }
         )
-        if stage_cache_manifest_matches(
-            cache_artifact,
-            stage=self.name,
-            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            input_fingerprint=input_fingerprint,
-            config_fingerprint=config_fingerprint,
-            artifacts=[music_artifact],
-        ) and _cached_music_artifact_valid(music_artifact):
+        cached_music_plan = _read_music_artifact(music_artifact)
+        if (
+            stage_cache_manifest_matches(
+                cache_artifact,
+                stage=self.name,
+                artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+                input_fingerprint=input_fingerprint,
+                config_fingerprint=config_fingerprint,
+                artifacts=[music_artifact],
+            )
+            and cached_music_plan is not None
+            and _music_plan_cache_valid(cached_music_plan)
+        ):
             return StageResult(
                 stage=self.name,
                 status=StageStatus.CACHED,
                 artifacts=[music_artifact, cache_artifact],
                 message="Music selection reused cached soundtrack metadata.",
+                execution=_music_execution_metadata(cached_music_plan),
             )
 
+        neural_generator = (
+            self._generator_factory(context, settings)
+            if self._generator_factory is not None
+            else _neural_music_generator(context, settings)
+        )
+        plan_execution = MusicPlanExecution()
         music_plan = build_music_plan(
             assets,
             scenes,
@@ -110,41 +132,106 @@ class MusicSelectionStage(Stage):
             context.settings.music_library.expanduser().resolve(),
             context.artifacts_dir / context.settings.generated_music_filename,
             draft_plan,
-            neural_generator=(
-                self._generator_factory(context, settings)
-                if self._generator_factory is not None
-                else _neural_music_generator(context, settings)
-            ),
+            neural_generator=neural_generator,
             ffmpeg_binary=context.settings.ffmpeg_binary,
             progress=context.progress,
+            execution=plan_execution,
         )
         if not _music_plan_source_available(music_plan):
             raise MontageError(
                 f"Music selection produced a {music_plan.mode} plan without an available "
                 "soundtrack file."
             )
+        music_plan = _music_plan_with_source_revision(music_plan)
         write_json_atomic(music_artifact, music_plan)
-        write_stage_cache_manifest(
-            cache_artifact,
-            stage=self.name,
-            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            input_fingerprint=input_fingerprint,
-            config_fingerprint=config_fingerprint,
-            artifacts=[music_artifact],
-        )
+        if music_plan.fallback_used:
+            cache_artifact.unlink(missing_ok=True)
+        else:
+            write_stage_cache_manifest(
+                cache_artifact,
+                stage=self.name,
+                artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+                input_fingerprint=input_fingerprint,
+                config_fingerprint=config_fingerprint,
+                artifacts=[music_artifact],
+            )
+        artifacts = [music_artifact]
+        if not music_plan.fallback_used:
+            artifacts.append(cache_artifact)
         return StageResult(
             stage=self.name,
-            artifacts=[music_artifact, cache_artifact],
-            message=f"Music selection prepared {music_plan.mode} soundtrack metadata.",
+            status=(
+                StageStatus.DEGRADED
+                if music_plan.fallback_used
+                else StageStatus.CACHED
+                if plan_execution.cache_hit
+                else StageStatus.COMPLETED
+            ),
+            cache_hit=plan_execution.cache_hit,
+            artifacts=artifacts,
+            message=(
+                f"Music selection prepared {music_plan.mode} soundtrack metadata"
+                + (" with procedural fallback." if music_plan.fallback_used else ".")
+            ),
+            execution=_music_execution_metadata(
+                music_plan,
+                primary_provider=(
+                    neural_generator.name
+                    if neural_generator is not None
+                    else "ace-step"
+                    if music_plan.fallback_used and settings.music_engine in {"auto", "ace-step"}
+                    else None
+                ),
+                primary_model=(neural_generator.model if neural_generator is not None else None),
+            ),
         )
 
 
 def _cached_music_artifact_valid(music_artifact: Path) -> bool:
+    music_plan = _read_music_artifact(music_artifact)
+    return music_plan is not None and _music_plan_cache_valid(music_plan)
+
+
+def _read_music_artifact(music_artifact: Path) -> MusicPlan | None:
     try:
-        music_plan = MusicPlan.model_validate_json(music_artifact.read_text(encoding="utf-8"))
+        return MusicPlan.model_validate_json(music_artifact.read_text(encoding="utf-8"))
     except (OSError, ValidationError):
+        return None
+
+
+def _music_plan_cache_valid(music_plan: MusicPlan) -> bool:
+    if music_plan.fallback_used or not _music_plan_source_available(music_plan):
         return False
-    return _music_plan_source_available(music_plan)
+    if music_plan.mode != "generated":
+        return True
+    return (
+        music_plan.source_path is not None
+        and music_plan.source_content_sha256 is not None
+        and music_source_content_sha256(music_plan.source_path) == music_plan.source_content_sha256
+    )
+
+
+def _music_plan_with_source_revision(music_plan: MusicPlan) -> MusicPlan:
+    if music_plan.mode != "generated" or music_plan.source_path is None:
+        return music_plan
+    content_revision = music_source_content_sha256(music_plan.source_path)
+    if content_revision is None:
+        raise MontageError("Generated soundtrack could not be fingerprinted safely.")
+    return music_plan.model_copy(update={"source_content_sha256": content_revision})
+
+
+def _music_execution_metadata(
+    music_plan: MusicPlan,
+    *,
+    primary_provider: str | None = None,
+    primary_model: str | None = None,
+) -> StageExecutionMetadata:
+    return StageExecutionMetadata(
+        fallback_count=int(music_plan.fallback_used),
+        provider=primary_provider if music_plan.fallback_used else music_plan.generator,
+        fallback_provider=music_plan.generator if music_plan.fallback_used else None,
+        model=primary_model if music_plan.fallback_used else music_plan.model,
+    )
 
 
 def _music_plan_source_available(music_plan: MusicPlan) -> bool:
@@ -167,7 +254,7 @@ def _neural_music_generator(
 ) -> NeuralMusicGenerator | None:
     if settings.music_mode not in {"auto", "generated"} or settings.music_engine == "procedural":
         return None
-    resources = detect_resource_profile(
+    resources = context.resources or detect_resource_profile(
         context.settings.ffmpeg_binary,
         worker_override=context.settings.workers,
         batch_override=context.settings.batch_size,
@@ -190,8 +277,19 @@ def _neural_music_generator(
             device=context.settings.device,
             gpu_memory_mb=resources.gpu_memory_mb,
             ffmpeg_timeout_seconds=context.settings.render_timeout_seconds,
+            cancel_requested=(
+                (lambda: _progress_heartbeat(context.progress))
+                if context.progress is not None
+                else None
+            ),
         ),
     )
+
+
+def _progress_heartbeat(progress: Callable[[int, int, str], None] | None) -> bool:
+    if progress is not None:
+        progress(1, 4, "ACE-Step: generation is still running")
+    return False
 
 
 def _music_source_fingerprints(

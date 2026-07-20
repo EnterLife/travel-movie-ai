@@ -1,5 +1,6 @@
 """Pipeline stage that renders the declarative montage timeline with FFmpeg."""
 
+import subprocess
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -10,12 +11,16 @@ from travelmovieai.application.validation import validate_output_path
 from travelmovieai.core.exceptions import MontageError, TravelMovieError
 from travelmovieai.domain.enums import PipelineStage, StageStatus
 from travelmovieai.domain.models import MontageQualityReport, QuickMontagePlan, StageResult
+from travelmovieai.editing.publication import (
+    publish_render_candidate,
+    render_candidate_path,
+)
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
     enforce_montage_quality,
     enrich_montage_quality_report_with_render,
 )
-from travelmovieai.editing.renderer import QuickMontageRenderer
+from travelmovieai.editing.renderer import QuickMontageRenderer, overlay_font_revision
 from travelmovieai.infrastructure.artifacts import (
     artifact_fingerprint,
     stage_cache_manifest_matches,
@@ -27,8 +32,8 @@ from travelmovieai.infrastructure.ffmpeg import FFprobeClient
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "rendering-v6-media-revisions"
-RENDERER_BEHAVIOR_VERSION = "safe-transitions-quality-gate-v8-portable-overlays"
+ARTIFACT_SCHEMA_VERSION = "rendering-v12-native-overlay-linebreaks"
+RENDERER_BEHAVIOR_VERSION = "verified-lossless-candidate-publication-v15-native-linebreaks"
 
 
 class RenderingStage(Stage):
@@ -69,6 +74,8 @@ class RenderingStage(Stage):
             plan,
             _file_revision(plan.music_path),
             _file_revision(plan.narration_path),
+            [_file_revision(cue.audio_path) for cue in plan.narration_cues],
+            overlay_font_revision(plan.settings),
         )
         config_fingerprint = artifact_fingerprint(
             {
@@ -93,23 +100,39 @@ class RenderingStage(Stage):
             quality_artifact,
             output_path,
             context.settings.ffprobe_binary,
+            context.settings.ffmpeg_binary,
+            plan,
+            context.settings.render_timeout_seconds,
         ):
+            cached_quality = MontageQualityReport.model_validate_json(
+                quality_artifact.read_text(encoding="utf-8")
+            )
             return StageResult(
                 stage=self.name,
-                status=StageStatus.CACHED,
+                status=(
+                    StageStatus.DEGRADED
+                    if cached_quality.gate_status == "degraded"
+                    else StageStatus.CACHED
+                ),
+                cache_hit=True,
                 artifacts=[output_path, quality_artifact, cache_artifact],
-                message="Rendering reused cached movie and quality report.",
+                message=(
+                    "Rendering reused a cached movie with quality warnings."
+                    if cached_quality.gate_status == "degraded"
+                    else "Rendering reused cached movie and quality report."
+                ),
             )
 
         ensure_render_disk_space(
             workspace=context.workspace,
             output_path=output_path,
             settings=plan.settings,
+            plan=plan,
             reserve_mb=context.settings.render_disk_reserve_mb,
             safety_factor=context.settings.render_disk_safety_factor,
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        resources = detect_resource_profile(
+        resources = context.resources or detect_resource_profile(
             context.settings.ffmpeg_binary,
             worker_override=context.settings.workers,
             batch_override=context.settings.batch_size,
@@ -124,42 +147,57 @@ class RenderingStage(Stage):
             ffmpeg_threads=resources.ffmpeg_threads,
             timeout_seconds=context.settings.render_timeout_seconds,
         )
-        encoder = (
-            renderer.render(plan, output_path, context.cache_dir, context.progress)
-            if context.progress is not None
-            else renderer.render(plan, output_path, context.cache_dir)
-        )
+        candidate_path = render_candidate_path(output_path)
+        try:
+            encoder = (
+                renderer.render(plan, candidate_path, context.cache_dir, context.progress)
+                if context.progress is not None
+                else renderer.render(plan, candidate_path, context.cache_dir)
+            )
 
-        repository = MediaAssetRepository(context.database_path)
-        repository.initialize()
-        quality_report = build_montage_quality_report(plan, repository.list_scenes())
-        quality_report = enrich_montage_quality_report_with_render(
-            quality_report,
-            output_path,
-            ffprobe_binary=context.settings.ffprobe_binary,
-            ffmpeg_binary=context.settings.ffmpeg_binary,
-            timeout_seconds=context.settings.render_timeout_seconds,
-        )
-        quality_report = quality_report.model_copy(update={"render_encoder": encoder})
-        write_json_atomic(quality_artifact, quality_report)
-        enforce_montage_quality(quality_report)
-        repository.record_timeline_version(
-            plan,
-            phase="rendered",
-            variant_name=context.variant_name,
-            variant_slug=context.variant_slug,
-            output_path=output_path,
-        )
-        write_stage_cache_manifest(
-            cache_artifact,
-            stage=self.name,
-            artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            input_fingerprint=input_fingerprint,
-            config_fingerprint=config_fingerprint,
-            artifacts=[output_path, quality_artifact],
-        )
+            repository = MediaAssetRepository(context.database_path)
+            repository.initialize()
+            try:
+                quality_report = build_montage_quality_report(plan, repository.list_scenes())
+                quality_report = enrich_montage_quality_report_with_render(
+                    quality_report,
+                    candidate_path,
+                    ffprobe_binary=context.settings.ffprobe_binary,
+                    ffmpeg_binary=context.settings.ffmpeg_binary,
+                    timeout_seconds=context.settings.render_timeout_seconds,
+                    require_full_scan=plan.settings.validate_full_render_decode,
+                )
+                quality_report = quality_report.model_copy(update={"render_encoder": encoder})
+                enforce_montage_quality(quality_report)
+                quality_report = quality_report.model_copy(update={"rendered_path": output_path})
+                publish_render_candidate(candidate_path, output_path)
+                write_json_atomic(quality_artifact, quality_report)
+                repository.record_timeline_version(
+                    plan,
+                    phase="rendered",
+                    variant_name=context.variant_name,
+                    variant_slug=context.variant_slug,
+                    output_path=output_path,
+                )
+                write_stage_cache_manifest(
+                    cache_artifact,
+                    stage=self.name,
+                    artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
+                    input_fingerprint=input_fingerprint,
+                    config_fingerprint=config_fingerprint,
+                    artifacts=[output_path, quality_artifact],
+                )
+            finally:
+                repository.close()
+        finally:
+            candidate_path.unlink(missing_ok=True)
         return StageResult(
             stage=self.name,
+            status=(
+                StageStatus.DEGRADED
+                if quality_report.gate_status == "degraded"
+                else StageStatus.COMPLETED
+            ),
             artifacts=[output_path, quality_artifact, cache_artifact],
             message=f"Rendering produced {output_path} with {encoder}.",
         )
@@ -169,6 +207,9 @@ def _cached_render_artifacts_valid(
     quality_artifact: Path,
     output_path: Path,
     ffprobe_binary: str,
+    ffmpeg_binary: str,
+    plan: QuickMontagePlan,
+    timeout_seconds: float,
 ) -> bool:
     try:
         report = MontageQualityReport.model_validate_json(
@@ -181,6 +222,7 @@ def _cached_render_artifacts_valid(
         or report.rendered_path != output_path
         or report.rendered_has_video is not True
         or report.rendered_has_audio is not True
+        or report.gate_status == "failed"
     ):
         return False
     try:
@@ -196,10 +238,60 @@ def _cached_render_artifacts_valid(
         return False
     if probe.duration_seconds is None or probe.duration_seconds <= 0:
         return False
-    return not (
+    video_stream = next(
+        (
+            stream
+            for stream in probe.metadata.get("streams", [])
+            if isinstance(stream, dict) and stream.get("codec_type") == "video"
+        ),
+        None,
+    )
+    probe_width = getattr(probe, "width", None)
+    probe_height = getattr(probe, "height", None)
+    probe_fps = getattr(probe, "fps", None)
+    if (
+        probe_width != plan.settings.width
+        or probe_height != plan.settings.height
+        or probe_fps is None
+        or abs(probe_fps - plan.settings.fps) > 0.05
+        or not isinstance(video_stream, dict)
+        or video_stream.get("pix_fmt") != "yuv420p"
+        or abs(probe.duration_seconds - plan.total_duration_seconds)
+        > max(0.25, 3 / plan.settings.fps)
+    ):
+        return False
+    if (
         report.rendered_duration_seconds is not None
         and abs(probe.duration_seconds - report.rendered_duration_seconds) > 0.5
-    )
+    ):
+        return False
+    if plan.settings.validate_full_render_decode:
+        try:
+            decoded = subprocess.run(
+                [
+                    ffmpeg_binary,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(output_path),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "0:a:0",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                capture_output=True,
+                check=False,
+                timeout=min(timeout_seconds, 3600),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if decoded.returncode != 0:
+            return False
+    return True
 
 
 def _file_revision(path: Path | None) -> dict[str, object] | None:

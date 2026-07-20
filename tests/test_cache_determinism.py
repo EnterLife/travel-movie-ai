@@ -97,7 +97,9 @@ def test_scene_detection_replaces_legacy_random_id_cache(
     result = SceneDetectionStage(settings=settings).run(context)
     stored = MediaAssetRepository(context.database_path).list_scenes()
 
-    assert result.status is StageStatus.COMPLETED
+    assert result.status is StageStatus.DEGRADED
+    assert result.execution.fallback_count == 2
+    assert result.execution.fallback_provider == "uniform"
     assert legacy_id not in {scene.id for scene in stored}
     assert all(scene.id.version == 5 for scene in stored)
 

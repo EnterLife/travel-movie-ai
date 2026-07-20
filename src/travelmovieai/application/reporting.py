@@ -36,11 +36,11 @@ def generate_project_report(context: ProjectContext) -> ProjectReportResult:
     """Build a self-contained report without external scripts, fonts, or telemetry."""
 
     context.prepare()
-    repository = MediaAssetRepository(context.database_path)
-    repository.initialize()
-    assets = repository.list_assets()
-    scenes = repository.list_scenes()
-    events = repository.list_events()
+    with MediaAssetRepository(context.database_path) as repository:
+        repository.initialize()
+        assets = repository.list_assets()
+        scenes = repository.list_scenes()
+        events = repository.list_events()
     storyboard = _read_optional_model(
         context.artifacts_dir / "storyboard.json",
         Storyboard,
@@ -106,6 +106,19 @@ def _build_html(
     generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     duration = timeline.total_duration_seconds if timeline is not None else 0
     quality_score = f"{quality.score:.1f}/100" if quality is not None else "Not rendered"
+    quality_status = quality.gate_status.upper() if quality is not None else "NOT RENDERED"
+    semantic_tail = (
+        f"{quality.semantic_score_p10:.1f}"
+        if quality is not None and quality.semantic_score_p10 is not None
+        else "—"
+    )
+    full_media_scan = (
+        "complete"
+        if quality is not None
+        and quality.rendered_media_metrics is not None
+        and quality.rendered_media_metrics.scan_completed
+        else "not available"
+    )
     issue_count = len(quality.issues) if quality is not None else 0
     event_cards = "".join(_event_html(event) for event in events) or (
         '<p class="empty">No events have been detected yet.</p>'
@@ -165,6 +178,12 @@ def _build_html(
     {_metric("Selected clips", str(len(selected_ids)))}
     {_metric("Planned duration", f"{duration:.1f} s")}
     {_metric("Montage quality", quality_score)}
+    {_metric("Quality gate", quality_status)}
+    {_metric("Semantic p10", semantic_tail)}
+    {_metric("Dominant event", f"{(quality.dominant_event_ratio if quality else 0):.0%}")}
+    {_metric("Adjacent repeats", str(quality.adjacent_source_repeat_count if quality else 0))}
+    {_metric("Center cuts", f"{(quality.center_cut_ratio if quality else 0):.0%}")}
+    {_metric("Full media QA", full_media_scan)}
   </div>
   <section><h2>Story events</h2><div class="events">{event_cards}</div></section>
   <section><h2>Scene decisions</h2><div class="table-wrap"><table>

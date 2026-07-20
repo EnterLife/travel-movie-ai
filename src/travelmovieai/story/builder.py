@@ -13,6 +13,10 @@ from travelmovieai.domain.models import (
     Storyboard,
     StorySection,
 )
+from travelmovieai.story.editorial import clean_caption
+
+_EDGE_EVENT_RATIO = 0.15
+_HIGHLIGHT_EVENT_RATIO = 0.25
 
 
 def build_multimodal_descriptions(
@@ -21,8 +25,10 @@ def build_multimodal_descriptions(
     """Combine available modality outputs without inventing missing context."""
     descriptions: list[MultimodalSceneDescription] = []
     for scene in scenes:
-        vision = str(scene.metadata.get("detailed_description") or scene.caption or "").strip()
-        if not vision:
+        vision = clean_caption(scene.metadata.get("detailed_description"), max_characters=500)
+        caption = clean_caption(scene.caption, max_characters=500)
+        vision = vision or caption
+        if vision is None:
             continue
         parts = [vision]
         modalities: list[Literal["vision", "speech", "opencv", "audio"]] = ["vision"]
@@ -45,7 +51,7 @@ def build_multimodal_descriptions(
             MultimodalSceneDescription(
                 scene_id=scene.id,
                 description=" ".join(parts),
-                vision_caption=scene.caption or vision,
+                vision_caption=caption or vision,
                 transcript=transcript,
                 quality_score=scene.quality_score,
                 audio_context=audio_context,
@@ -71,49 +77,44 @@ def build_storyboard(
         event_id = str(scene.metadata.get("event_id", ""))
         scene_ids_by_event.setdefault(event_id, []).append(scene.id)
 
+    opening, journey, highlights, finale = _story_event_groups(events)
     sections: list[StorySection] = []
-    first = events[0]
+    first = opening[0]
     sections.append(
         StorySection(
             role="opening",
             title=first.title,
-            event_ids=[first.id],
-            scene_ids=scene_ids_by_event.get(str(first.id), []),
+            event_ids=[event.id for event in opening],
+            scene_ids=_section_scene_ids(opening, scene_ids_by_event),
         )
     )
-    middle = events[1:-1]
-    if middle:
-        highlight = max(middle, key=lambda event: event.importance_score)
-        journey = [event for event in middle if event.id != highlight.id]
-        if journey:
-            sections.append(
-                StorySection(
-                    role="journey",
-                    title="The Journey",
-                    event_ids=[event.id for event in journey],
-                    scene_ids=[
-                        scene_id
-                        for event in journey
-                        for scene_id in scene_ids_by_event.get(str(event.id), [])
-                    ],
-                )
+    if journey:
+        sections.append(
+            StorySection(
+                role="journey",
+                title="The Journey",
+                event_ids=[event.id for event in journey],
+                scene_ids=_section_scene_ids(journey, scene_ids_by_event),
             )
+        )
+    if highlights:
+        lead_highlight = max(highlights, key=lambda event: event.importance_score)
         sections.append(
             StorySection(
                 role="highlight",
-                title=highlight.title,
-                event_ids=[highlight.id],
-                scene_ids=scene_ids_by_event.get(str(highlight.id), []),
+                title=lead_highlight.title,
+                event_ids=[event.id for event in highlights],
+                scene_ids=_section_scene_ids(highlights, scene_ids_by_event),
             )
         )
-    if len(events) > 1:
-        last = events[-1]
+    if finale:
+        last = finale[-1]
         sections.append(
             StorySection(
                 role="finale",
                 title=last.title,
-                event_ids=[last.id],
-                scene_ids=scene_ids_by_event.get(str(last.id), []),
+                event_ids=[event.id for event in finale],
+                scene_ids=_section_scene_ids(finale, scene_ids_by_event),
             )
         )
     return Storyboard(
@@ -122,6 +123,46 @@ def build_storyboard(
         event_ids=[event.id for event in events],
         sections=sections,
     )
+
+
+def _story_event_groups(
+    events: list[Event],
+) -> tuple[list[Event], list[Event], list[Event], list[Event]]:
+    """Partition a longer trip into a balanced four-part editorial arc."""
+
+    if len(events) == 1:
+        return list(events), [], [], []
+    if len(events) == 2:
+        return [events[0]], [], [], [events[1]]
+
+    edge_count = min(
+        max(1, int(len(events) * _EDGE_EVENT_RATIO + 0.5)),
+        (len(events) - 1) // 2,
+    )
+    opening = list(events[:edge_count])
+    finale = list(events[-edge_count:])
+    middle = list(events[edge_count:-edge_count])
+    highlight_count = min(
+        len(middle),
+        max(1, int(len(events) * _HIGHLIGHT_EVENT_RATIO + 0.5)),
+    )
+    highlight_ids = {
+        event.id
+        for _, event in sorted(
+            enumerate(middle),
+            key=lambda item: (-item[1].importance_score, item[0]),
+        )[:highlight_count]
+    }
+    highlights = [event for event in middle if event.id in highlight_ids]
+    journey = [event for event in middle if event.id not in highlight_ids]
+    return opening, journey, highlights, finale
+
+
+def _section_scene_ids(
+    events: list[Event],
+    scene_ids_by_event: dict[str, list[UUID]],
+) -> list[UUID]:
+    return [scene_id for event in events for scene_id in scene_ids_by_event.get(str(event.id), [])]
 
 
 def _story_title(events: list[Event], style: StoryStyle) -> str:

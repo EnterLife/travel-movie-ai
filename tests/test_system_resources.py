@@ -69,6 +69,7 @@ def test_six_gb_gpu_uses_safe_two_scene_batch(monkeypatch) -> None:
             gpu_name="RTX 3060",
             memory_mb=6 * 1024,
             ffmpeg_nvenc=True,
+            torch_cuda=True,
         )
     )
 
@@ -86,6 +87,7 @@ def test_high_memory_workstation_uses_more_analysis_workers(monkeypatch) -> None
             gpu_name="RTX Workstation",
             memory_mb=16 * 1024,
             ffmpeg_nvenc=True,
+            torch_cuda=True,
         )
     )
 
@@ -104,6 +106,7 @@ def test_resource_profile_uses_free_vram_and_keeps_driver_reserve(monkeypatch) -
             memory_mb=16 * 1024,
             free_memory_mb=3500,
             ffmpeg_nvenc=True,
+            torch_cuda=True,
         ),
         gpu_memory_reserve_mb=1536,
     )
@@ -151,3 +154,35 @@ def test_auto_resource_mode_protects_low_memory_system(monkeypatch) -> None:
 
     assert profile.resource_mode == "safe"
     assert profile.render_workers == 1
+
+
+def test_nvidia_without_torch_cuda_uses_cpu_sized_vision_batch(monkeypatch) -> None:
+    monkeypatch.setattr(system.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(system, "_system_memory_mb", lambda: 32 * 1024)
+
+    profile = detect_resource_profile(
+        cuda=CudaStatus(
+            available=True,
+            memory_mb=24 * 1024,
+            ffmpeg_nvenc=True,
+            torch_cuda=False,
+        )
+    )
+
+    assert profile.device == "cpu"
+    assert profile.model_batch_size == 2
+
+
+def test_nvenc_detection_requires_a_functional_encode(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_: object):
+        calls.append(command)
+        if "-encoders" in command:
+            return system.subprocess.CompletedProcess(command, 0, stdout=" V h264_nvenc")
+        return system.subprocess.CompletedProcess(command, 1, stderr=b"driver unavailable")
+
+    monkeypatch.setattr(system.subprocess, "run", run)
+
+    assert system._ffmpeg_has_nvenc("ffmpeg") is False
+    assert len(calls) == 2

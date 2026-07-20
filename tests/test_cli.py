@@ -22,6 +22,9 @@ def test_analyze_reports_media_scan_summary(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Media scan found 0 file(s)" in result.stdout
+    assert "Starting media scan" not in result.stdout
+    assert "Starting media scan" in result.stderr
+    assert "[100%]" in result.stderr
 
 
 def test_analyze_reports_unsafe_workspace_without_traceback(tmp_path: Path) -> None:
@@ -197,6 +200,15 @@ def test_create_command_plumbs_advanced_render_settings(
             "--output",
             str(tmp_path / "movie.mp4"),
             "--semantic",
+            "--analysis-quality",
+            "deep",
+            "--width",
+            "1920",
+            "--height",
+            "1080",
+            "--fps",
+            "24",
+            "--validate-full-render-decode",
             "--variant",
             "vertical cut",
             "--framing",
@@ -220,7 +232,12 @@ def test_create_command_plumbs_advanced_render_settings(
     settings = captured["montage_settings"]
     assert result.exit_code == 0
     assert isinstance(settings, QuickMontageSettings)
+    assert settings.width == 1920
+    assert settings.height == 1080
+    assert settings.fps == 24
+    assert settings.validate_full_render_decode is True
     assert settings.framing_mode == "smart"
+    assert settings.analysis_quality_mode == "deep"
     assert settings.vertical_video_layout == "blur"
     assert settings.photo_motion == "ken_burns"
     assert settings.color_normalization is True
@@ -254,4 +271,54 @@ def test_create_command_reports_invalid_advanced_setting_without_traceback(
 
     assert result.exit_code == 1
     assert "framing_mode" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_create_command_rejects_invalid_analysis_quality_without_traceback(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "create",
+            "--input",
+            str(media),
+            "--output",
+            str(tmp_path / "movie.mp4"),
+            "--semantic",
+            "--analysis-quality",
+            "extreme",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "analysis_quality_mode" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_create_command_rejects_odd_output_width_without_traceback(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "create",
+            "--input",
+            str(media),
+            "--output",
+            str(tmp_path / "movie.mp4"),
+            "--width",
+            "1279",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "width" in result.stderr
+    assert "multiple of 2" in result.stderr
     assert "Traceback" not in result.stderr

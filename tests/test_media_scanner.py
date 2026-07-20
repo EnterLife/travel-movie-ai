@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from PIL import Image
+
 from travelmovieai.core.exceptions import MediaProbeError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.infrastructure.ffmpeg import ProbeResult
@@ -57,6 +59,25 @@ def test_scan_discovers_supported_files_and_reuses_cache(tmp_path: Path) -> None
     assert probe.paths == [video.resolve()]
 
 
+def test_scan_reports_each_discovered_asset_progress(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "a.mp4").write_bytes(b"a")
+    (media / "b.mp4").write_bytes(b"b")
+    events: list[tuple[int, int, str]] = []
+
+    report = MediaScanner(FakeProbe()).scan(
+        media,
+        progress=lambda current, total, message: events.append((current, total, message)),
+    )
+
+    assert report.discovered_count == 2
+    assert events == [
+        (1, 2, "Media scan: 1/2"),
+        (2, 2, "Media scan: 2/2"),
+    ]
+
+
 def test_scan_preserves_asset_identity_when_existing_file_changes(tmp_path: Path) -> None:
     media = tmp_path / "media"
     media.mkdir()
@@ -97,9 +118,40 @@ def test_scan_records_probe_error_without_stopping_project(tmp_path: Path) -> No
     assert report.discovered_count == 1
     assert report.error_count == 1
     assert report.assets[0].scan_error == "Could not inspect broken.mp4: corrupt media"
-    assert cached_report.probed_count == 0
-    assert cached_report.cached_count == 1
+    assert cached_report.probed_count == 1
+    assert cached_report.cached_count == 0
     assert cached_report.error_count == 1
+
+
+def test_scan_retries_unchanged_probe_error_and_recovers_identity(tmp_path: Path) -> None:
+    media = tmp_path / "Поездка"
+    media.mkdir()
+    video = media / "неисправный клип.mp4"
+    video.write_bytes(b"video")
+
+    failed = MediaScanner(FailingProbe()).scan(media)
+    recovered = MediaScanner(FakeProbe()).scan(media, cached_assets=failed.assets)
+
+    assert recovered.probed_count == 1
+    assert recovered.cached_count == 0
+    assert recovered.error_count == 0
+    assert recovered.assets[0].id == failed.assets[0].id
+    assert recovered.assets[0].scan_error is None
+    assert recovered.assets[0].duration_seconds == 3.5
+
+
+def test_scan_accepts_readable_photo_when_ffprobe_cannot_inspect_it(tmp_path: Path) -> None:
+    media = tmp_path / "Фото"
+    media.mkdir()
+    photo = media / "вид на море.jpg"
+    Image.new("RGB", (16, 9), color=(20, 80, 140)).save(photo)
+
+    report = MediaScanner(FailingProbe()).scan(media)
+
+    assert report.error_count == 0
+    assert report.assets[0].scan_error is None
+    assert report.assets[0].width == 16
+    assert report.assets[0].height == 9
 
 
 def test_scan_ignores_invalid_probe_coordinates_without_stopping(tmp_path: Path) -> None:

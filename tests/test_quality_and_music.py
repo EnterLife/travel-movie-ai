@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from travelmovieai.analysis.quality import (
     TorchCudaQualityAnalyzer,
@@ -20,6 +20,7 @@ from travelmovieai.domain.models import (
     QuickMontagePlan,
     QuickMontageSettings,
     Scene,
+    TemporalHighlightWindow,
     VisualQualityMetrics,
 )
 from travelmovieai.story.music import (
@@ -59,6 +60,88 @@ def test_quality_analysis_persists_explainable_metrics(tmp_path: Path) -> None:
     assert metrics["candidate_windows"]
     assert metrics["candidate_windows"][0]["source"] == "visual_quality"
     assert isinstance(metrics["rejection_reasons"], list)
+
+
+@pytest.mark.parametrize(
+    ("sample_count", "height"),
+    [(5, 540), (9, 810)],
+)
+def test_quality_analysis_splits_temporal_contact_sheet_row_major(
+    tmp_path: Path,
+    sample_count: int,
+    height: int,
+) -> None:
+    image_path = tmp_path / f"scene-contact-v4-{sample_count}.png"
+    sheet = Image.new("RGB", (1440, height), "black")
+    for index in range(sample_count):
+        panel = Image.new("RGB", (480, 270), (20 + index * 12, 35, 50))
+        draw = ImageDraw.Draw(panel)
+        offset = 30 + (index % 3) * 45
+        draw.rectangle((offset, 35, offset + 90, 230), fill="white")
+        draw.line((0, 20 + index * 9, 479, 245 - index * 7), fill="yellow", width=6)
+        sheet.paste(panel, ((index % 3) * 480, (index // 3) * 270))
+    sheet.save(image_path)
+
+    metrics = VisualQualityAnalyzer().analyze(image_path)
+
+    assert metrics.sample_count == sample_count
+    assert len(metrics.panel_details) == sample_count
+    assert len(metrics.panel_quality_scores) == sample_count
+    assert len(metrics.candidate_windows) == sample_count
+    assert metrics.sample_positions == list(
+        (0.08, 0.3, 0.5, 0.7, 0.92)
+        if sample_count == 5
+        else (0.06, 0.17, 0.29, 0.4, 0.5, 0.6, 0.71, 0.83, 0.94)
+    )
+    assert metrics.motion_score > 0
+    assert metrics.camera_shake_score > 0
+
+
+def test_quality_analysis_does_not_misread_plain_sixteen_by_nine_photo_as_grid(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "ordinary-photo.png"
+    Image.new("RGB", (1440, 810), (80, 120, 160)).save(image_path)
+
+    metrics = VisualQualityAnalyzer().analyze(image_path)
+
+    assert metrics.sample_count == 1
+    assert len(metrics.panel_details) == 1
+
+
+def test_quality_analysis_uses_persisted_actual_sample_positions(tmp_path: Path) -> None:
+    image_path = tmp_path / "scene-contact-v4-3.png"
+    Image.new("RGB", (1440, 270), (80, 120, 160)).save(image_path)
+    positions = [0.1, 0.48, 0.84]
+    scene = Scene(
+        asset_id=uuid4(),
+        start_seconds=0,
+        end_seconds=2,
+        keyframe_path=image_path,
+        metadata={
+            "contact_sheet": {
+                "sample_count": 3,
+                "sample_positions": positions,
+            }
+        },
+    )
+
+    report = analyze_scene_quality([scene], VisualQualityAnalyzer())
+
+    metrics = report.scenes[0].metadata["quality_metrics"]
+    assert metrics["sample_positions"] == positions
+    assert [item["relative_position"] for item in metrics["candidate_windows"]] == positions
+
+
+def test_temporal_highlight_window_rejects_position_outside_interval() -> None:
+    with pytest.raises(ValueError, match="inside the highlight interval"):
+        TemporalHighlightWindow(
+            relative_start=0.2,
+            relative_end=0.4,
+            relative_position=0.8,
+            confidence=0.9,
+            source="vision",
+        )
 
 
 def test_parallel_quality_analysis_does_not_start_queued_work_after_cancel(
@@ -166,7 +249,7 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
     assert plan.source_path == output
     assert plan.generated is True
     assert plan.duration_seconds == 8
-    assert plan.arrangement_version == "adaptive-lounge-v6"
+    assert plan.arrangement_version == "adaptive-lounge-v7-content-revision"
     assert plan.cue_sections
     assert plan.cue_sections[0].bpm == 60
     assert plan.beat_grid

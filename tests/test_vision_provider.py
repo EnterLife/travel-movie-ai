@@ -184,3 +184,44 @@ def test_local_qwen_discards_incomplete_or_out_of_range_focus() -> None:
     assert result.focus_x is None
     assert result.focus_y is None
     assert result.focus_source is None
+
+
+def test_local_qwen_normalizes_and_validates_temporal_highlights() -> None:
+    result = _parse_local_qwen_understanding(
+        """
+        {
+          "caption": "Changing coastal view",
+          "detailed_description": "The view opens toward the sea.",
+          "score_factors": {},
+          "highlight_windows": [
+            {
+              "relative_start": 0.68,
+              "relative_end": 0.9,
+              "relative_position": 0.82,
+              "confidence": 92,
+              "label": "coast revealed"
+            },
+            {
+              "relative_start": 0.7,
+              "relative_end": 0.4,
+              "relative_position": 0.5,
+              "confidence": 0.9,
+              "label": "invalid reversed interval"
+            },
+            {
+              "relative_position": 0.02,
+              "confidence": 0.7,
+              "label": "opening"
+            }
+          ]
+        }
+        """
+    )
+
+    assert len(result.highlight_windows) == 2
+    opening, reveal = result.highlight_windows
+    assert opening.relative_start == 0
+    assert opening.relative_position == pytest.approx(0.02)
+    assert reveal.relative_end == pytest.approx(0.9)
+    assert reveal.confidence == pytest.approx(0.92)
+    assert reveal.source == "vision"

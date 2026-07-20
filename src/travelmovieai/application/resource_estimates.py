@@ -8,7 +8,10 @@ from collections.abc import Sequence
 from pydantic import BaseModel, Field, model_validator
 
 from travelmovieai.analysis.scenes import frame_sample_count_for_mode
-from travelmovieai.application.disk_space import estimate_rendered_movie_bytes
+from travelmovieai.application.disk_space import (
+    estimate_render_working_set,
+    estimate_rendered_movie_bytes,
+)
 from travelmovieai.core.config import Settings
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MediaAsset, QuickMontageSettings
@@ -114,8 +117,12 @@ def estimate_project_resources(
         (estimated_proxy_bytes + estimated_frame_cache_bytes + database_and_artifacts) * 1.1
     )
     rendered_movie = estimate_rendered_movie_bytes(montage_settings)
+    render_working_set = estimate_render_working_set(montage_settings)
     peak_workspace = analysis_workspace + math.ceil(
-        rendered_movie * settings.render_disk_safety_factor
+        max(
+            rendered_movie * settings.render_disk_safety_factor,
+            render_working_set.estimated_peak_working_set_bytes,
+        )
     )
     likely_runtime = _likely_runtime_seconds(
         asset_count=len(assets),

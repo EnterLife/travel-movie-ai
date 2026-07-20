@@ -64,17 +64,17 @@ class MediaScanReport(BaseModel):
     input_path: Path
     scanned_at: datetime
     assets: list[MediaAsset] = Field(default_factory=list)
-    discovered_count: int = 0
-    probed_count: int = 0
-    cached_count: int = 0
-    error_count: int = 0
+    discovered_count: int = Field(default=0, ge=0)
+    probed_count: int = Field(default=0, ge=0)
+    cached_count: int = Field(default=0, ge=0)
+    error_count: int = Field(default=0, ge=0)
 
 
 class Scene(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     asset_id: UUID
-    start_seconds: float
-    end_seconds: float
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(ge=0)
     keyframe_path: Path | None = None
     caption: str | None = None
     transcript: str | None = None
@@ -82,20 +82,34 @@ class Scene(BaseModel):
     importance_score: float | None = Field(default=None, ge=0, le=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_time_window(self) -> "Scene":
+        if not self.end_seconds > self.start_seconds:
+            raise ValueError("end_seconds must be greater than start_seconds")
+        return self
+
 
 class SceneDetectionReport(BaseModel):
     created_at: datetime
     scenes: list[Scene] = Field(default_factory=list)
-    detected_count: int = 0
-    cached_count: int = 0
-    fallback_count: int = 0
+    detected_count: int = Field(default=0, ge=0)
+    cached_count: int = Field(default=0, ge=0)
+    fallback_count: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "SceneDetectionReport":
+        if self.detected_count + self.cached_count != len(self.scenes):
+            raise ValueError("detected_count plus cached_count must match the scene count")
+        if self.fallback_count > len(self.scenes):
+            raise ValueError("fallback_count cannot exceed the scene count")
+        return self
 
 
 class FrameSamplingReport(BaseModel):
     created_at: datetime
     scenes: list[Scene] = Field(default_factory=list)
-    extracted_count: int = 0
-    cached_count: int = 0
+    extracted_count: int = Field(default=0, ge=0)
+    cached_count: int = Field(default=0, ge=0)
 
 
 class LandmarkDetection(BaseModel):
@@ -111,6 +125,33 @@ class VisionScoreFactors(BaseModel):
     visual_quality: float = Field(ge=0, le=100)
     landmark: float = Field(ge=0, le=100)
     unusual_event: float = Field(ge=0, le=100)
+
+
+class TemporalHighlightWindow(BaseModel):
+    """A normalized, source-attributed interval inside one scene."""
+
+    relative_start: float = Field(ge=0, le=1)
+    relative_end: float = Field(ge=0, le=1)
+    relative_position: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    source: Literal[
+        "vision",
+        "visual_quality",
+        "audio",
+        "speech",
+        "combined",
+        "fallback",
+    ]
+    score: float | None = Field(default=None, ge=0, le=100)
+    label: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "TemporalHighlightWindow":
+        if self.relative_end <= self.relative_start:
+            raise ValueError("relative_end must be greater than relative_start")
+        if not self.relative_start <= self.relative_position <= self.relative_end:
+            raise ValueError("relative_position must be inside the highlight interval")
+        return self
 
 
 class SceneUnderstanding(BaseModel):
@@ -131,6 +172,10 @@ class SceneUnderstanding(BaseModel):
     score_factors: VisionScoreFactors
     story_relevance: str = Field(default="", max_length=500)
     tags: list[str] = Field(default_factory=list, max_length=20)
+    highlight_windows: list[TemporalHighlightWindow] = Field(
+        default_factory=list,
+        max_length=6,
+    )
 
     @model_validator(mode="after")
     def validate_focus_contract(self) -> "SceneUnderstanding":
@@ -144,12 +189,21 @@ class SceneUnderstanding(BaseModel):
 
 class VisionAnalysisReport(BaseModel):
     created_at: datetime
-    provider: str
-    model: str
-    prompt_version: str
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=300)
+    prompt_version: str = Field(min_length=1, max_length=100)
     scenes: list[Scene] = Field(default_factory=list)
-    analyzed_count: int = 0
-    cached_count: int = 0
+    analyzed_count: int = Field(default=0, ge=0)
+    cached_count: int = Field(default=0, ge=0)
+    degraded_count: int = Field(default=0, ge=0)
+    retry_count: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "VisionAnalysisReport":
+        processed_count = self.analyzed_count + self.cached_count + self.degraded_count
+        if processed_count > len(self.scenes):
+            raise ValueError("Vision result counts cannot exceed the scene count")
+        return self
 
 
 class SceneEmbedding(BaseModel):
@@ -159,7 +213,7 @@ class SceneEmbedding(BaseModel):
 
 class EmbeddingAnalysisReport(BaseModel):
     created_at: datetime
-    backend: str
+    backend: str = Field(min_length=1, max_length=100)
     model: str | None = None
     dimensions: int = Field(ge=1, le=4096)
     embeddings: list[SceneEmbedding] = Field(default_factory=list)
@@ -197,6 +251,12 @@ class SpeechSegment(BaseModel):
     text: str = Field(default="", max_length=1000)
     confidence: float | None = Field(default=None, ge=0, le=1)
 
+    @model_validator(mode="after")
+    def validate_time_window(self) -> "SpeechSegment":
+        if not self.end_seconds > self.start_seconds:
+            raise ValueError("end_seconds must be greater than start_seconds")
+        return self
+
 
 class SpeechTranscript(BaseModel):
     text: str
@@ -207,11 +267,11 @@ class SpeechTranscript(BaseModel):
 
 class SpeechAnalysisReport(BaseModel):
     created_at: datetime
-    provider: str
-    model: str
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=300)
     scenes: list[Scene] = Field(default_factory=list)
-    transcribed_count: int = 0
-    cached_count: int = 0
+    transcribed_count: int = Field(default=0, ge=0)
+    cached_count: int = Field(default=0, ge=0)
 
 
 class AudioSceneAnalysis(BaseModel):
@@ -246,8 +306,8 @@ class AudioAnalysisReport(BaseModel):
     created_at: datetime
     scenes: list[Scene] = Field(default_factory=list)
     analyses: list[AudioSceneAnalysis] = Field(default_factory=list)
-    analyzed_count: int = 0
-    skipped_count: int = 0
+    analyzed_count: int = Field(default=0, ge=0)
+    skipped_count: int = Field(default=0, ge=0)
 
 
 class VisualQualityMetrics(BaseModel):
@@ -264,10 +324,29 @@ class VisualQualityMetrics(BaseModel):
     panel_quality_scores: list[float] = Field(default_factory=list, max_length=12)
     best_panel_index: int | None = Field(default=None, ge=0)
     best_panel_position: float | None = Field(default=None, ge=0, le=1)
+    sample_count: int = Field(default=1, ge=1, le=9)
+    sample_positions: list[float] = Field(default_factory=lambda: [0.5], max_length=9)
     panel_details: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
-    candidate_windows: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    candidate_windows: list[TemporalHighlightWindow] = Field(default_factory=list, max_length=12)
     rejection_reasons: list[str] = Field(default_factory=list)
-    backend: str
+    backend: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_sample_positions(self) -> "VisualQualityMetrics":
+        if len(self.sample_positions) != self.sample_count:
+            raise ValueError("sample_positions length must match sample_count")
+        if any(position < 0 or position > 1 for position in self.sample_positions):
+            raise ValueError("sample_positions must be normalized to 0..1")
+        if any(
+            second < first
+            for first, second in zip(
+                self.sample_positions,
+                self.sample_positions[1:],
+                strict=False,
+            )
+        ):
+            raise ValueError("sample_positions must be chronological")
+        return self
 
 
 class QualityAnalysisReport(BaseModel):
@@ -284,8 +363,8 @@ class DuplicateGroup(BaseModel):
 class DuplicateDetectionReport(BaseModel):
     created_at: datetime
     groups: list[DuplicateGroup] = Field(default_factory=list)
-    unique_count: int = 0
-    duplicate_count: int = 0
+    unique_count: int = Field(default=0, ge=0)
+    duplicate_count: int = Field(default=0, ge=0)
 
 
 class SceneSelectionDecision(BaseModel):
@@ -308,22 +387,65 @@ class MontageQualityIssue(BaseModel):
     clip_index: int | None = Field(default=None, ge=0)
 
 
+class RenderedMediaMetrics(BaseModel):
+    """Full-duration delivery checks collected from FFmpeg/FFprobe."""
+
+    scan_completed: bool = False
+    scan_failure_reason: (
+        Literal[
+            "not_requested",
+            "process_unavailable",
+            "timeout",
+            "ffmpeg_error",
+        ]
+        | None
+    ) = None
+    black_duration_seconds: float | None = Field(default=None, ge=0)
+    black_ratio: float | None = Field(default=None, ge=0, le=1)
+    freeze_duration_seconds: float | None = Field(default=None, ge=0)
+    freeze_ratio: float | None = Field(default=None, ge=0, le=1)
+    silence_duration_seconds: float | None = Field(default=None, ge=0)
+    silence_ratio: float | None = Field(default=None, ge=0, le=1)
+    integrated_loudness_lufs: float | None = None
+    loudness_range_lu: float | None = Field(default=None, ge=0)
+    true_peak_dbfs: float | None = None
+    av_duration_delta_seconds: float | None = Field(default=None, ge=0)
+
+
 class MontageQualityReport(BaseModel):
     created_at: datetime
+    gate_status: Literal["passed", "degraded", "failed"] = "passed"
     score: float = Field(ge=0, le=100)
     target_duration_seconds: float = Field(ge=0)
     planned_duration_seconds: float = Field(ge=0)
     duration_ratio: float = Field(ge=0)
     clip_count: int = Field(ge=0)
+    photo_clip_count: int = Field(default=0, ge=0)
+    photo_duration_ratio: float = Field(default=0, ge=0, le=1)
     selected_scene_count: int = Field(ge=0)
     selected_event_count: int = Field(ge=0)
     total_event_count: int = Field(ge=0)
     event_coverage_ratio: float = Field(ge=0, le=1)
     source_count: int = Field(ge=0)
     dominant_source_ratio: float = Field(ge=0, le=1)
+    dominant_event_ratio: float = Field(default=0, ge=0, le=1)
+    dominant_role_ratio: float = Field(default=0, ge=0, le=1)
+    adjacent_source_repeat_count: int = Field(default=0, ge=0)
+    adjacent_source_repeat_ratio: float = Field(default=0, ge=0, le=1)
     average_semantic_score: float | None = Field(default=None, ge=0, le=100)
+    minimum_semantic_score: float | None = Field(default=None, ge=0, le=100)
+    semantic_score_p10: float | None = Field(default=None, ge=0, le=100)
+    median_semantic_score: float | None = Field(default=None, ge=0, le=100)
+    effective_semantic_threshold: float | None = Field(default=None, ge=0, le=100)
     average_quality_score: float | None = Field(default=None, ge=0, le=100)
+    minimum_quality_score: float | None = Field(default=None, ge=0, le=100)
+    quality_score_p10: float | None = Field(default=None, ge=0, le=100)
+    median_quality_score: float | None = Field(default=None, ge=0, le=100)
     window_selection: dict[str, int] = Field(default_factory=dict)
+    center_cut_ratio: float = Field(default=0, ge=0, le=1)
+    generic_caption_count: int = Field(default=0, ge=0)
+    generic_caption_ratio: float = Field(default=0, ge=0, le=1)
+    generic_title_count: int = Field(default=0, ge=0)
     music_mode: str | None = None
     music_duration_seconds: float | None = Field(default=None, ge=0)
     music_accent_count: int = Field(default=0, ge=0)
@@ -340,7 +462,19 @@ class MontageQualityReport(BaseModel):
     render_encoder: str | None = None
     rendered_audio_rms: dict[str, float] = Field(default_factory=dict)
     rendered_video_luma: dict[str, float] = Field(default_factory=dict)
+    rendered_media_metrics: RenderedMediaMetrics | None = None
     issues: list[MontageQualityIssue] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def synchronize_gate_status(self) -> "MontageQualityReport":
+        if any(issue.severity == "critical" for issue in self.issues):
+            expected = "failed"
+        elif any(issue.severity == "warning" for issue in self.issues):
+            expected = "degraded"
+        else:
+            expected = "passed"
+        object.__setattr__(self, "gate_status", expected)
+        return self
 
 
 class MusicAccent(BaseModel):
@@ -372,6 +506,12 @@ class MusicBeat(BaseModel):
 class MusicPlan(BaseModel):
     mode: Literal["none", "manual", "library", "generated"]
     source_path: Path | None = None
+    source_content_sha256: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     profile: Literal["calm", "lounge", "cinematic", "warm", "energetic"] | None = None
     bpm: int | None = Field(default=None, ge=40, le=180)
     duration_seconds: float | None = Field(default=None, ge=0)
@@ -385,6 +525,25 @@ class MusicPlan(BaseModel):
     cache_key: str | None = None
     reasoning: str = ""
     generated: bool = False
+
+    @model_validator(mode="after")
+    def validate_generator_model(self) -> "MusicPlan":
+        if self.generator in {"ace-step", "musicgen"} and not self.model:
+            raise ValueError("Neural music generators require a model identifier")
+        if self.generator == "procedural" and self.model is not None:
+            raise ValueError("Procedural music cannot declare a model identifier")
+        if self.generated:
+            if self.mode != "generated":
+                raise ValueError("A generated soundtrack must use generated mode")
+            if self.source_path is None or self.generator is None:
+                raise ValueError("A generated soundtrack requires a source and generator")
+            if self.duration_seconds is None or self.duration_seconds <= 0:
+                raise ValueError("A generated soundtrack requires a positive duration")
+            if self.cache_key is None or len(self.cache_key) != 64:
+                raise ValueError("A generated soundtrack requires a 64-character cache key")
+            if self.source_content_sha256 is None:
+                raise ValueError("A generated soundtrack requires a content fingerprint")
+        return self
 
 
 class Event(BaseModel):
@@ -456,6 +615,14 @@ class Storyboard(BaseModel):
 class NarrationLine(BaseModel):
     section_role: Literal["opening", "journey", "highlight", "finale"]
     text: str = Field(min_length=1, max_length=1000)
+    cue_start_seconds: float = Field(ge=0)
+    cue_end_seconds: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_cue_window(self) -> "NarrationLine":
+        if self.cue_end_seconds <= self.cue_start_seconds:
+            raise ValueError("cue_end_seconds must be greater than cue_start_seconds")
+        return self
 
 
 class NarrationReport(BaseModel):
@@ -463,15 +630,47 @@ class NarrationReport(BaseModel):
     lines: list[NarrationLine] = Field(default_factory=list)
 
 
-class VoiceSynthesisReport(BaseModel):
-    created_at: datetime
-    provider: str
-    model: str
+class NarrationAudioCue(BaseModel):
+    line_index: int = Field(ge=0)
+    section_role: Literal["opening", "journey", "highlight", "finale"]
+    audio_path: Path
+    cue_start_seconds: float = Field(ge=0)
+    cue_end_seconds: float = Field(gt=0)
+    duration_seconds: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_audio_cue(self) -> "NarrationAudioCue":
+        if self.cue_end_seconds <= self.cue_start_seconds:
+            raise ValueError("cue_end_seconds must be greater than cue_start_seconds")
+        expected_end = self.cue_start_seconds + self.duration_seconds
+        if abs(expected_end - self.cue_end_seconds) > 0.05:
+            raise ValueError("cue_end_seconds must match cue_start_seconds plus duration_seconds")
+        return self
+
+
+class SynthesizedNarrationLine(BaseModel):
+    line_index: int = Field(ge=0)
+    section_role: Literal["opening", "journey", "highlight", "finale"]
     audio_path: Path
     duration_seconds: float = Field(gt=0)
     sample_rate: int = Field(gt=0)
     channels: int = Field(gt=0, le=8)
+
+
+class VoiceSynthesisReport(BaseModel):
+    created_at: datetime
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=300)
     line_count: int = Field(ge=1)
+    lines: list[SynthesizedNarrationLine] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_lines(self) -> "VoiceSynthesisReport":
+        if self.line_count != len(self.lines):
+            raise ValueError("line_count must match the synthesized narration line count")
+        if any(line.line_index != index for index, line in enumerate(self.lines)):
+            raise ValueError("synthesized narration line indices must be contiguous")
+        return self
 
 
 class TimelineItem(BaseModel):
@@ -526,6 +725,8 @@ class QuickMontageSettings(BaseModel):
     credits_text: str | None = Field(default=None, max_length=500)
     overlay_safe_margin: float = Field(default=0.05, ge=0.03, le=0.2)
     overlay_max_characters: int = Field(default=160, ge=20, le=500)
+    overlay_font_path: Path | None = None
+    caption_characters_per_second: float = Field(default=18.0, ge=8, le=30)
     credits_duration_seconds: float = Field(default=3.0, ge=1, le=15)
     scene_threshold: float = Field(default=27, ge=1, le=100)
     min_scene_duration_seconds: float = Field(default=1.5, ge=0.5, le=30)
@@ -559,6 +760,14 @@ class QuickMontageSettings(BaseModel):
     narration_volume: float = Field(default=1.0, ge=0, le=2)
     background_volume_during_narration: float = Field(default=0.35, ge=0, le=1)
     source_audio_volume: float = Field(default=0.55, ge=0, le=1)
+    source_audio_fade_seconds: float = Field(default=0.08, ge=0, le=2)
+    music_fade_seconds: float = Field(default=1.5, ge=0, le=10)
+    narration_fade_seconds: float = Field(default=0.08, ge=0, le=2)
+    narration_characters_per_second: float = Field(default=14.0, ge=8, le=30)
+    final_audio_fade_seconds: float = Field(default=0.35, ge=0, le=5)
+    delivery_loudness_lufs: float = Field(default=-16.0, ge=-31, le=-9)
+    delivery_true_peak_dbfs: float = Field(default=-1.5, ge=-9, le=-0.1)
+    validate_full_render_decode: bool = False
     preview_mode: bool = False
 
 
@@ -585,6 +794,15 @@ class MontageClip(BaseModel):
     brightness_adjustment: float = Field(default=0, ge=-0.25, le=0.25)
     contrast_multiplier: float = Field(default=1, ge=0.75, le=1.25)
     saturation_multiplier: float = Field(default=1, ge=0.75, le=1.25)
+    window_source: Literal[
+        "vision_highlight",
+        "visual_quality",
+        "speech",
+        "people",
+        "center",
+        "scene_bounds",
+        "other",
+    ] = "other"
     selection_reason: str = ""
     transition: Literal["cut", "fade", "wipeleft", "slideright"] | None = None
 
@@ -597,7 +815,21 @@ class QuickMontagePlan(BaseModel):
     music_path: Path | None = None
     music_plan: MusicPlan | None = None
     narration_path: Path | None = None
+    narration_cues: list[NarrationAudioCue] = Field(default_factory=list)
     selection_mode: Literal["chronological", "semantic"] = "chronological"
+
+    @model_validator(mode="after")
+    def validate_narration_cues(self) -> "QuickMontagePlan":
+        previous_end = 0.0
+        for index, cue in enumerate(self.narration_cues):
+            if cue.line_index != index:
+                raise ValueError("narration cue line indices must be contiguous")
+            if cue.cue_start_seconds < previous_end - 0.01:
+                raise ValueError("narration cues must not overlap")
+            if cue.cue_end_seconds > self.total_duration_seconds + 0.05:
+                raise ValueError("narration cue exceeds the montage duration")
+            previous_end = cue.cue_end_seconds
+        return self
 
 
 class QuickMontageResult(BaseModel):
@@ -613,15 +845,33 @@ class QuickMontageResult(BaseModel):
     music_model: str | None = None
     quality_score: float | None = Field(default=None, ge=0, le=100)
     quality_issue_count: int = Field(default=0, ge=0)
+    quality_gate_status: Literal["passed", "degraded", "failed"] | None = None
+    semantic_score_p10: float | None = Field(default=None, ge=0, le=100)
+    dominant_event_ratio: float | None = Field(default=None, ge=0, le=1)
+    adjacent_source_repeat_ratio: float | None = Field(default=None, ge=0, le=1)
+    center_cut_ratio: float | None = Field(default=None, ge=0, le=1)
+    full_media_qa_completed: bool = False
+
+
+class StageExecutionMetadata(BaseModel):
+    """Allow-listed runtime details that may be persisted in run manifests."""
+
+    retry_count: int = Field(default=0, ge=0)
+    fallback_count: int = Field(default=0, ge=0)
+    provider: str | None = Field(default=None, min_length=1, max_length=100)
+    fallback_provider: str | None = Field(default=None, min_length=1, max_length=100)
+    model: str | None = Field(default=None, min_length=1, max_length=300)
 
 
 class StageResult(BaseModel):
     stage: PipelineStage
     status: StageStatus = StageStatus.COMPLETED
+    cache_hit: bool = False
     skipped: bool = False
     artifacts: list[Path] = Field(default_factory=list)
     message: str = ""
     trace: list["StageResult"] = Field(default_factory=list)
+    execution: StageExecutionMetadata = Field(default_factory=StageExecutionMetadata)
 
     @model_validator(mode="before")
     @classmethod
@@ -637,7 +887,15 @@ class StageResult(BaseModel):
             )
             normalized["status"] = explicit_status
         status = StageStatus(explicit_status)
-        expected_skipped = status is not StageStatus.COMPLETED
+        cache_hit = bool(normalized.get("cache_hit", status is StageStatus.CACHED))
+        if status is StageStatus.CACHED and not cache_hit:
+            raise ValueError("cached status requires cache_hit")
+        normalized["cache_hit"] = cache_hit
+        expected_skipped = cache_hit or status in {
+            StageStatus.CACHED,
+            StageStatus.DISABLED,
+            StageStatus.NO_INPUT,
+        }
         if "skipped" in normalized and bool(normalized["skipped"]) != expected_skipped:
             raise ValueError("skipped must match the explicit stage status")
         normalized["skipped"] = expected_skipped

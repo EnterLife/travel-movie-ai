@@ -12,6 +12,7 @@ from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import (
     MontageClip,
+    MontageQualityIssue,
     MontageQualityReport,
     MusicBeat,
     MusicCueSection,
@@ -21,6 +22,7 @@ from travelmovieai.domain.models import (
     Scene,
 )
 from travelmovieai.editing.quality_report import (
+    _full_duration_media_metrics,
     _rendered_audio_rms,
     build_montage_quality_report,
     enforce_montage_quality,
@@ -67,8 +69,24 @@ def test_quality_gate_rejects_critical_report() -> None:
     )
     report = build_montage_quality_report(plan, [])
 
+    assert report.gate_status == "failed"
     with pytest.raises(MontageError, match="quality gate"):
         enforce_montage_quality(report)
+
+
+def test_quality_report_derives_degraded_status_for_legacy_payload() -> None:
+    payload = _render_report().model_dump(exclude={"gate_status"})
+    payload["issues"] = [
+        MontageQualityIssue(
+            severity="warning",
+            code="legacy_warning",
+            message="Existing warning from a cached report.",
+        )
+    ]
+
+    report = MontageQualityReport.model_validate(payload)
+
+    assert report.gate_status == "degraded"
 
 
 def test_montage_quality_report_flags_timeline_risks(tmp_path: Path) -> None:
@@ -105,6 +123,7 @@ def test_montage_quality_report_flags_timeline_risks(tmp_path: Path) -> None:
             duration_seconds=1.5,
             semantic_score=45,
             event_id=event_id,
+            window_source="center",
             selection_reason="vision 45; center of scene",
         )
         for index in range(3)
@@ -310,6 +329,7 @@ def test_montage_quality_report_flags_excessive_center_cuts(tmp_path: Path) -> N
             relative_path=Path(f"center-{index}.mp4"),
             media_type=MediaType.VIDEO,
             duration_seconds=3,
+            window_source="center",
             selection_reason="vision 80; center of scene",
         )
         for index in range(4)
@@ -325,6 +345,292 @@ def test_montage_quality_report_flags_excessive_center_cuts(tmp_path: Path) -> N
     report = build_montage_quality_report(plan, [])
 
     assert "excessive_center_cuts" in {issue.code for issue in report.issues}
+
+
+def test_montage_quality_report_exposes_lower_tail_and_dominance(
+    tmp_path: Path,
+) -> None:
+    first_source = uuid4()
+    second_source = uuid4()
+    first_event = uuid4()
+    second_event = uuid4()
+    semantic_scores = [40, 42, 60, 60, 60, 60, 60, 60]
+    quality_scores = [20, 21, 70, 70, 70, 70, 70, 70]
+    scenes = [
+        Scene(
+            asset_id=first_source if index < 4 else second_source,
+            start_seconds=0,
+            end_seconds=6,
+            quality_score=quality_scores[index],
+            importance_score=semantic_scores[index],
+            caption="A series of frames showing a coastline.",
+            metadata={
+                "event_id": str(first_event if index < 5 else second_event),
+                "story_section_role": "journey" if index < 6 else "highlight",
+            },
+        )
+        for index in range(8)
+    ]
+    clips = [
+        MontageClip(
+            asset_id=scene.asset_id,
+            scene_id=scene.id,
+            source_path=tmp_path / f"source-{index}.mp4",
+            relative_path=Path(f"source-{index}.mp4"),
+            media_type=MediaType.VIDEO,
+            duration_seconds=4,
+            semantic_score=semantic_scores[index],
+            event_id=first_event if index < 5 else second_event,
+            event_title="town",
+            caption=scene.caption,
+            window_source="center" if index < 6 else "vision_highlight",
+        )
+        for index, scene in enumerate(scenes)
+    ]
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(
+            target_duration_seconds=32,
+            transition="none",
+            music_enabled=False,
+            event_titles_enabled=True,
+        ),
+        clips=clips,
+        total_duration_seconds=32,
+        selection_mode="semantic",
+    )
+
+    report = build_montage_quality_report(plan, scenes)
+    codes = {issue.code for issue in report.issues}
+
+    assert report.gate_status == "degraded"
+    assert report.minimum_semantic_score == 40
+    assert report.semantic_score_p10 == pytest.approx(41.4)
+    assert report.median_semantic_score == 60
+    assert report.minimum_quality_score == 20
+    assert report.dominant_event_ratio == 0.625
+    assert report.dominant_role_ratio == 0.75
+    assert report.adjacent_source_repeat_ratio == pytest.approx(6 / 7)
+    assert report.center_cut_ratio == 0.75
+    assert report.generic_caption_count == 8
+    assert report.generic_title_count == 8
+    assert {
+        "low_semantic_score_tail",
+        "low_visual_quality_tail",
+        "event_dominance",
+        "story_role_dominance",
+        "adjacent_source_repetition",
+        "excessive_center_cuts",
+        "generic_scene_captions",
+        "generic_event_titles",
+    } <= codes
+    enforce_montage_quality(report)
+
+
+def test_semantic_tail_uses_the_adaptive_selection_threshold(tmp_path: Path) -> None:
+    semantic_scores = [65, 62, 60, 58, 55, 50, 46, 45]
+    event_id = uuid4()
+    scenes = [
+        Scene(
+            asset_id=uuid4(),
+            start_seconds=0,
+            end_seconds=6,
+            quality_score=70,
+            importance_score=score,
+            caption="Distinct coastal landmark.",
+            metadata={
+                "event_id": str(event_id),
+                "ranking_score": score,
+                "story_section_role": "journey",
+            },
+        )
+        for score in semantic_scores
+    ]
+    clips = [
+        MontageClip(
+            asset_id=scene.asset_id,
+            scene_id=scene.id,
+            source_path=tmp_path / f"source-{index}.mp4",
+            relative_path=Path(f"source-{index}.mp4"),
+            media_type=MediaType.VIDEO,
+            duration_seconds=4,
+            semantic_score=semantic_scores[index],
+            event_id=event_id,
+            caption=scene.caption,
+            window_source="vision_highlight",
+        )
+        for index, scene in enumerate(scenes)
+    ]
+    plan = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=QuickMontageSettings(
+            target_duration_seconds=32,
+            transition="none",
+            music_enabled=False,
+        ),
+        clips=clips,
+        total_duration_seconds=32,
+        selection_mode="semantic",
+    )
+
+    report = build_montage_quality_report(plan, scenes)
+
+    assert report.effective_semantic_threshold == 45
+    assert report.semantic_score_p10 == pytest.approx(45.7)
+    assert "low_semantic_score_tail" not in {issue.code for issue in report.issues}
+
+
+def test_full_duration_metrics_parse_ffmpeg_delivery_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "movie.mp4"
+    output.write_bytes(b"fake")
+
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        del command, kwargs
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "\n".join(
+                    [
+                        "black_duration:0.500",
+                        "freeze_duration:1.250",
+                        "silence_duration:0.600",
+                        "I: -22.0 LUFS",
+                        "LRA: 9.1 LU",
+                        "Peak: -4.9 dBFS",
+                    ]
+                ),
+            },
+        )()
+
+    monkeypatch.setattr("travelmovieai.editing.quality_report.subprocess.run", fake_run)
+
+    metrics = _full_duration_media_metrics(
+        output,
+        probe={
+            "duration": 10.0,
+            "has_video": True,
+            "has_audio": True,
+            "video_duration": 10.0,
+            "audio_duration": 9.8,
+        },
+        ffmpeg_binary="ffmpeg",
+        timeout_seconds=30,
+    )
+
+    assert metrics.scan_completed is True
+    assert metrics.black_ratio == 0.05
+    assert metrics.freeze_ratio == 0.125
+    assert metrics.silence_ratio == 0.06
+    assert metrics.integrated_loudness_lufs == -22
+    assert metrics.loudness_range_lu == 9.1
+    assert metrics.true_peak_dbfs == -4.9
+    assert metrics.av_duration_delta_seconds == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    ["timeout", "missing_filter", "ffmpeg_error", "process_error"],
+)
+def test_render_quality_gate_degrades_when_full_scan_does_not_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+) -> None:
+    output = tmp_path / "movie.mp4"
+    output.write_bytes(b"fake")
+    probe = {
+        "duration": 3.0,
+        "has_video": True,
+        "has_audio": True,
+        "video_duration": 3.0,
+        "audio_duration": 3.0,
+    }
+    monkeypatch.setattr(
+        "travelmovieai.editing.quality_report._probe_rendered_movie", lambda *a, **k: probe
+    )
+    monkeypatch.setattr(
+        "travelmovieai.editing.quality_report._rendered_audio_rms", lambda *a, **k: {"start": 100.0}
+    )
+    monkeypatch.setattr(
+        "travelmovieai.editing.quality_report._rendered_video_luma", lambda *a, **k: {"start": 50.0}
+    )
+
+    def failed_scan(command: list[str], **kwargs: object) -> object:
+        if failure_mode == "timeout":
+            raise subprocess.TimeoutExpired(cmd=command, timeout=float(kwargs["timeout"]))
+        if failure_mode == "process_error":
+            raise OSError("could not start FFmpeg")
+        stderr = (
+            "No such filter: 'blackdetect'" if failure_mode == "missing_filter" else "decode failed"
+        )
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr("travelmovieai.editing.quality_report.subprocess.run", failed_scan)
+
+    report = enrich_montage_quality_report_with_render(_render_report(), output)
+    full_scan_issue = next(
+        issue for issue in report.issues if issue.code == "render_full_scan_unavailable"
+    )
+
+    assert report.rendered_media_metrics is not None
+    assert report.rendered_media_metrics.scan_completed is False
+    assert (
+        report.rendered_media_metrics.scan_failure_reason
+        == {
+            "timeout": "timeout",
+            "process_error": "process_unavailable",
+            "missing_filter": "ffmpeg_error",
+            "ffmpeg_error": "ffmpeg_error",
+        }[failure_mode]
+    )
+    assert full_scan_issue.severity == "warning"
+    assert report.gate_status == "degraded"
+
+
+def test_render_quality_gate_fails_when_required_full_scan_does_not_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "movie.mp4"
+    output.write_bytes(b"fake")
+    probe = {
+        "duration": 3.0,
+        "has_video": True,
+        "has_audio": True,
+        "video_duration": 3.0,
+        "audio_duration": 3.0,
+    }
+    monkeypatch.setattr(
+        "travelmovieai.editing.quality_report._probe_rendered_movie", lambda *a, **k: probe
+    )
+    monkeypatch.setattr(
+        "travelmovieai.editing.quality_report._rendered_audio_rms", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(
+        "travelmovieai.editing.quality_report._rendered_video_luma", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(
+        "travelmovieai.editing.quality_report.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="failed"),
+    )
+
+    report = enrich_montage_quality_report_with_render(
+        _render_report(),
+        output,
+        require_full_scan=True,
+    )
+
+    issue = next(issue for issue in report.issues if issue.code == "render_full_scan_unavailable")
+    assert issue.severity == "critical"
+    assert report.gate_status == "failed"
+    with pytest.raises(MontageError, match="failed the quality gate"):
+        enforce_montage_quality(report)
 
 
 def test_render_quality_report_reports_ffprobe_timeout(

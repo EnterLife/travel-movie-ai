@@ -49,3 +49,24 @@ def test_persisted_error_redacts_project_and_configured_media_paths() -> None:
     assert "личная музыка" not in redacted
     assert "hunter2" not in redacted
     assert redacted.count("<local-path>") >= 1
+
+
+@pytest.mark.parametrize(
+    "value, forbidden",
+    [
+        ('HF_TOKEN="token with spaces"', ("token with spaces",)),
+        ("OPENAI_API_KEY='private key value'", ("private key value",)),
+        ("Authorization: Basic dXNlcjpwYXNz", ("dXNlcjpwYXNz",)),
+        ("Proxy-Authorization: Bearer private-token", ("private-token",)),
+        ("Cookie: session=private; theme=dark", ("session=private", "theme=dark")),
+        ("Set-Cookie: auth=private; HttpOnly", ("auth=private",)),
+    ],
+)
+def test_redactor_covers_environment_headers_cookies_and_quoted_values(
+    value: str,
+    forbidden: tuple[str, ...],
+) -> None:
+    redacted = redact_sensitive_text(value)
+
+    assert "<redacted>" in redacted
+    assert all(secret not in redacted for secret in forbidden)

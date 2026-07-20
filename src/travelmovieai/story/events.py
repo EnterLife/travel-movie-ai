@@ -12,10 +12,14 @@ from travelmovieai.domain.models import (
     MediaAsset,
     Scene,
 )
+from travelmovieai.story.editorial import clean_caption, clean_title
 
 MAX_EVENT_GAP = timedelta(minutes=90)
+MAX_EVENT_DURATION = timedelta(minutes=30)
+MAX_EVENT_SCENES = 8
 MAX_EVENT_DISTANCE_KM = 5.0
 MIN_EVENT_SEMANTIC_SIMILARITY = 0.72
+MIN_SAME_ASSET_SEMANTIC_SIMILARITY = 0.42
 _EVENT_ID_NAMESPACE = uuid5(NAMESPACE_URL, "https://travelmovieai.local/event/v1")
 
 
@@ -35,7 +39,7 @@ def detect_events(
     )
     groups: list[list[Scene]] = []
     for scene in ordered:
-        if not groups or not _same_event(groups[-1][-1], scene, assets_by_id):
+        if not groups or not _can_append_to_event(groups[-1], scene, assets_by_id):
             groups.append([scene])
         else:
             groups[-1].append(scene)
@@ -74,17 +78,33 @@ def _without_stale_event_overrides(metadata: dict[str, object]) -> dict[str, obj
     }
 
 
-def _same_event(
-    previous: Scene,
+def _can_append_to_event(
+    group: list[Scene],
     current: Scene,
     assets: dict[UUID, MediaAsset],
 ) -> bool:
+    if len(group) >= MAX_EVENT_SCENES:
+        return False
+    if _scene_end_time(current, assets) - _scene_time(group[0], assets) > MAX_EVENT_DURATION:
+        return False
+
+    previous = group[-1]
     previous_time = _scene_time(previous, assets)
     current_time = _scene_time(current, assets)
     if current_time - previous_time > MAX_EVENT_GAP:
         return False
+
+    previous_location = _metadata_value(previous, "location_type")
+    current_location = _metadata_value(current, "location_type")
+    meaningful_locations = _meaningful_location(previous_location) and _meaningful_location(
+        current_location
+    )
+    similarity = semantic_similarity(previous, current)
+
     if previous.asset_id == current.asset_id:
-        return True
+        if meaningful_locations and previous_location != current_location:
+            return similarity is not None and similarity >= MIN_EVENT_SEMANTIC_SIMILARITY
+        return similarity is None or similarity >= MIN_SAME_ASSET_SEMANTIC_SIMILARITY
 
     gps_distance = _gps_distance_km(assets[previous.asset_id], assets[current.asset_id])
     if gps_distance is not None:
@@ -95,31 +115,32 @@ def _same_event(
     if previous_landmarks & current_landmarks:
         return True
 
-    similarity = semantic_similarity(previous, current)
     if similarity is not None and similarity >= MIN_EVENT_SEMANTIC_SIMILARITY:
         return True
 
-    previous_location = _metadata_value(previous, "location_type")
-    current_location = _metadata_value(current, "location_type")
     location_matches = previous_location == current_location
-    meaningful_location = previous_location not in {
-        "",
-        LocationType.UNKNOWN.value,
-        LocationType.OTHER.value,
-    } and current_location not in {
-        "",
-        LocationType.UNKNOWN.value,
-        LocationType.OTHER.value,
-    }
-    if meaningful_location and location_matches:
-        return True
-
     previous_activity = _metadata_value(previous, "activity")
     current_activity = _metadata_value(current, "activity")
+    activity_matches = previous_activity == current_activity and previous_activity not in {
+        "",
+        ActivityType.UNKNOWN.value,
+        ActivityType.OTHER.value,
+    }
+    if meaningful_locations and location_matches and activity_matches:
+        return True
+
     return previous_activity == current_activity and previous_activity in {
         ActivityType.ARRIVING.value,
         ActivityType.DEPARTING.value,
         ActivityType.TRAVELING.value,
+    }
+
+
+def _meaningful_location(value: str) -> bool:
+    return value not in {
+        "",
+        LocationType.UNKNOWN.value,
+        LocationType.OTHER.value,
     }
 
 
@@ -163,10 +184,7 @@ def _build_event(
     activities = [_metadata_value(scene, "activity") for scene in scenes]
     location = _most_common_location(locations)
     activity = _most_common_activity(activities)
-    landmarks = sorted(
-        {name for scene in scenes for name in _landmark_names(scene)},
-        key=str.casefold,
-    )
+    landmarks = _corroborated_landmarks(scenes)
     start_at = min(_scene_time(scene, assets) for scene in scenes)
     end_at = max(_scene_end_time(scene, assets) for scene in scenes)
     scores = [scene.importance_score for scene in scenes if scene.importance_score is not None]
@@ -175,7 +193,11 @@ def _build_event(
     semantic_fields += int(activity != ActivityType.UNKNOWN)
     semantic_fields += int(bool(landmarks))
     confidence = min(1.0, 0.45 + semantic_fields * 0.15 + min(len(scenes), 4) * 0.025)
-    captions = [scene.caption for scene in scenes if scene.caption]
+    captions = list(
+        dict.fromkeys(
+            caption for scene in scenes if (caption := clean_caption(scene.caption)) is not None
+        )
+    )
     return Event(
         id=_event_id(scenes),
         title=_event_title(location, activity, landmarks),
@@ -202,7 +224,7 @@ def _event_title(
     landmarks: list[str],
 ) -> str:
     if landmarks:
-        return landmarks[0]
+        return clean_title(landmarks[0]) or "Travel Moment"
     if location == LocationType.AIRPORT or activity == ActivityType.ARRIVING:
         return "Arrival Day"
     if activity == ActivityType.DEPARTING:
@@ -220,7 +242,11 @@ def _event_title(
         LocationType.LANDMARK: "Landmark Visit",
         LocationType.TRANSPORT: "On the Road",
     }
-    return labels.get(location, activity.value.replace("_", " ").title() or "Travel Event")
+    if location in labels:
+        return labels[location]
+    if activity not in {ActivityType.UNKNOWN, ActivityType.OTHER}:
+        return activity.value.replace("_", " ").title()
+    return "Travel Moment"
 
 
 def _scene_time(scene: Scene, assets: dict[UUID, MediaAsset]) -> datetime:
@@ -244,12 +270,63 @@ def _metadata_value(scene: Scene, key: str) -> str:
 def _landmark_names(scene: Scene) -> set[str]:
     values = scene.metadata.get("landmarks", [])
     return {
-        str(item.get("name", "")).strip()
+        cleaned.casefold()
         for item in values
         if isinstance(item, dict)
-        and float(item.get("confidence", 0)) >= 0.55
-        and str(item.get("name", "")).strip()
+        and _float_value(item.get("confidence")) >= 0.55
+        and (cleaned := clean_title(item.get("name"))) is not None
     }
+
+
+def _corroborated_landmarks(scenes: list[Scene]) -> list[str]:
+    names_by_key: dict[str, str] = {}
+    evidence_counts: dict[str, int] = {}
+    trusted_keys: set[str] = set()
+    for scene in scenes:
+        event_landmarks = scene.metadata.get("event_landmarks", [])
+        if isinstance(event_landmarks, list):
+            for value in event_landmarks:
+                name = clean_title(value)
+                if name is not None:
+                    key = name.casefold()
+                    names_by_key.setdefault(key, name)
+                    trusted_keys.add(key)
+        values = scene.metadata.get("landmarks", [])
+        if not isinstance(values, list):
+            continue
+        seen_in_scene: set[str] = set()
+        for item in values:
+            if not isinstance(item, dict) or _float_value(item.get("confidence")) < 0.55:
+                continue
+            name = clean_title(item.get("name"))
+            if name is None:
+                continue
+            key = name.casefold()
+            names_by_key.setdefault(key, name)
+            seen_in_scene.add(key)
+            if str(item.get("evidence", "")).strip().casefold() == "manual edit":
+                trusted_keys.add(key)
+        for key in seen_in_scene:
+            evidence_counts[key] = evidence_counts.get(key, 0) + 1
+    return sorted(
+        (
+            name
+            for key, name in names_by_key.items()
+            if key in trusted_keys or evidence_counts.get(key, 0) >= 2
+        ),
+        key=str.casefold,
+    )
+
+
+def _float_value(value: object) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _most_common_value(values: list[str]) -> str | None:

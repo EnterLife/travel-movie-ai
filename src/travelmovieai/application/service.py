@@ -34,6 +34,7 @@ from travelmovieai.application.workspace_identity import (
     validate_existing_workspace_identity,
     workspace_proves_source,
 )
+from travelmovieai.application.workspace_lease import WorkspaceLease
 from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import MontageError
 from travelmovieai.domain.enums import PipelineStage, StageStatus, StoryStyle
@@ -47,6 +48,10 @@ from travelmovieai.domain.models import (
     Scene,
     SemanticSearchReport,
     StageResult,
+)
+from travelmovieai.editing.publication import (
+    publish_render_candidate,
+    render_candidate_path,
 )
 from travelmovieai.editing.quality_report import (
     build_montage_quality_report,
@@ -65,7 +70,10 @@ from travelmovieai.infrastructure.music_generation import (
     resolve_local_music_model,
 )
 from travelmovieai.infrastructure.system import ResourceProfile, detect_resource_profile
-from travelmovieai.infrastructure.vision import build_vision_provider
+from travelmovieai.pipeline.progress import (
+    LegacyProgressCallback,
+    ProgressEventCallback,
+)
 from travelmovieai.pipeline.registry import build_default_pipeline
 from travelmovieai.pipeline.runner import PipelineRunner
 from travelmovieai.pipeline.stages.music_selection import MusicGeneratorFactory
@@ -137,6 +145,8 @@ class TravelMovieService:
         semantic: bool = False,
         montage_settings: QuickMontageSettings | None = None,
         variant_name: str = "Default",
+        progress: LegacyProgressCallback | None = None,
+        progress_events: ProgressEventCallback | None = None,
     ) -> StageResult:
         if montage_settings is None:
             montage_settings = QuickMontageSettings(
@@ -161,6 +171,8 @@ class TravelMovieService:
                 style=style,
                 montage_settings=montage_settings,
                 variant_name=variant_name,
+                progress=progress,
+                progress_events=progress_events,
             )
 
         result = self.create_quick_montage(
@@ -169,6 +181,8 @@ class TravelMovieService:
             settings=montage_settings,
             output_path=output_path,
             variant_name=variant_name,
+            progress=progress,
+            progress_events=progress_events,
         )
         return StageResult(
             stage=PipelineStage.RENDERING,
@@ -202,7 +216,33 @@ class TravelMovieService:
         settings: QuickMontageSettings,
         output_path: Path | None = None,
         progress: Callable[[int, int, str], None] | None = None,
+        progress_events: ProgressEventCallback | None = None,
         variant_name: str = "Default",
+    ) -> QuickMontageResult:
+        settings = _effective_montage_settings(settings)
+        _validate_montage_feature_requests(settings, self.settings)
+        project_paths = self.resolve_project_paths(input_path, workspace)
+        with WorkspaceLease(project_paths.workspace, operation="quick_montage"):
+            return self._create_quick_montage_locked(
+                input_path=project_paths.input_path,
+                workspace=project_paths.workspace,
+                settings=settings,
+                output_path=output_path,
+                progress=progress,
+                progress_events=progress_events,
+                variant_name=variant_name,
+            )
+
+    def _create_quick_montage_locked(
+        self,
+        *,
+        input_path: Path,
+        workspace: Path,
+        settings: QuickMontageSettings,
+        output_path: Path | None,
+        progress: Callable[[int, int, str], None] | None,
+        progress_events: ProgressEventCallback | None,
+        variant_name: str,
     ) -> QuickMontageResult:
         settings = _effective_montage_settings(settings)
         _validate_montage_feature_requests(settings, self.settings)
@@ -219,6 +259,7 @@ class TravelMovieService:
             workspace=workspace,
             variant_name=normalized_variant_name,
             variant_slug=variant_slug,
+            resources=resources,
         )
         default_name = "preview.mp4" if settings.preview_mode else "final.mp4"
         resolved_output = validate_output_path(
@@ -236,11 +277,13 @@ class TravelMovieService:
                 montage_settings=settings,
                 variant_name=normalized_variant_name,
                 variant_slug=variant_slug,
+                resources=resources,
             )
             return self._create_semantic_montage(
                 semantic_context,
                 resolved_output,
                 tracker,
+                progress_events,
             )
 
         tracker.emit(1, "Checking media library and updating index")
@@ -277,60 +320,59 @@ class TravelMovieService:
         )
         plan = apply_music_directing(plan)
         quality_report = build_montage_quality_report(plan, [])
-        write_json_atomic(quality_report_path, quality_report)
         tracker.emit(80, "Quick edit plan created")
         timeline_path = context.artifacts_dir / "quick_timeline.json"
         resolved_output.parent.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(timeline_path, plan)
-        _record_timeline_version(
-            context,
-            plan,
-            phase="built",
-        )
-        tracker.emit(84, f"Timeline saved: {len(plan.clips)} clip(s)")
+        tracker.emit(84, f"Timeline ready: {len(plan.clips)} clip(s)")
         ensure_render_disk_space(
             workspace=context.workspace,
             output_path=resolved_output,
             settings=settings,
+            plan=plan,
             reserve_mb=self.settings.render_disk_reserve_mb,
             safety_factor=self.settings.render_disk_safety_factor,
         )
-        render_encoder = QuickMontageRenderer(
-            self.settings.ffmpeg_binary,
-            self.settings.ffprobe_binary,
-            workers=resources.render_workers,
-            ffmpeg_threads=resources.ffmpeg_threads,
-            timeout_seconds=self.settings.render_timeout_seconds,
-        ).render(
-            plan,
-            resolved_output,
-            context.cache_dir,
-            tracker.range(85, 100),
-        )
-        if quality_report is None:
-            try:
-                quality_report = MontageQualityReport.model_validate_json(
-                    quality_report_path.read_text(encoding="utf-8")
-                )
-            except (OSError, ValidationError):
-                quality_report = build_montage_quality_report(plan, [])
-        if not quality_report_path.is_file():
+        candidate_path = render_candidate_path(resolved_output)
+        try:
+            render_encoder = QuickMontageRenderer(
+                self.settings.ffmpeg_binary,
+                self.settings.ffprobe_binary,
+                workers=resources.render_workers,
+                ffmpeg_threads=resources.ffmpeg_threads,
+                timeout_seconds=self.settings.render_timeout_seconds,
+            ).render(
+                plan,
+                candidate_path,
+                context.cache_dir,
+                tracker.range(85, 100),
+            )
+            quality_report = enrich_montage_quality_report_with_render(
+                quality_report,
+                candidate_path,
+                ffprobe_binary=self.settings.ffprobe_binary,
+                ffmpeg_binary=self.settings.ffmpeg_binary,
+                timeout_seconds=self.settings.render_timeout_seconds,
+                require_full_scan=plan.settings.validate_full_render_decode,
+            )
+            quality_report = quality_report.model_copy(update={"render_encoder": render_encoder})
+            enforce_montage_quality(quality_report)
+            quality_report = quality_report.model_copy(update={"rendered_path": resolved_output})
+            publish_render_candidate(candidate_path, resolved_output)
+            write_json_atomic(timeline_path, plan)
             write_json_atomic(quality_report_path, quality_report)
-        quality_report = enrich_montage_quality_report_with_render(
-            quality_report,
-            resolved_output,
-            ffprobe_binary=self.settings.ffprobe_binary,
-            ffmpeg_binary=self.settings.ffmpeg_binary,
-            timeout_seconds=self.settings.render_timeout_seconds,
-        )
-        write_json_atomic(quality_report_path, quality_report)
-        enforce_montage_quality(quality_report)
-        _record_timeline_version(
-            context,
-            plan,
-            phase="rendered",
-            output_path=resolved_output,
-        )
+            _record_timeline_version(
+                context,
+                plan,
+                phase="built",
+            )
+            _record_timeline_version(
+                context,
+                plan,
+                phase="rendered",
+                output_path=resolved_output,
+            )
+        finally:
+            candidate_path.unlink(missing_ok=True)
         tracker.emit(100, "Film ready and validated with FFprobe")
         return QuickMontageResult(
             output_path=resolved_output,
@@ -345,6 +387,15 @@ class TravelMovieService:
             music_model=plan.music_plan.model if plan.music_plan else None,
             quality_score=quality_report.score,
             quality_issue_count=len(quality_report.issues),
+            quality_gate_status=quality_report.gate_status,
+            semantic_score_p10=quality_report.semantic_score_p10,
+            dominant_event_ratio=quality_report.dominant_event_ratio,
+            adjacent_source_repeat_ratio=quality_report.adjacent_source_repeat_ratio,
+            center_cut_ratio=quality_report.center_cut_ratio,
+            full_media_qa_completed=(
+                quality_report.rendered_media_metrics is not None
+                and quality_report.rendered_media_metrics.scan_completed
+            ),
         )
 
     def _create_semantic_montage(
@@ -352,11 +403,13 @@ class TravelMovieService:
         context: ProjectContext,
         output_path: Path,
         tracker: _ProgressTracker,
+        progress_events: ProgressEventCallback | None,
     ) -> QuickMontageResult:
         result = self._pipeline_runner().run_until(
             context,
             PipelineStage.RENDERING,
             progress=tracker.range(1, 100),
+            progress_events=progress_events,
         )
         if result.status is StageStatus.NO_INPUT:
             raise MontageError(result.message or "Semantic montage has no usable media.")
@@ -387,6 +440,15 @@ class TravelMovieService:
             music_model=plan.music_plan.model if plan.music_plan else None,
             quality_score=quality_report.score,
             quality_issue_count=len(quality_report.issues),
+            quality_gate_status=quality_report.gate_status,
+            semantic_score_p10=quality_report.semantic_score_p10,
+            dominant_event_ratio=quality_report.dominant_event_ratio,
+            adjacent_source_repeat_ratio=quality_report.adjacent_source_repeat_ratio,
+            center_cut_ratio=quality_report.center_cut_ratio,
+            full_media_qa_completed=(
+                quality_report.rendered_media_metrics is not None
+                and quality_report.rendered_media_metrics.scan_completed
+            ),
         )
 
     def _build_music_plan(
@@ -398,7 +460,7 @@ class TravelMovieService:
         montage_plan: QuickMontagePlan,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> MusicPlan:
-        generator = self._music_generator(settings)
+        generator = self._music_generator(settings, progress=progress)
         music_plan = build_music_plan(
             report.assets,
             scenes,
@@ -416,6 +478,8 @@ class TravelMovieService:
     def _music_generator(
         self,
         settings: QuickMontageSettings,
+        *,
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> NeuralMusicGenerator | None:
         if (
             settings.music_mode not in {"auto", "generated"}
@@ -441,26 +505,10 @@ class TravelMovieService:
                 device=self.settings.device,
                 gpu_memory_mb=resources.gpu_memory_mb,
                 ffmpeg_timeout_seconds=self.settings.render_timeout_seconds,
+                cancel_requested=(
+                    (lambda: _music_progress_heartbeat(progress)) if progress is not None else None
+                ),
             ),
-        )
-
-    def _vision_provider(
-        self,
-        provider: str = "local",
-        model: str | None = None,
-    ) -> VisionProvider:
-        if self._vision_provider_factory is not None:
-            return self._vision_provider_factory(self.settings)
-        resources = self.get_resource_profile()
-        return build_vision_provider(
-            provider=provider,
-            model=model or self.settings.vision_model,
-            device=self.settings.device,
-            cache_dir=self.settings.model_cache.expanduser().resolve(),
-            allow_download=self.settings.allow_model_download,
-            gpu_memory_mb=resources.gpu_memory_mb,
-            system_memory_mb=resources.memory_mb,
-            model_batch_size=resources.model_batch_size,
         )
 
     def resolve_workspace(self, input_path: Path, workspace: Path | None) -> Path:
@@ -487,6 +535,7 @@ class TravelMovieService:
         style: StoryStyle = StoryStyle.CINEMATIC,
         montage_settings: QuickMontageSettings | None = None,
         progress: Callable[[int, int, str], None] | None = None,
+        progress_events: ProgressEventCallback | None = None,
         variant_name: str = "Default",
     ) -> StageResult:
         try:
@@ -501,8 +550,14 @@ class TravelMovieService:
             montage_settings=montage_settings,
             variant_name=normalized_variant_name,
             variant_slug=safe_variant_slug(normalized_variant_name),
+            resources=(None if target is PipelineStage.MEDIA_SCAN else self.get_resource_profile()),
         )
-        return self._pipeline_runner().run_until(context, target, progress=progress)
+        return self._pipeline_runner().run_until(
+            context,
+            target,
+            progress=progress,
+            progress_events=progress_events,
+        )
 
     def _pipeline_runner(self) -> PipelineRunner:
         vision_factory: VisionProviderFactory | None = None
@@ -537,7 +592,8 @@ class TravelMovieService:
 
     def report(self, *, input_path: Path, workspace: Path | None) -> StageResult:
         context = self._context(input_path=input_path, workspace=workspace)
-        report = generate_project_report(context)
+        with WorkspaceLease(context.workspace, operation="report"):
+            report = generate_project_report(context)
         return StageResult(
             stage=PipelineStage.EVENT_DETECTION,
             artifacts=[report.path],
@@ -569,12 +625,13 @@ class TravelMovieService:
         overwrite: bool = False,
     ) -> StageResult:
         context = self._context(input_path=input_path, workspace=workspace)
-        result = export_project_archive(
-            context,
-            output_path,
-            include_rendered_media=include_rendered_media,
-            overwrite=overwrite,
-        )
+        with WorkspaceLease(context.workspace, operation="export"):
+            result = export_project_archive(
+                context,
+                output_path,
+                include_rendered_media=include_rendered_media,
+                overwrite=overwrite,
+            )
         return StageResult(
             stage=PipelineStage.MEDIA_SCAN,
             artifacts=[result.archive_path],
@@ -602,6 +659,7 @@ class TravelMovieService:
         montage_settings: QuickMontageSettings | None = None,
         variant_name: str = "Default",
         variant_slug: str = "default",
+        resources: ResourceProfile | None = None,
     ) -> ProjectContext:
         project_paths = self.resolve_project_paths(input_path, workspace)
         return ProjectContext(
@@ -613,6 +671,7 @@ class TravelMovieService:
             montage_settings=montage_settings,
             variant_name=variant_name,
             variant_slug=variant_slug,
+            resources=resources,
         )
 
 
@@ -662,6 +721,13 @@ def _validate_montage_feature_requests(
             "Narration was requested, but voice_provider is disabled. Configure the local "
             "Piper executable, model, and voice_provider='piper', or disable narration."
         )
+
+
+def _music_progress_heartbeat(
+    progress: Callable[[int, int, str], None],
+) -> bool:
+    progress(1, 4, "ACE-Step: generation is still running")
+    return False
 
 
 class _ProgressTracker:

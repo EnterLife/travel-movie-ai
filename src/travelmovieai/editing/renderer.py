@@ -1,8 +1,13 @@
 """FFmpeg rendering for declarative montage plans."""
 
+import hashlib
 import json
 import os
 import subprocess
+import textwrap
+import threading
+import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -14,9 +19,20 @@ from travelmovieai.domain.enums import MediaType
 from travelmovieai.domain.models import MontageClip, QuickMontagePlan, QuickMontageSettings
 from travelmovieai.infrastructure.artifacts import artifact_fingerprint
 from travelmovieai.infrastructure.ffmpeg import FFprobeClient
+from travelmovieai.infrastructure.processes import (
+    release_process_resources,
+    start_process,
+    terminate_process_tree,
+)
 from travelmovieai.infrastructure.system import check_cuda
+from travelmovieai.story.editorial import clean_caption, clean_title
 
 ProgressCallback = Callable[[int, int, str], None]
+CancelCheck = Callable[[], bool]
+
+
+class _NvencUnavailableError(MontageError):
+    """An FFmpeg failure that specifically proves NVENC cannot be initialized."""
 
 
 class QuickMontageRenderer:
@@ -27,14 +43,18 @@ class QuickMontageRenderer:
         workers: int = 1,
         ffmpeg_threads: int = 1,
         timeout_seconds: float = 7200,
+        cancel_requested: CancelCheck | None = None,
     ) -> None:
         self.ffmpeg_binary = ffmpeg_binary
         self.ffprobe_binary = ffprobe_binary
         self.workers = max(1, workers)
         self.ffmpeg_threads = max(1, ffmpeg_threads)
         self.timeout_seconds = timeout_seconds if timeout_seconds > 0 else 7200
+        self.cancel_requested = cancel_requested
         self._render_device = "cpu"
         self._encoder = "libx264"
+        self._mezzanine_segments = False
+        self._heartbeat_callback: Callable[[], None] | None = None
 
     def render(
         self,
@@ -42,39 +62,92 @@ class QuickMontageRenderer:
         output_path: Path,
         work_dir: Path,
         progress: ProgressCallback | None = None,
+        cancel_requested: CancelCheck | None = None,
+    ) -> str:
+        previous_cancel = self.cancel_requested
+        previous_heartbeat = self._heartbeat_callback
+        if cancel_requested is not None:
+            self.cancel_requested = cancel_requested
+        try:
+            return self._render_impl(plan, output_path, work_dir, progress)
+        finally:
+            self.cancel_requested = previous_cancel
+            self._heartbeat_callback = previous_heartbeat
+
+    def _render_impl(
+        self,
+        plan: QuickMontagePlan,
+        output_path: Path,
+        work_dir: Path,
+        progress: ProgressCallback | None,
     ) -> str:
         _validate_output_target(plan, output_path, work_dir)
         if plan.music_path is not None and not plan.music_path.is_file():
             raise MontageError(f"Soundtrack file does not exist: {plan.music_path}")
+        if plan.settings.narration_enabled and plan.narration_path is None:
+            raise MontageError("Narration is enabled, but the timeline has no narration audio.")
         if (
             plan.settings.narration_enabled
             and plan.narration_path is not None
             and not plan.narration_path.is_file()
         ):
             raise MontageError(f"Narration file does not exist: {plan.narration_path}")
+        _validate_narration_cues(plan)
         self._render_device = plan.settings.render_device
         self._encoder = self._select_encoder(plan.settings.render_device)
         segments_dir = work_dir / "quick_montage_segments"
         segments_dir.mkdir(parents=True, exist_ok=True)
         total_steps = len(plan.clips) + 1
+        tracked_progress = progress
+        if progress is not None:
+            progress_lock = threading.Lock()
+            progress_state: list[int | str] = [0, total_steps, "Preparing FFmpeg render"]
+
+            def report_progress(current: int, total: int, message: str) -> None:
+                with progress_lock:
+                    progress_state[:] = [current, total, message]
+                progress(current, total, message)
+
+            def heartbeat() -> None:
+                with progress_lock:
+                    current, total, message = progress_state
+                assert isinstance(current, int)
+                assert isinstance(total, int)
+                assert isinstance(message, str)
+                progress(current, total, message)
+
+            tracked_progress = report_progress
+            self._heartbeat_callback = heartbeat
+        else:
+            self._heartbeat_callback = None
         try:
-            segment_paths = self._render_segments(plan, segments_dir, progress, total_steps)
-        except MontageError:
+            segment_paths = self._render_segments(
+                plan,
+                segments_dir,
+                tracked_progress,
+                total_steps,
+            )
+        except _NvencUnavailableError:
             if self._render_device != "auto" or self._encoder != "h264_nvenc":
                 raise
             self._encoder = "libx264"
-            segment_paths = self._render_segments(plan, segments_dir, progress, total_steps)
+            segment_paths = self._render_segments(
+                plan,
+                segments_dir,
+                tracked_progress,
+                total_steps,
+            )
 
-        if progress:
-            progress(
+        if tracked_progress:
+            tracked_progress(
                 len(plan.clips),
                 total_steps,
                 "Music and final assembly",
             )
         self._compose_segments(segment_paths, plan, output_path, work_dir)
-        self._validate_output(output_path)
-        if progress:
-            progress(total_steps, total_steps, "Film ready")
+        self._validate_output(output_path, plan)
+        if tracked_progress:
+            tracked_progress(total_steps, total_steps, "Film ready")
         return self._encoder
 
     def _render_segments(
@@ -84,6 +157,8 @@ class QuickMontageRenderer:
         progress: ProgressCallback | None,
         total_steps: int,
     ) -> list[Path]:
+        self._mezzanine_segments = _transition_duration(plan) > 0
+        segment_encoder = "libx264-lossless" if self._mezzanine_segments else self._encoder
         render_items: list[tuple[MontageClip, Path, bool, bool]] = []
         for index, clip in enumerate(plan.clips):
             show_event_title = _show_event_title(plan, index)
@@ -91,7 +166,7 @@ class QuickMontageRenderer:
             fingerprint = _segment_fingerprint(
                 clip,
                 plan,
-                encoder=self._encoder,
+                encoder=segment_encoder,
                 show_event_title=show_event_title,
                 show_credits=show_credits,
             )
@@ -104,7 +179,9 @@ class QuickMontageRenderer:
                 )
             )
         segment_paths = [item[1] for item in render_items]
-        cache_validity = {item[1]: self._valid_cached_segment(item[1]) for item in render_items}
+        cache_validity = {
+            item[1]: self._valid_cached_segment(item[1], item[0], plan) for item in render_items
+        }
         cached_items = [item for item in render_items if cache_validity[item[1]]]
         pending_items = [
             (index, item)
@@ -132,7 +209,7 @@ class QuickMontageRenderer:
                         index - 1,
                         total_steps,
                         f"Rendering clip {index}/{len(plan.clips)}, "
-                        f"encoder={self._encoder}, threads={self.ffmpeg_threads}",
+                        f"encoder={segment_encoder}, threads={self.ffmpeg_threads}",
                     )
                 self._render_segment_atomic(
                     clip,
@@ -160,7 +237,7 @@ class QuickMontageRenderer:
                     completed_count,
                     total_steps,
                     f"Rendering clip {index}/{len(plan.clips)}, "
-                    f"encoder={self._encoder}, threads={self.ffmpeg_threads}",
+                    f"encoder={segment_encoder}, threads={self.ffmpeg_threads}",
                 )
             future = executor.submit(
                 self._render_segment_atomic,
@@ -196,7 +273,7 @@ class QuickMontageRenderer:
                             completed_count,
                             total_steps,
                             f"Clips complete {completed_count}/{len(plan.clips)}, "
-                            f"render workers={worker_count}, encoder={self._encoder}",
+                            f"render workers={worker_count}, encoder={segment_encoder}",
                         )
                     submit_next()
         finally:
@@ -205,7 +282,12 @@ class QuickMontageRenderer:
             executor.shutdown(wait=True, cancel_futures=True)
         return segment_paths
 
-    def _valid_cached_segment(self, path: Path) -> bool:
+    def _valid_cached_segment(
+        self,
+        path: Path,
+        clip: MontageClip | None = None,
+        plan: QuickMontagePlan | None = None,
+    ) -> bool:
         try:
             if not path.is_file() or path.stat().st_size <= 0:
                 return False
@@ -220,11 +302,45 @@ class QuickMontageRenderer:
             for stream in probe.metadata.get("streams", [])
             if isinstance(stream, dict)
         }
-        return (
+        basic_valid = (
             "video" in stream_types
             and "audio" in stream_types
             and probe.duration_seconds is not None
             and probe.duration_seconds > 0
+        )
+        if not basic_valid or clip is None or plan is None:
+            return basic_valid
+        video_stream = next(
+            (
+                stream
+                for stream in probe.metadata.get("streams", [])
+                if isinstance(stream, dict) and stream.get("codec_type") == "video"
+            ),
+            None,
+        )
+        audio_stream = next(
+            (
+                stream
+                for stream in probe.metadata.get("streams", [])
+                if isinstance(stream, dict) and stream.get("codec_type") == "audio"
+            ),
+            None,
+        )
+        transition_mezzanine = _transition_duration(plan) > 0
+        return bool(
+            abs((probe.duration_seconds or 0) - clip.duration_seconds)
+            <= max(0.2, 2 / plan.settings.fps)
+            and probe.width == plan.settings.width
+            and probe.height == plan.settings.height
+            and probe.fps is not None
+            and abs(probe.fps - plan.settings.fps) <= 0.05
+            and isinstance(video_stream, dict)
+            and video_stream.get("pix_fmt") == "yuv420p"
+            and _segment_codec_contract_matches(
+                video_stream,
+                audio_stream,
+                transition_mezzanine=transition_mezzanine,
+            )
         )
 
     def _render_segment_atomic(
@@ -247,9 +363,9 @@ class QuickMontageRenderer:
                 show_event_title=show_event_title,
                 show_credits=show_credits,
             )
-            if not temporary.is_file() or temporary.stat().st_size <= 0:
+            if not self._valid_cached_segment(temporary, clip, plan):
                 raise MontageError(
-                    f"FFmpeg did not create a complete segment for {clip.relative_path}."
+                    f"FFmpeg did not create a valid delivery segment for {clip.relative_path}."
                 )
             os.replace(temporary, output_path)
         finally:
@@ -265,6 +381,10 @@ class QuickMontageRenderer:
         show_credits: bool = False,
     ) -> None:
         duration = _decimal(clip.duration_seconds)
+        source_audio_fades = _audio_fade_filters(
+            clip.duration_seconds,
+            plan.settings.source_audio_fade_seconds,
+        )
 
         if clip.media_type is MediaType.PHOTO:
             video_graph = _build_segment_video_graph(
@@ -296,7 +416,9 @@ class QuickMontageRenderer:
                 "-i",
                 "anullsrc=r=48000:cl=stereo",
                 "-filter_complex",
-                f"{video_graph};[1:a:0]atrim=0:{duration},asetpts=PTS-STARTPTS[a]",
+                f"{video_graph};[1:a:0]atrim=0:{duration},"
+                f"{source_audio_fades}"
+                "asetpts=PTS-STARTPTS[a]",
                 "-map",
                 "[v]",
                 "-map",
@@ -349,7 +471,9 @@ class QuickMontageRenderer:
                     f"{_audio_trim_filter(clip.has_audio, trim_start, duration)}"
                     "aresample=48000,"
                     f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
-                    f"apad,atrim=0:{duration},asetpts=PTS-STARTPTS[a]",
+                    f"apad,atrim=0:{duration},"
+                    f"{source_audio_fades}"
+                    "asetpts=PTS-STARTPTS[a]",
                     "-map",
                     "[v]",
                     "-map",
@@ -361,11 +485,9 @@ class QuickMontageRenderer:
             [
                 "-t",
                 duration,
-                *self._video_encoder_args(),
+                *self._segment_video_encoder_args(),
                 "-c:a",
-                "aac",
-                "-b:a",
-                "160k",
+                "alac",
                 "-ar",
                 "48000",
                 "-ac",
@@ -387,10 +509,11 @@ class QuickMontageRenderer:
         work_dir: Path,
     ) -> None:
         transition_duration = _transition_duration(plan)
-        narration_path = _active_narration_path(plan)
-        if transition_duration <= 0 and plan.music_path is None and narration_path is None:
-            self._concat_segments(segments, output_path, work_dir)
+        if transition_duration <= 0:
+            self._compose_hard_cut_segments(segments, plan, output_path, work_dir)
             return
+
+        narration_path = _active_narration_path(plan)
 
         filter_path = work_dir / "quick_montage_filters.txt"
         filter_path.write_text(
@@ -430,6 +553,10 @@ class QuickMontageRenderer:
                 "aac",
                 "-b:a",
                 "160k",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
                 "-map_metadata",
                 "-1",
                 "-movflags",
@@ -440,7 +567,7 @@ class QuickMontageRenderer:
         try:
             try:
                 self._run(command, "Could not assemble clips and music")
-            except MontageError:
+            except _NvencUnavailableError:
                 if self._render_device != "auto" or self._encoder != "h264_nvenc":
                     raise
                 self._encoder = "libx264"
@@ -451,74 +578,145 @@ class QuickMontageRenderer:
             temporary_output.unlink(missing_ok=True)
             filter_path.unlink(missing_ok=True)
 
-    def _concat_segments(
+    def _compose_hard_cut_segments(
         self,
         segments: list[Path],
+        plan: QuickMontagePlan,
         output_path: Path,
         work_dir: Path,
     ) -> None:
+        """Mix delivery audio while stream-copying already prepared hard-cut video."""
+
         concat_path = work_dir / "quick_montage_concat.txt"
+        filter_path = work_dir / "quick_montage_audio_filters.txt"
         concat_path.write_text(
             "".join(f"file '{_concat_path(path)}'\n" for path in segments),
             encoding="utf-8",
         )
+        filter_path.write_text(_build_hard_cut_audio_graph(plan), encoding="utf-8")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_output = output_path.with_name(f".{output_path.stem}.{uuid4().hex}.tmp.mp4")
+        command = [
+            self.ffmpeg_binary,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_path),
+        ]
+        if plan.music_path is not None:
+            command.extend(["-stream_loop", "-1", "-i", str(plan.music_path)])
+        narration_path = _active_narration_path(plan)
+        if narration_path is not None:
+            command.extend(["-i", str(narration_path)])
+        command.extend(
+            [
+                "-filter_complex_script",
+                str(filter_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "[aout]",
+                "-t",
+                _decimal(plan.total_duration_seconds),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-map_metadata",
+                "-1",
+                "-movflags",
+                "+faststart",
+                str(temporary_output),
+            ]
+        )
         try:
-            self._run(
-                [
-                    self.ffmpeg_binary,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    str(concat_path),
-                    "-c",
-                    "copy",
-                    "-map_metadata",
-                    "-1",
-                    "-movflags",
-                    "+faststart",
-                    str(temporary_output),
-                ],
-                "Could not join prepared clips",
-            )
+            self._run(command, "Could not mix hard-cut montage audio")
             os.replace(temporary_output, output_path)
         finally:
             temporary_output.unlink(missing_ok=True)
             concat_path.unlink(missing_ok=True)
+            filter_path.unlink(missing_ok=True)
 
     def _run(self, command: list[str], message: str) -> None:
         try:
-            completed = subprocess.run(
+            process = start_process(
                 command,
-                capture_output=True,
-                check=False,
+                popen_factory=subprocess.Popen,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.timeout_seconds,
+                text=True,
             )
         except FileNotFoundError as error:
             raise DependencyUnavailableError(
                 f"FFmpeg executable was not found: {self.ffmpeg_binary}"
             ) from error
-        except subprocess.TimeoutExpired as error:
-            raise MontageError(
-                f"{message}: FFmpeg timed out after {self.timeout_seconds:g}s."
-            ) from error
+        except OSError as error:
+            raise MontageError(f"{message}: FFmpeg could not start.") from error
 
-        if completed.returncode != 0:
-            detail = sanitize_process_error(
-                completed.stderr,
-                private_paths=absolute_command_paths(command),
-                fallback="unknown FFmpeg error",
+        try:
+            stderr_lines: deque[str] = deque(maxlen=400)
+            stderr_stream = process.stderr
+            assert stderr_stream is not None
+
+            def read_stderr() -> None:
+                for line in stderr_stream:
+                    stderr_lines.append(line)
+
+            reader = threading.Thread(
+                target=read_stderr,
+                name="travelmovieai-ffmpeg-stderr",
+                daemon=True,
             )
-            raise MontageError(f"{message}: {detail}")
+            reader.start()
+            deadline = time.monotonic() + self.timeout_seconds
+            next_heartbeat = time.monotonic() + 0.5
+            while process.poll() is None:
+                if self.cancel_requested is not None and self.cancel_requested():
+                    terminate_process_tree(process)
+                    reader.join(timeout=1)
+                    raise MontageError(f"{message}: FFmpeg rendering was cancelled.")
+                if time.monotonic() >= deadline:
+                    terminate_process_tree(process)
+                    reader.join(timeout=1)
+                    raise MontageError(
+                        f"{message}: FFmpeg timed out after {self.timeout_seconds:g}s."
+                    )
+                if self._heartbeat_callback is not None and time.monotonic() >= next_heartbeat:
+                    try:
+                        self._heartbeat_callback()
+                    except BaseException:
+                        terminate_process_tree(process)
+                        reader.join(timeout=1)
+                        raise
+                    next_heartbeat = time.monotonic() + 0.5
+                time.sleep(0.1)
+            reader.join(timeout=2)
+            stderr = "".join(stderr_lines)
+            if process.returncode != 0:
+                encoder_unavailable = _is_nvenc_unavailable_error(command, stderr)
+                detail = sanitize_process_error(
+                    stderr,
+                    private_paths=absolute_command_paths(command),
+                    fallback="unknown FFmpeg error",
+                )
+                error_type = _NvencUnavailableError if encoder_unavailable else MontageError
+                raise error_type(f"{message}: {detail}")
+        finally:
+            release_process_resources(process)
 
     def _select_encoder(self, render_device: str) -> str:
         cuda = check_cuda(self.ffmpeg_binary)
@@ -549,6 +747,8 @@ class QuickMontageRenderer:
                 "21",
                 "-b:v",
                 "0",
+                "-pix_fmt",
+                "yuv420p",
             ]
         return [
             "-c:v",
@@ -559,9 +759,27 @@ class QuickMontageRenderer:
             "21",
             "-threads",
             str(self.ffmpeg_threads),
+            "-pix_fmt",
+            "yuv420p",
         ]
 
-    def _validate_output(self, output_path: Path) -> None:
+    def _segment_video_encoder_args(self) -> list[str]:
+        if not self._mezzanine_segments:
+            return self._video_encoder_args()
+        return [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-qp",
+            "0",
+            "-threads",
+            str(self.ffmpeg_threads),
+            "-pix_fmt",
+            "yuv420p",
+        ]
+
+    def _validate_output(self, output_path: Path, plan: QuickMontagePlan) -> None:
         command = [
             self.ffprobe_binary,
             "-v",
@@ -599,7 +817,12 @@ class QuickMontageRenderer:
             raise MontageError(f"The final movie failed FFprobe validation: {detail}")
         try:
             payload = json.loads(completed.stdout)
-            stream_types = {stream.get("codec_type") for stream in payload.get("streams", [])}
+            streams = payload.get("streams", [])
+            if not isinstance(streams, list) or not all(
+                isinstance(stream, dict) for stream in streams
+            ):
+                raise TypeError("FFprobe streams must be a list")
+            stream_types = {stream.get("codec_type") for stream in streams}
             duration = float(payload.get("format", {}).get("duration", 0))
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise MontageError("FFprobe returned invalid final movie data.") from error
@@ -607,6 +830,33 @@ class QuickMontageRenderer:
             raise MontageError(
                 "The final file does not contain the expected video, audio, or duration."
             )
+        if not _probe_payload_matches_plan(payload, plan):
+            raise MontageError(
+                "The final movie does not match the planned duration, resolution, frame rate, "
+                "or yuv420p delivery pixel format."
+            )
+        if plan.settings.validate_full_render_decode:
+            self._validate_full_decode(output_path)
+
+    def _validate_full_decode(self, output_path: Path) -> None:
+        self._run(
+            [
+                self.ffmpeg_binary,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(output_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
+                "-f",
+                "null",
+                "-",
+            ],
+            "The final movie failed full decode validation",
+        )
 
 
 def _segment_fingerprint(
@@ -626,9 +876,10 @@ def _segment_fingerprint(
     except OSError:
         source_state = {"missing": True}
     return artifact_fingerprint(
-        "render-segment-v4-portable-overlays",
+        "render-segment-v12-native-overlay-linebreaks",
         clip,
         plan.settings,
+        overlay_font_revision(plan.settings),
         {
             "encoder": encoder,
             "show_event_title": show_event_title,
@@ -638,8 +889,107 @@ def _segment_fingerprint(
     )
 
 
+def _segment_codec_contract_matches(
+    video_stream: dict[str, object],
+    audio_stream: object,
+    *,
+    transition_mezzanine: bool,
+) -> bool:
+    if not isinstance(audio_stream, dict):
+        return False
+    if video_stream.get("codec_name") != "h264" or audio_stream.get("codec_name") != "alac":
+        return False
+    if not transition_mezzanine:
+        return True
+    profile = video_stream.get("profile")
+    return isinstance(profile, str) and profile.casefold() == "high 4:4:4 predictive"
+
+
 def _decimal(value: float) -> str:
     return f"{value:.3f}"
+
+
+def _is_nvenc_unavailable_error(command: list[str], stderr: str | None) -> bool:
+    if "h264_nvenc" not in command:
+        return False
+    detail = (stderr or "").casefold()
+    markers = (
+        "no nvenc capable devices found",
+        "cannot load nvcuda",
+        "cannot load libcuda",
+        "cannot load nvencodeapi",
+        "cannot load libnvidia-encode",
+        "driver does not support the required nvenc api version",
+        "minimum required nvidia driver",
+        "openencodesessionex failed",
+        "failed to initialize nvenc",
+        "failed to open nvenc codec",
+        "cannot init cuda",
+        "provided device doesn't support required nvenc features",
+    )
+    return any(marker in detail for marker in markers)
+
+
+def _probe_payload_matches_plan(payload: dict[str, object], plan: QuickMontagePlan) -> bool:
+    streams = payload.get("streams")
+    if not isinstance(streams, list):
+        return False
+    video = next(
+        (
+            stream
+            for stream in streams
+            if isinstance(stream, dict) and stream.get("codec_type") == "video"
+        ),
+        None,
+    )
+    if not isinstance(video, dict):
+        return False
+    format_payload = payload.get("format")
+    if not isinstance(format_payload, dict):
+        return False
+    try:
+        duration = float(format_payload.get("duration", 0))
+        width = int(video.get("width", 0))
+        height = int(video.get("height", 0))
+    except (TypeError, ValueError):
+        return False
+    fps = _parse_ffmpeg_rate(video.get("avg_frame_rate") or video.get("r_frame_rate"))
+    tolerance = max(0.25, 3 / plan.settings.fps)
+    return (
+        abs(duration - plan.total_duration_seconds) <= tolerance
+        and width == plan.settings.width
+        and height == plan.settings.height
+        and fps is not None
+        and abs(fps - plan.settings.fps) <= 0.05
+        and video.get("pix_fmt") == "yuv420p"
+    )
+
+
+def _parse_ffmpeg_rate(value: object) -> float | None:
+    if not isinstance(value, str) or not value or value == "0/0":
+        return None
+    try:
+        if "/" not in value:
+            return float(value)
+        numerator, denominator = value.split("/", maxsplit=1)
+        denominator_value = float(denominator)
+        return float(numerator) / denominator_value if denominator_value else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _validate_narration_cues(plan: QuickMontagePlan) -> None:
+    if not plan.narration_cues:
+        return
+    previous_end = 0.0
+    for index, cue in enumerate(plan.narration_cues):
+        if cue.line_index != index or cue.cue_start_seconds < previous_end - 0.01:
+            raise MontageError("Timed narration cues are out of order or overlap.")
+        if cue.cue_end_seconds > plan.total_duration_seconds + 0.05:
+            raise MontageError("Timed narration exceeds the planned movie duration.")
+        if not cue.audio_path.is_file() or cue.audio_path.stat().st_size <= 0:
+            raise MontageError("Timed narration references a missing line audio file.")
+        previous_end = cue.cue_end_seconds
 
 
 def _validate_output_target(
@@ -685,6 +1035,14 @@ def _audio_trim_filter(has_audio: bool, trim_start: float, duration: str) -> str
     if has_audio:
         return f"atrim=start={_decimal(trim_start)}:duration={duration},asetpts=PTS-STARTPTS,"
     return f"atrim=0:{duration},asetpts=PTS-STARTPTS,"
+
+
+def _audio_fade_filters(duration_seconds: float, requested_seconds: float) -> str:
+    fade = min(requested_seconds, duration_seconds * 0.45)
+    if fade <= 0:
+        return ""
+    fade_out_start = max(0.0, duration_seconds - fade)
+    return f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={fade_out_start:.3f}:d={fade:.3f},"
 
 
 def _build_segment_video_graph(
@@ -780,7 +1138,7 @@ def _build_segment_video_graph(
     if overlays:
         lines.append(f"[{label}]{','.join(overlays)}[voverlay]")
         label = "voverlay"
-    lines.append(f"[{label}]format=yuv420p[v]")
+    lines.append(f"[{label}]setparams=range=tv,format=yuv420p[v]")
     return ";".join(lines)
 
 
@@ -844,26 +1202,36 @@ def _overlay_filters(
 ) -> list[str]:
     filters: list[str] = []
     margin = settings.overlay_safe_margin
-    if settings.event_titles_enabled and show_event_title and clip.event_title:
+    font = _drawtext_font_option(settings)
+    credits_start = (
+        max(0.0, duration - settings.credits_duration_seconds)
+        if settings.credits_text and show_credits
+        else duration
+    )
+    event_title = clean_title(clip.event_title)
+    if settings.event_titles_enabled and show_event_title and event_title:
         title = _escape_drawtext(
-            _truncate_overlay_text(clip.event_title, settings, font_height_divisor=18)
+            _truncate_overlay_text(event_title, settings, font_height_divisor=18)
         )
-        title_end = min(duration, 2.8)
+        title_end = min(duration, 2.8, credits_start)
+        if title_end > 0.05:
+            filters.append(
+                f"drawtext=text='{title}':{font}fontcolor=white:fontsize=h/18:"
+                "box=1:boxcolor=black@0.55:boxborderw=12:fix_bounds=1:"
+                f"x='max(w*{margin:.3f},min(w-tw-w*{margin:.3f},w*{margin:.3f}))':"
+                f"y='h*{margin:.3f}':enable='between(t,0,{title_end:.3f})'"
+            )
+    caption_text = _caption_overlay_text(clip.caption, settings, duration=duration)
+    if settings.scene_subtitles_enabled and caption_text and credits_start > 0.05:
+        caption = _escape_drawtext(caption_text)
+        caption_enable = (
+            "" if credits_start >= duration else f":enable='between(t,0,{credits_start:.3f})'"
+        )
         filters.append(
-            f"drawtext=text='{title}':fontcolor=white:fontsize=h/18:"
-            "box=1:boxcolor=black@0.55:boxborderw=12:fix_bounds=1:"
-            f"x='max(w*{margin:.3f},min(w-tw-w*{margin:.3f},w*{margin:.3f}))':"
-            f"y='h*{margin:.3f}':enable='between(t,0,{title_end:.3f})'"
-        )
-    if settings.scene_subtitles_enabled and clip.caption:
-        caption = _escape_drawtext(
-            _truncate_overlay_text(clip.caption, settings, font_height_divisor=24)
-        )
-        filters.append(
-            f"drawtext=text='{caption}':fontcolor=white:fontsize=h/24:"
+            f"drawtext=text='{caption}':{font}fontcolor=white:fontsize=h/24:"
             "box=1:boxcolor=black@0.60:boxborderw=10:fix_bounds=1:"
             f"x='max(w*{margin:.3f},min(w-tw-w*{margin:.3f},(w-tw)/2))':"
-            f"y='h-th-h*{margin:.3f}'"
+            f"y='h-th-h*{margin:.3f}'{caption_enable}"
         )
     if settings.credits_text and show_credits:
         credits = _escape_drawtext(
@@ -871,7 +1239,7 @@ def _overlay_filters(
         )
         credits_start = max(0.0, duration - settings.credits_duration_seconds)
         filters.append(
-            f"drawtext=text='{credits}':fontcolor=white:fontsize=h/20:"
+            f"drawtext=text='{credits}':{font}fontcolor=white:fontsize=h/20:"
             "box=1:boxcolor=black@0.65:boxborderw=14:fix_bounds=1:"
             f"x='max(w*{margin:.3f},min(w-tw-w*{margin:.3f},(w-tw)/2))':"
             f"y='max(h*{margin:.3f},min(h-th-h*{margin:.3f},(h-th)/2))':"
@@ -905,6 +1273,101 @@ def _truncate_overlay_text(
     return body + suffix
 
 
+def _caption_overlay_text(
+    text: object,
+    settings: QuickMontageSettings,
+    *,
+    duration: float,
+) -> str | None:
+    read_limit = max(20, int(duration * settings.caption_characters_per_second))
+    editorial = clean_caption(
+        text,
+        max_characters=min(settings.overlay_max_characters, read_limit),
+    )
+    if editorial is None:
+        return None
+    normalized = " ".join(_portable_overlay_text(editorial).split())
+    safe_width = settings.width * (1 - 2 * settings.overlay_safe_margin)
+    character_width = (settings.height / 24) * 0.62
+    per_line = max(8, int(safe_width / character_width))
+    total_limit = min(settings.overlay_max_characters, read_limit, per_line * 2)
+    normalized = _truncate_text_to_limit(normalized, total_limit)
+    lines = textwrap.wrap(
+        normalized,
+        width=per_line,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    if len(lines) > 2:
+        lines = [lines[0], _truncate_text_to_limit(" ".join(lines[1:]), per_line)]
+    return "\n".join(lines)
+
+
+def _truncate_text_to_limit(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return "." * limit
+    body = text[: limit - 3].rstrip()
+    boundary = body.rfind(" ")
+    if boundary >= (limit - 3) // 2:
+        body = body[:boundary].rstrip()
+    return f"{body}..."
+
+
+def _drawtext_font_option(settings: QuickMontageSettings) -> str:
+    font_path = _resolve_overlay_font(settings.overlay_font_path)
+    if font_path is None:
+        return ""
+    escaped = (
+        font_path.resolve().as_posix().replace("\\", "/").replace(":", "\\:").replace("'", "'\\''")
+    )
+    return f"fontfile='{escaped}':"
+
+
+def _resolve_overlay_font(configured: Path | None) -> Path | None:
+    if configured is not None:
+        resolved = configured.expanduser().resolve()
+        if not resolved.is_file():
+            raise MontageError(
+                f"Configured overlay font does not exist: {configured.name or '<unnamed-font>'}"
+            )
+        return resolved
+    project_root = Path(__file__).resolve().parents[3]
+    candidates = (
+        project_root / "assets" / "fonts" / "DejaVuSans.ttf",
+        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "arial.ttf",
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def overlay_font_revision(settings: QuickMontageSettings) -> dict[str, object] | None:
+    """Return the selected overlay font identity for render cache keys."""
+
+    if not (
+        settings.event_titles_enabled or settings.scene_subtitles_enabled or settings.credits_text
+    ):
+        return None
+    font_path = _resolve_overlay_font(settings.overlay_font_path)
+    if font_path is None:
+        return {"provider": "ffmpeg-default"}
+    try:
+        stat = font_path.stat()
+        digest = hashlib.sha256()
+        with font_path.open("rb") as font_file:
+            for chunk in iter(lambda: font_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise MontageError("Could not inspect the selected overlay font.") from error
+    return {
+        "path": font_path,
+        "size": stat.st_size,
+        "modified_ns": stat.st_mtime_ns,
+        "content_sha256": digest.hexdigest(),
+    }
+
+
 def _portable_overlay_text(text: str) -> str:
     translations: dict[str, str | int | None] = {
         "\u00a0": " ",
@@ -927,8 +1390,9 @@ def _portable_overlay_text(text: str) -> str:
 
 
 def _escape_drawtext(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     return (
-        text.replace("\\", "\\\\")
+        normalized.replace("\\", "\\\\")
         .replace("'", "'\\''")
         .replace(":", "\\:")
         .replace("%", "\\%")
@@ -941,12 +1405,20 @@ def _escape_drawtext(text: str) -> str:
 
 def _show_event_title(plan: QuickMontagePlan, clip_index: int) -> bool:
     clip = plan.clips[clip_index]
-    if not clip.event_title:
+    title = clean_title(clip.event_title)
+    if title is None:
         return False
     if clip_index == 0:
         return True
+    normalized_title = title.casefold()
+    if any(
+        (previous_title := clean_title(previous.event_title)) is not None
+        and previous_title.casefold() == normalized_title
+        for previous in plan.clips[:clip_index]
+    ):
+        return False
     previous = plan.clips[clip_index - 1]
-    return previous.event_id != clip.event_id or previous.event_title != clip.event_title
+    return previous.event_id != clip.event_id or clean_title(previous.event_title) != title
 
 
 def _active_narration_path(plan: QuickMontagePlan) -> Path | None:
@@ -1011,7 +1483,35 @@ def _build_filter_graph(
         audio_label = next_audio
 
     lines.append(f"[{video_label}]format=yuv420p[vout]")
-    _append_audio_mix(lines, plan, audio_label=audio_label, clip_count=clip_count)
+    _append_audio_mix(
+        lines,
+        plan,
+        audio_label=audio_label,
+        music_index=clip_count if plan.music_path is not None else None,
+        narration_index=(
+            clip_count + (1 if plan.music_path is not None else 0)
+            if _active_narration_path(plan) is not None
+            else None
+        ),
+    )
+    return ";\n".join(lines)
+
+
+def _build_hard_cut_audio_graph(plan: QuickMontagePlan) -> str:
+    lines: list[str] = []
+    music_index = 1 if plan.music_path is not None else None
+    narration_index = (
+        1 + (1 if plan.music_path is not None else 0)
+        if _active_narration_path(plan) is not None
+        else None
+    )
+    _append_audio_mix(
+        lines,
+        plan,
+        audio_label="0:a:0",
+        music_index=music_index,
+        narration_index=narration_index,
+    )
     return ";\n".join(lines)
 
 
@@ -1020,14 +1520,11 @@ def _append_audio_mix(
     plan: QuickMontagePlan,
     *,
     audio_label: str,
-    clip_count: int,
+    music_index: int | None,
+    narration_index: int | None,
 ) -> None:
     duration = plan.total_duration_seconds
     narration_path = _active_narration_path(plan)
-    if plan.music_path is None and narration_path is None:
-        lines.append(f"[{audio_label}]anull[aout]")
-        return
-
     lines.append(
         f"[{audio_label}]aresample=48000,"
         "aformat=sample_fmts=fltp:channel_layouts=stereo,"
@@ -1038,9 +1535,10 @@ def _append_audio_mix(
     )
     background_label = "sourceaudio"
     if plan.music_path is not None:
-        music_index = clip_count
-        fade_out_start = max(0.0, duration - 1.5)
+        assert music_index is not None
+        music_fade = min(plan.settings.music_fade_seconds, duration * 0.45)
         volume = _music_volume_filter(plan)
+        fades = _audio_fade_filters(duration, music_fade)
         lines.append(
             f"[{music_index}:a]aresample=48000,"
             "aformat=sample_fmts=fltp:channel_layouts=stereo,"
@@ -1048,8 +1546,7 @@ def _append_audio_mix(
             f"atrim=0:{duration:.3f},"
             "asetpts=PTS-STARTPTS,"
             f"{volume},"
-            "afade=t=in:st=0:d=1.5,"
-            f"afade=t=out:st={fade_out_start:.3f}:d=1.5[music]"
+            f"{fades}anull[music]"
         )
         lines.append(
             "[music][sourceaudio]"
@@ -1063,17 +1560,17 @@ def _append_audio_mix(
         background_label = "background"
 
     if narration_path is None:
-        lines.append(f"[{background_label}]alimiter=limit=0.95[aout]")
+        _append_delivery_audio(lines, plan, background_label)
         return
 
-    narration_index = clip_count + (1 if plan.music_path is not None else 0)
+    assert narration_index is not None
     lines.append(
         f"[{narration_index}:a]aresample=48000,"
         "aformat=sample_fmts=fltp:channel_layouts=stereo,"
         "apad,"
         f"atrim=0:{duration:.3f},"
         "asetpts=PTS-STARTPTS,"
-        f"volume={plan.settings.narration_volume:.3f},"
+        f"{_narration_volume_filter(plan)},"
         "asplit=2[narrationsc][narrationmix]"
     )
     duck_ratio = _narration_duck_ratio(plan.settings.background_volume_during_narration)
@@ -1085,8 +1582,64 @@ def _append_audio_mix(
     lines.append(
         "[duckedbackground][narrationmix]"
         "amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
-        f"atrim=0:{duration:.3f},alimiter=limit=0.95[aout]"
+        f"atrim=0:{duration:.3f}[premaster]"
     )
+    _append_delivery_audio(lines, plan, "premaster")
+
+
+def _append_delivery_audio(
+    lines: list[str],
+    plan: QuickMontagePlan,
+    input_label: str,
+) -> None:
+    settings = plan.settings
+    duration = plan.total_duration_seconds
+    fade = min(settings.final_audio_fade_seconds, duration * 0.45)
+    filters = [
+        (
+            "loudnorm="
+            f"I={settings.delivery_loudness_lufs:.1f}:"
+            f"TP={settings.delivery_true_peak_dbfs:.1f}:LRA=11:linear=true"
+        ),
+        "aresample=48000",
+        "aformat=sample_fmts=fltp:channel_layouts=stereo",
+        (
+            f"alimiter=limit={10 ** (settings.delivery_true_peak_dbfs / 20):.6f}:"
+            "level=false:latency=true"
+        ),
+    ]
+    if fade > 0:
+        filters.extend(
+            [
+                f"afade=t=in:st=0:d={fade:.3f}",
+                f"afade=t=out:st={max(0.0, duration - fade):.3f}:d={fade:.3f}",
+            ]
+        )
+    lines.append(f"[{input_label}]{','.join(filters)}[aout]")
+
+
+def _narration_volume_filter(plan: QuickMontagePlan) -> str:
+    base_volume = plan.settings.narration_volume
+    if not plan.narration_cues:
+        return f"volume={base_volume:.3f}"
+    expressions: list[str] = []
+    for cue in plan.narration_cues:
+        fade = min(plan.settings.narration_fade_seconds, cue.duration_seconds * 0.45)
+        start = cue.cue_start_seconds
+        end = cue.cue_end_seconds
+        if fade <= 0:
+            expressions.append(f"between(t,{start:.3f},{end:.3f})")
+            continue
+        expressions.append(
+            f"if(between(t,{start:.3f},{start + fade:.3f}),"
+            f"(t-{start:.3f})/{fade:.3f},"
+            f"if(between(t,{end - fade:.3f},{end:.3f}),"
+            f"({end:.3f}-t)/{fade:.3f},between(t,{start:.3f},{end:.3f})))"
+        )
+    envelope = expressions[0]
+    for expression in expressions[1:]:
+        envelope = f"max({envelope},{expression})"
+    return f"volume='{base_volume:.3f}*({envelope})':eval=frame"
 
 
 def _music_volume_filter(plan: QuickMontagePlan) -> str:

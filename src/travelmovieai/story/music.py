@@ -8,6 +8,7 @@ import random
 import subprocess
 import wave
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -31,8 +32,15 @@ type MusicProfile = Literal["calm", "lounge", "cinematic", "warm", "energetic"]
 type FloatArray = NDArray[np.float64]
 type NeuralGeneratorName = Literal["ace-step", "musicgen"]
 type MusicGeneratorName = Literal["procedural", "ace-step", "musicgen"]
-ARRANGEMENT_VERSION = "adaptive-lounge-v6"
+ARRANGEMENT_VERSION = "adaptive-lounge-v7-content-revision"
 MusicProgress = Callable[[int, int, str], None]
+
+
+@dataclass(slots=True)
+class MusicPlanExecution:
+    """Ephemeral execution details that must not affect the persisted music plan."""
+
+    cache_hit: bool = False
 
 
 class NeuralMusicGenerator(Protocol):
@@ -121,7 +129,10 @@ def build_music_plan(
     progress: MusicProgress | None = None,
     *,
     ffmpeg_binary: str = "ffmpeg",
+    execution: MusicPlanExecution | None = None,
 ) -> MusicPlan:
+    if execution is not None:
+        execution.cache_hit = False
     duration_seconds = montage_plan.total_duration_seconds
     accents = (
         build_music_accents(montage_plan)
@@ -224,6 +235,8 @@ def build_music_plan(
         expected_generator=target_generator,
     )
     if cached is not None:
+        if execution is not None:
+            execution.cache_hit = True
         if progress:
             progress(1, 1, "Music AI: reused a cached composition")
         return cached
@@ -282,6 +295,9 @@ def build_music_plan(
         if progress:
             progress(1, 1, "Adaptive music created")
 
+    source_content_sha256 = music_source_content_sha256(generated_path)
+    if source_content_sha256 is None:
+        raise MusicGenerationError("Could not fingerprint the generated soundtrack.")
     return MusicPlan(
         mode="generated",
         source_path=generated_path,
@@ -295,6 +311,7 @@ def build_music_plan(
         generator=generator_name,
         model=model_name,
         fallback_used=fallback_used,
+        source_content_sha256=source_content_sha256,
         cache_key=cache_key,
         reasoning=(
             reasoning + f" Created one {duration_seconds:.1f}s composition with "
@@ -754,7 +771,10 @@ def _cached_music_plan(
     if (
         cached.cache_key != cache_key
         or cached.generator != expected_generator
+        or cached.fallback_used
         or cached.source_path is None
+        or cached.source_content_sha256 is None
+        or music_source_content_sha256(generated_path) != cached.source_content_sha256
     ):
         return None
     return cached.model_copy(
@@ -763,6 +783,19 @@ def _cached_music_plan(
             "reasoning": cached.reasoning + " Composition reused from cache.",
         }
     )
+
+
+def music_source_content_sha256(path: Path) -> str | None:
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def _short_error(error: Exception) -> str:

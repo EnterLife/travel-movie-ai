@@ -11,9 +11,12 @@ from travelmovieai.core.config import Settings
 from travelmovieai.infrastructure.system import (
     CudaStatus,
     ExecutableStatus,
+    ResourceProfile,
     check_cuda,
     check_executable,
+    detect_resource_profile,
 )
+from travelmovieai.infrastructure.vision import resolve_local_vision_model
 
 DiagnosticLevel = Literal["ok", "warning", "error"]
 
@@ -39,11 +42,20 @@ def run_system_diagnostics(settings: Settings) -> SystemDiagnosticReport:
     checks.append(_ffmpeg_filter_check(settings.ffmpeg_binary, ffmpeg.available))
     cuda = check_cuda(settings.ffmpeg_binary)
     checks.append(_cuda_check(cuda, settings.device))
+    resources = detect_resource_profile(
+        settings.ffmpeg_binary,
+        cuda=cuda,
+        worker_override=settings.workers,
+        batch_override=settings.batch_size,
+        resource_mode=settings.resource_mode,
+        gpu_memory_reserve_mb=settings.gpu_memory_reserve_mb,
+        max_gpu_processes=settings.max_gpu_processes,
+    )
     checks.extend(_vision_checks(settings))
     checks.extend(_embedding_checks(settings))
     checks.extend(_speech_checks(settings))
     checks.extend(_voice_checks(settings))
-    checks.append(_model_cache_check(settings))
+    checks.append(_model_cache_check(settings, resources))
     return SystemDiagnosticReport(
         ready=not any(check.level == "error" for check in checks),
         checks=tuple(checks),
@@ -202,7 +214,7 @@ def _voice_checks(settings: Settings) -> list[DiagnosticCheck]:
     return [DiagnosticCheck("Piper", "ok", "Local Piper executable and voice model are ready.")]
 
 
-def _model_cache_check(settings: Settings) -> DiagnosticCheck:
+def _model_cache_check(settings: Settings, resources: ResourceProfile) -> DiagnosticCheck:
     cache = settings.model_cache.expanduser()
     if settings.allow_model_download:
         return DiagnosticCheck(
@@ -210,9 +222,9 @@ def _model_cache_check(settings: Settings) -> DiagnosticCheck:
             "ok",
             "Missing local models may be downloaded on first explicit use.",
         )
-    required_models = _configured_offline_models(settings)
+    required_models = _configured_offline_models(settings, resources)
     missing_models = [
-        model for model in required_models if not _model_snapshot_present(cache, model)
+        model for model in required_models if not model_snapshot_present(cache, model)
     ]
     if required_models and not missing_models:
         return DiagnosticCheck(
@@ -221,15 +233,9 @@ def _model_cache_check(settings: Settings) -> DiagnosticCheck:
             "Offline cache-only mode contains every explicitly configured model.",
         )
     if missing_models:
-        explicitly_required = (
-            settings.vision_model != "auto"
-            or settings.embedding_backend == "sentence-transformers"
-            or settings.story_provider == "local"
-        )
-        level: DiagnosticLevel = "error" if explicitly_required else "warning"
         return DiagnosticCheck(
             "Model cache",
-            level,
+            "error",
             "Offline cache is missing configured snapshot(s): " + ", ".join(missing_models),
         )
     return DiagnosticCheck(
@@ -239,10 +245,11 @@ def _model_cache_check(settings: Settings) -> DiagnosticCheck:
     )
 
 
-def _configured_offline_models(settings: Settings) -> list[str]:
-    models: list[str] = []
-    if settings.vision_model != "auto":
-        models.append(settings.vision_model)
+def _configured_offline_models(
+    settings: Settings,
+    resources: ResourceProfile,
+) -> list[str]:
+    models: list[str] = [_resolved_vision_model(settings, resources)]
     if settings.embedding_backend == "sentence-transformers":
         models.append(settings.embedding_model)
     if settings.story_provider == "local":
@@ -250,10 +257,47 @@ def _configured_offline_models(settings: Settings) -> list[str]:
     return list(dict.fromkeys(models))
 
 
-def _model_snapshot_present(cache: Path, model: str) -> bool:
-    direct = cache / model
-    hugging_face = cache / f"models--{model.replace('/', '--')}" / "snapshots"
+def model_snapshot_present(cache: Path, model: str) -> bool:
+    """Recognize complete direct or Hugging Face snapshots in supported cache layouts."""
+
+    normalized = f"models--{model.replace('/', '--')}"
+    cache_roots = tuple(
+        cache / namespace for namespace in ("", "sentence-transformers", "faster-whisper", "story")
+    )
+    direct_candidates = tuple(
+        candidate
+        for root in cache_roots
+        for candidate in (root / model, root / model.split("/")[-1])
+    )
+    snapshot_roots = tuple(root / normalized / "snapshots" for root in cache_roots)
     try:
-        return direct.is_dir() or (hugging_face.is_dir() and any(hugging_face.iterdir()))
+        if any(_looks_like_model_directory(candidate) for candidate in direct_candidates):
+            return True
+        return any(
+            root.is_dir()
+            and any(_looks_like_model_directory(snapshot) for snapshot in root.iterdir())
+            for root in snapshot_roots
+        )
     except OSError:
         return False
+
+
+def _looks_like_model_directory(path: Path) -> bool:
+    if not path.is_dir() or not (path / "config.json").is_file():
+        return False
+    weight_patterns = ("*.safetensors", "*.bin", "*.onnx", "model.bin")
+    return any(any(path.glob(pattern)) for pattern in weight_patterns)
+
+
+def _resolved_vision_model(settings: Settings, resources: ResourceProfile) -> str:
+    if settings.vision_provider == "florence":
+        return (
+            settings.vision_model
+            if settings.vision_model != "auto"
+            else "microsoft/Florence-2-large"
+        )
+    return resolve_local_vision_model(
+        settings.vision_model,
+        gpu_memory_mb=resources.gpu_memory_mb,
+        system_memory_mb=resources.memory_mb,
+    )

@@ -7,9 +7,13 @@ import numpy as np
 import pytest
 
 from travelmovieai.analysis.audio import SAMPLE_RATE, analyze_audio, classify_audio_samples
+from travelmovieai.application.context import ProjectContext
+from travelmovieai.core.config import Settings
 from travelmovieai.core.exceptions import PipelineStageError
-from travelmovieai.domain.enums import MediaType
+from travelmovieai.domain.enums import MediaType, StageStatus
 from travelmovieai.domain.models import MediaAsset, Scene
+from travelmovieai.infrastructure.database import MediaAssetRepository
+from travelmovieai.pipeline.stages.audio_analysis import AudioAnalysisStage
 from travelmovieai.story.ranking import rank_scenes
 
 
@@ -99,3 +103,101 @@ def test_audio_analysis_reports_ffmpeg_timeout(
         analyze_audio([scene], [asset], "ffmpeg", timeout_seconds=0.25)
 
     assert timeouts == [0.25]
+
+
+def test_audio_analysis_reports_sanitized_ffmpeg_decode_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset, scene = _audio_scene(tmp_path)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=b"",
+            stderr=f"{asset.path} Authorization=private-token".encode(),
+        )
+
+    monkeypatch.setattr("travelmovieai.analysis.audio.subprocess.run", fake_run)
+
+    with pytest.raises(PipelineStageError) as captured:
+        analyze_audio([scene], [asset], "ffmpeg")
+
+    message = str(captured.value)
+    assert str(asset.path) not in message
+    assert "private-token" not in message
+    assert "<local-path>" in message
+    assert "<redacted>" in message
+
+
+def test_audio_stage_treats_empty_successful_decode_as_scene_without_audio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset, scene = _audio_scene(tmp_path)
+    context = ProjectContext(
+        input_path=tmp_path,
+        workspace=tmp_path / "workspace",
+        settings=Settings(),
+    )
+    context.prepare()
+    with MediaAssetRepository(context.database_path) as repository:
+        repository.initialize()
+        repository.synchronize([asset], datetime.now(UTC))
+        repository.synchronize_scenes([scene])
+
+    calls = 0
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("travelmovieai.analysis.audio.subprocess.run", fake_run)
+    stage = AudioAnalysisStage()
+
+    completed = stage.run(context)
+    cached = stage.run(context)
+
+    assert completed.status is StageStatus.COMPLETED
+    assert cached.status is StageStatus.CACHED
+    assert calls == 1
+    with MediaAssetRepository(context.database_path) as repository:
+        stored = repository.list_scenes()[0]
+    analysis = stored.metadata["audio_analysis"]
+    assert analysis["has_audio"] is False
+    assert analysis["primary_label"] == "silence"
+
+
+def test_audio_analysis_rejects_invalid_pcm_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset, scene = _audio_scene(tmp_path)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        return subprocess.CompletedProcess(command, 0, stdout=b"\x00", stderr=b"")
+
+    monkeypatch.setattr("travelmovieai.analysis.audio.subprocess.run", fake_run)
+
+    with pytest.raises(PipelineStageError, match="invalid PCM payload"):
+        analyze_audio([scene], [asset], "ffmpeg")
+
+
+def _audio_scene(tmp_path: Path) -> tuple[MediaAsset, Scene]:
+    asset = MediaAsset(
+        path=tmp_path / "секретный клип.mp4",
+        relative_path=Path("секретный клип.mp4"),
+        media_type=MediaType.VIDEO,
+        extension=".mp4",
+        size_bytes=10,
+        modified_at=datetime.now(UTC),
+        modified_ns=123,
+        duration_seconds=4,
+        probe_metadata={"streams": [{"codec_type": "audio"}]},
+    )
+    return asset, Scene(asset_id=asset.id, start_seconds=0, end_seconds=3)

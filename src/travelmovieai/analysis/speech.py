@@ -37,6 +37,7 @@ def analyze_speech(
     progress: Callable[[int, int, str], None] | None = None,
     *,
     timeout_seconds: float = 120,
+    checkpoint: Callable[[Scene], None] | None = None,
 ) -> SpeechAnalysisReport:
     assets_by_id = {asset.id: asset for asset in assets}
     updated: list[Scene] = []
@@ -50,7 +51,7 @@ def analyze_speech(
             if progress:
                 progress(index, total, f"Whisper: scene {index}/{total}, no speech")
             continue
-        cache_key = _speech_cache_key(scene, asset, provider.model)
+        cache_key = speech_cache_key(scene, asset, provider.model)
         if scene.metadata.get("speech_cache_key") == cache_key and scene.transcript is not None:
             updated.append(scene)
             cached_count += 1
@@ -68,24 +69,25 @@ def analyze_speech(
             timeout_seconds,
         )
         transcript = provider.transcribe(audio_path)
-        updated.append(
-            scene.model_copy(
-                update={
-                    "transcript": transcript.text,
-                    "metadata": {
-                        **scene.metadata,
-                        "speech_cache_key": cache_key,
-                        "speech_provider": provider.name,
-                        "speech_model": provider.model,
-                        "speech_language": transcript.language,
-                        "speech_confidence": transcript.confidence,
-                        "speech_segments": [
-                            segment.model_dump(mode="json") for segment in transcript.segments
-                        ],
-                    },
-                }
-            )
+        updated_scene = scene.model_copy(
+            update={
+                "transcript": transcript.text,
+                "metadata": {
+                    **scene.metadata,
+                    "speech_cache_key": cache_key,
+                    "speech_provider": provider.name,
+                    "speech_model": provider.model,
+                    "speech_language": transcript.language,
+                    "speech_confidence": transcript.confidence,
+                    "speech_segments": [
+                        segment.model_dump(mode="json") for segment in transcript.segments
+                    ],
+                },
+            }
         )
+        updated.append(updated_scene)
+        if checkpoint is not None:
+            checkpoint(updated_scene)
         transcribed_count += 1
         if progress:
             progress(index, total, f"Whisper: complete {index}/{total}")
@@ -161,7 +163,7 @@ def _extract_scene_audio(
         temporary.unlink(missing_ok=True)
 
 
-def _speech_cache_key(scene: Scene, asset: MediaAsset, model: str) -> str:
+def speech_cache_key(scene: Scene, asset: MediaAsset, model: str) -> str:
     payload = {
         "asset": str(asset.id),
         "size": asset.size_bytes,

@@ -1,8 +1,11 @@
+import logging
 import time
+import zipfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError, Event
 from uuid import UUID
@@ -16,8 +19,15 @@ from travelmovieai.application.validation import (
     validate_project_paths,
 )
 from travelmovieai.application.workspace_identity import ensure_workspace_identity
+from travelmovieai.application.workspace_lease import WorkspaceLease
 from travelmovieai.core.config import Settings
-from travelmovieai.core.exceptions import MontageError, TravelMovieError, WorkspaceBusyError
+from travelmovieai.core.exceptions import (
+    JobPersistenceError,
+    MontageError,
+    TravelMovieError,
+    WorkspaceBusyError,
+)
+from travelmovieai.core.logging import configure_local_logging
 from travelmovieai.domain.enums import MediaType, PipelineStage
 from travelmovieai.domain.models import (
     Event as StoryEvent,
@@ -37,6 +47,7 @@ from travelmovieai.infrastructure.system import (
     ExecutableStatus,
     ResourceProfile,
 )
+from travelmovieai.pipeline.progress import ProgressEvent
 from travelmovieai.web.app import create_app
 from travelmovieai.web.jobs import ScanJobManager
 from travelmovieai.web.movie_jobs import MovieJobManager, _estimate_phase_eta
@@ -237,6 +248,7 @@ def test_web_interface_serves_page_and_health() -> None:
         health = client.get("/api/health")
         styles = client.get("/static/styles.css")
         script = client.get("/static/app.js")
+        diagnostics = client.get("/api/diagnostics/bundle")
 
     assert page.status_code == 200
     assert "TravelMovieAI" in page.text
@@ -296,6 +308,80 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "FFmpeg not found" in script.text
     assert "Scans ready" in script.text
     assert "The scanner is not ready. Check FFprobe." in script.text
+    assert "formatErrorDetail(payload?.detail)" in script.text
+    assert "error.status = response.status" in script.text
+    assert 'requestJson("/api/movies?limit=20")' in script.text
+    assert "return loadHistory(attempt + 1)" in script.text
+    assert "return restoreActiveMovieJob(attempt + 1)" in script.text
+    assert "The edit is still running; reconnecting" in script.text
+    assert "The active edit is no longer available" in script.text
+    assert "Music AI unavailable · procedural music ready" in script.text
+    assert "job.quality_gate_status" in script.text
+    assert "job.semantic_score_p10" in script.text
+    assert "job.full_media_qa_completed" in script.text
+    assert diagnostics.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(BytesIO(diagnostics.content)) as archive:
+        diagnostic_payload = archive.read("diagnostics.json").decode("utf-8")
+    assert '"application": "TravelMovieAI"' in diagnostic_payload
+    assert "diagnostics-link" in page.text
+
+
+def test_web_boundary_returns_generic_correlated_error() -> None:
+    def broken_checker(_: str) -> ExecutableStatus:
+        raise RuntimeError("HF_TOKEN='private-token'")
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            executable_checker=broken_checker,
+        )
+    ) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 500
+    assert response.json()["detail"].startswith("Internal server error")
+    assert response.json()["request_id"] == response.headers["x-request-id"]
+    assert "private-token" not in response.text
+    assert response.headers["x-frame-options"] == "DENY"
+
+
+def test_diagnostics_bundle_includes_sanitized_application_log(tmp_path: Path) -> None:
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+    private_workspace = tmp_path / "private-trip"
+    settings = Settings(workspace=private_workspace)
+    try:
+        log_path = configure_local_logging(
+            tmp_path / "logs" / "travelmovieai.log",
+            private_paths=(private_workspace,),
+        )
+        logging.getLogger("travelmovieai.test").error(
+            "source=%s HF_TOKEN='private-token'",
+            private_workspace / "clip.mp4",
+        )
+        for handler in root.handlers:
+            handler.flush()
+
+        with TestClient(
+            create_app(
+                settings=settings,
+                job_manager=ScanJobManager(FakeScanService()),
+            )
+        ) as client:
+            response = client.get("/api/diagnostics/bundle")
+
+        with zipfile.ZipFile(BytesIO(response.content)) as archive:
+            log_tail = archive.read("application.log").decode("utf-8")
+        assert log_path.is_file()
+        assert "private-token" not in log_tail
+        assert "private-trip" not in log_tail
+        assert "<redacted>" in log_tail
+        assert "<local-path>" in log_tail
+    finally:
+        for handler in list(root.handlers):
+            if handler not in handlers_before:
+                handler.close()
+                root.removeHandler(handler)
 
 
 def test_phase_eta_counts_down_between_progress_updates() -> None:
@@ -398,6 +484,7 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
                 gpu_name="RTX Test",
                 memory_mb=6144,
                 ffmpeg_nvenc=True,
+                torch_cuda=True,
             ),
         )
     ) as client:
@@ -407,7 +494,11 @@ def test_web_capabilities_lists_models_and_cuda() -> None:
     assert response.status_code == 200
     assert payload["local_ai"]["resolved_model"] == "Qwen/Qwen2.5-VL-3B-Instruct"
     assert payload["music_ai"]["resolved_model"] == "ACE-Step/acestep-v15-turbo"
-    assert payload["music_ai"]["available"] is True
+    assert payload["music_ai"]["available"] is payload["music_ai"]["runtime_installed"]
+    if payload["music_ai"]["available"]:
+        assert payload["music_ai"]["reason"] is None
+    else:
+        assert "ACE-Step runtime" in payload["music_ai"]["reason"]
     assert payload["local_ai"]["available"] is True
     assert payload["speech"]["available"] is True
     assert payload["narration"]["available"] is False
@@ -432,6 +523,73 @@ def test_web_capabilities_recommends_cpu_when_nvenc_is_unavailable() -> None:
 
     assert payload["recommended_render_device"] == "cpu"
     assert payload["resources"]["device"] == "cpu"
+
+
+def test_web_rejects_semantic_job_when_offline_model_snapshot_is_missing(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    settings = Settings(
+        workspace=tmp_path / "workspace-root",
+        model_cache=tmp_path / "empty-models",
+        allow_model_download=False,
+        vision_model="Qwen/Qwen2.5-VL-3B-Instruct",
+    )
+    with TestClient(
+        create_app(
+            settings=settings,
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(FakeMovieService()),
+            package_checker=lambda _: True,
+            cuda_checker=lambda _: CudaStatus(available=False),
+        )
+    ) as client:
+        capability = client.get("/api/capabilities")
+        response = client.post(
+            "/api/movies",
+            json={"input_path": str(media), "settings": {"semantic_analysis": True}},
+        )
+
+    assert capability.json()["local_ai"]["available"] is False
+    assert response.status_code == 422
+    assert "Offline model cache is incomplete" in response.json()["detail"]
+
+
+def test_web_resolves_florence_auto_model_for_offline_preflight(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    settings = Settings(
+        workspace=tmp_path / "workspace-root",
+        model_cache=tmp_path / "empty-models",
+        allow_model_download=False,
+        vision_provider="florence",
+        vision_model="auto",
+    )
+    with TestClient(
+        create_app(
+            settings=settings,
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(FakeMovieService()),
+            package_checker=lambda _: True,
+            cuda_checker=lambda _: CudaStatus(available=False),
+        )
+    ) as client:
+        capability = client.get("/api/capabilities")
+        response = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "settings": {
+                    "semantic_analysis": True,
+                    "vision_provider": "florence",
+                },
+            },
+        )
+
+    assert capability.json()["local_ai"]["resolved_model"] == "microsoft/Florence-2-large"
+    assert response.status_code == 422
+    assert "microsoft/Florence-2-large" in response.json()["detail"]
 
 
 @pytest.mark.parametrize(
@@ -542,11 +700,43 @@ def test_web_rejects_non_loopback_host_and_mutating_origin() -> None:
             json={},
             headers={"Origin": "https://attacker.example"},
         )
+        wrong_local_port = client.post(
+            "/api/scans",
+            json={},
+            headers={"Origin": "http://testserver:8000"},
+        )
+        cross_site_fetch = client.post(
+            "/api/scans",
+            json={},
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+        exact_local_origin = client.post(
+            "/api/scans",
+            json={},
+            headers={
+                "Origin": "http://testserver",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
         loopback_ipv6 = client.get("/api/health", headers={"Host": "[::1]:8000"})
 
     assert hostile_host.status_code == 400
     assert hostile_origin.status_code == 403
+    assert wrong_local_port.status_code == 403
+    assert cross_site_fetch.status_code == 403
+    assert exact_local_origin.status_code == 422
     assert loopback_ipv6.status_code == 200
+    assert loopback_ipv6.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in loopback_ipv6.headers["content-security-policy"]
+    assert "default-src 'self'" in loopback_ipv6.headers["content-security-policy"]
+    assert "script-src 'self'" in loopback_ipv6.headers["content-security-policy"]
+    assert "style-src 'self' 'unsafe-inline'" in loopback_ipv6.headers["content-security-policy"]
+    assert "connect-src 'self'" in loopback_ipv6.headers["content-security-policy"]
+    assert "img-src 'self' data: blob:" in loopback_ipv6.headers["content-security-policy"]
+    assert "font-src 'self' data:" in loopback_ipv6.headers["content-security-policy"]
+    assert "media-src 'self' blob:" in loopback_ipv6.headers["content-security-policy"]
+    assert "form-action 'self'" in loopback_ipv6.headers["content-security-policy"]
+    assert loopback_ipv6.headers["x-request-id"]
 
 
 def test_web_movie_rejects_explicit_cuda_without_nvenc(tmp_path: Path) -> None:
@@ -952,6 +1142,85 @@ def test_semantic_movie_reports_canonical_mid_pipeline_subtask(tmp_path: Path) -
     manager.shutdown()
 
 
+def test_movie_job_uses_typed_stage_instead_of_message_parsing(tmp_path: Path) -> None:
+    class TypedProgressService(FakeMovieService):
+        def __init__(self) -> None:
+            self.reached = Event()
+            self.release = Event()
+
+        def create_quick_montage(
+            self,
+            *,
+            input_path: Path,
+            workspace: Path | None,
+            settings: QuickMontageSettings,
+            variant_name: str = "Default",
+            output_path: Path | None = None,
+            progress: Callable[[int, int, str], None] | None = None,
+            progress_events: Callable[[ProgressEvent], None] | None = None,
+        ) -> QuickMontageResult:
+            assert progress is not None
+            assert progress_events is not None
+            progress_events(
+                ProgressEvent(
+                    stage=PipelineStage.DUPLICATE_DETECTION,
+                    current=1,
+                    total=2,
+                    unit="scenes",
+                    message="provider-specific wording",
+                    overall_current=500,
+                    overall_total=1000,
+                )
+            )
+            progress(500, 1000, "Music selection wording must not decide the phase")
+            self.reached.set()
+            self.release.wait(timeout=5)
+            result = super().create_quick_montage(
+                input_path=input_path,
+                workspace=workspace,
+                settings=settings,
+                variant_name=variant_name,
+                output_path=output_path,
+                progress=progress,
+            )
+            return result.model_copy(
+                update={
+                    "quality_gate_status": "degraded",
+                    "semantic_score_p10": 48.5,
+                    "dominant_event_ratio": 0.6,
+                    "adjacent_source_repeat_ratio": 0.2,
+                    "center_cut_ratio": 0.1,
+                    "full_media_qa_completed": True,
+                }
+            )
+
+    media = tmp_path / "media"
+    media.mkdir()
+    service = TypedProgressService()
+    manager = MovieJobManager(
+        service,
+        render_disk_reserve_mb=0,
+        render_disk_safety_factor=1,
+    )
+    submitted = manager.submit(
+        media,
+        tmp_path / "workspace",
+        QuickMontageSettings(semantic_analysis=True),
+    )
+    assert service.reached.wait(timeout=2)
+    running = manager.get(submitted.id)
+    assert running is not None
+    assert running.pipeline_stage is PipelineStage.DUPLICATE_DETECTION
+    assert running.phase == PipelineStage.DUPLICATE_DETECTION.value
+
+    service.release.set()
+    completed = _wait_for_manager_movie_job(manager, submitted.id)
+    assert completed.quality_gate_status == "degraded"
+    assert completed.semantic_score_p10 == 48.5
+    assert completed.full_media_qa_completed is True
+    manager.shutdown()
+
+
 def test_web_scene_override_is_persisted(tmp_path: Path) -> None:
     media = tmp_path / "media"
     media.mkdir()
@@ -990,6 +1259,49 @@ def test_web_scene_override_is_persisted(tmp_path: Path) -> None:
     assert listed.json()["scenes"][0]["id"] == str(scene.id)
     assert updated.status_code == 200
     assert updated.json()["scenes"][0]["metadata"]["selection_override"] == "include"
+
+
+def test_web_manual_edit_respects_cross_process_workspace_lease(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    workspace = tmp_path / "workspace"
+    ensure_workspace_identity(media, workspace)
+    repository = MediaAssetRepository(workspace / "project.db")
+    repository.initialize()
+    asset = MediaAsset(
+        path=media / "clip.mp4",
+        relative_path=Path("clip.mp4"),
+        media_type=MediaType.VIDEO,
+        extension=".mp4",
+        size_bytes=1,
+        modified_at=datetime.now(UTC),
+        modified_ns=1,
+        duration_seconds=3,
+    )
+    repository.synchronize([asset], datetime.now(UTC))
+    scene = Scene(asset_id=asset.id, start_seconds=0, end_seconds=3)
+    repository.synchronize_scenes([scene])
+    query = {"input_path": str(media), "workspace": str(workspace)}
+
+    with (
+        TestClient(
+            create_app(
+                settings=Settings(),
+                job_manager=ScanJobManager(FakeScanService()),
+            )
+        ) as client,
+        WorkspaceLease(workspace, operation="external_pipeline"),
+    ):
+        response = client.patch(
+            f"/api/scenes/{scene.id}",
+            json={**query, "decision": "include"},
+        )
+
+    assert response.status_code == 409
+    assert "already being updated" in response.json()["detail"]
+    stored = repository.get_scene(scene.id)
+    assert stored is not None
+    assert "selection_override" not in stored.metadata
 
 
 def test_web_scene_pagination_reaches_and_edits_scenes_after_first_120(
@@ -1097,6 +1409,49 @@ def test_job_manager_rejects_active_workspace(tmp_path: Path) -> None:
 
     service.release.set()
     _wait_for_manager_job(manager, first.id)
+    manager.shutdown()
+
+
+def test_scan_job_refuses_to_start_without_restart_safe_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    manager = ScanJobManager(FakeScanService(), state_path=tmp_path / "state" / "jobs.json")
+    monkeypatch.setattr(
+        "travelmovieai.web.jobs.write_json_atomic",
+        lambda *_: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(JobPersistenceError, match="Restart-safe scan state"):
+        manager.submit(media, tmp_path / "workspace")
+
+    assert manager.list() == []
+    manager.shutdown()
+
+
+def test_movie_job_refuses_to_start_without_restart_safe_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    manager = MovieJobManager(
+        FakeMovieService(),
+        state_path=tmp_path / "state" / "movies.json",
+        render_disk_reserve_mb=0,
+        render_disk_safety_factor=1,
+    )
+    monkeypatch.setattr(
+        "travelmovieai.web.movie_jobs.write_json_atomic",
+        lambda *_: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(JobPersistenceError, match="Restart-safe edit state"):
+        manager.submit(media, tmp_path / "workspace", QuickMontageSettings())
+
+    assert manager.list() == []
     manager.shutdown()
 
 
@@ -1478,6 +1833,110 @@ def test_movie_job_redacts_credentials_from_persisted_failure(tmp_path: Path) ->
     assert "abc123" not in persisted
     assert persisted.count("<redacted>") >= 2
     manager.shutdown()
+
+
+def test_movie_job_redacts_paths_in_persisted_messages_and_correlates_worker_logs(
+    tmp_path: Path,
+) -> None:
+    media = (tmp_path / "private-input").resolve()
+    media.mkdir()
+    workspace = (tmp_path / "private-workspace").resolve()
+    music_path = (tmp_path / "private-music" / "track.wav").resolve()
+    music_path.parent.mkdir()
+    music_path.write_bytes(b"music")
+    model_path = (tmp_path / "private-model" / "vision-model").resolve()
+    model_path.mkdir(parents=True)
+    piper_model = (tmp_path / "private-voice" / "voice.onnx").resolve()
+    piper_model.parent.mkdir()
+    piper_model.write_bytes(b"model")
+    state_path = tmp_path / "state" / "movie_jobs.json"
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+    manager: MovieJobManager | None = None
+
+    class PathLoggingMovieService(FakeMovieService):
+        settings = Settings(
+            model_cache=model_path,
+            music_library=music_path.parent,
+            piper_model=piper_model,
+        )
+
+        def create_quick_montage(
+            self,
+            *,
+            input_path: Path,
+            workspace: Path | None,
+            settings: QuickMontageSettings,
+            variant_name: str = "Default",
+            output_path: Path | None = None,
+            progress: object | None = None,
+        ) -> QuickMontageResult:
+            assert workspace is not None
+            assert output_path is not None
+            private_message = (
+                f"input={input_path} workspace={workspace} output={output_path} "
+                f"music={settings.music_path} model={settings.vision_model} "
+                f"voice={self.settings.piper_model}"
+            )
+            logging.getLogger("travelmovieai.worker-test").warning(private_message)
+            if callable(progress):
+                progress(250, 1000, private_message)
+            return super().create_quick_montage(
+                input_path=input_path,
+                workspace=workspace,
+                settings=settings,
+                variant_name=variant_name,
+                output_path=output_path,
+                progress=progress,
+            )
+
+    try:
+        log_path = configure_local_logging(tmp_path / "logs" / "app.log")
+        manager = MovieJobManager(
+            PathLoggingMovieService(),
+            state_path=state_path,
+            render_disk_reserve_mb=0,
+            render_disk_safety_factor=1.0,
+        )
+        submitted = manager.submit(
+            media,
+            workspace,
+            QuickMontageSettings(
+                music_path=music_path,
+                vision_model=str(model_path),
+            ),
+        )
+        completed = _wait_for_manager_movie_job(manager, submitted.id)
+        history = MovieJobStateHistory.model_validate_json(state_path.read_text(encoding="utf-8"))
+        persisted_messages = [
+            history.jobs[0].message,
+            *(entry.message for entry in history.jobs[0].logs),
+            *(task.message for task in history.jobs[0].subtasks),
+        ]
+        for handler in root_logger.handlers:
+            handler.flush()
+        rendered_log = log_path.read_text(encoding="utf-8")
+
+        assert completed.status is JobStatus.COMPLETED
+        for private_path in (
+            media,
+            workspace,
+            music_path,
+            model_path,
+            piper_model,
+        ):
+            assert all(str(private_path) not in message for message in persisted_messages)
+            assert all(str(private_path) not in entry.message for entry in completed.logs)
+            assert str(private_path) not in rendered_log
+        assert any("<local-path>" in message for message in persisted_messages)
+        assert f"[{submitted.id}]" in rendered_log
+    finally:
+        if manager is not None:
+            manager.shutdown()
+        for handler in list(root_logger.handlers):
+            if handler not in original_handlers:
+                handler.close()
+                root_logger.removeHandler(handler)
 
 
 def test_movie_job_fails_before_service_when_disk_preflight_fails(

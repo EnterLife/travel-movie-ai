@@ -9,6 +9,8 @@ if /i "%~1"=="-h" goto :help
 set "INSTALL_SPEC=.[all,dev]"
 set "INSTALL_MUSIC_AI=1"
 set "MUSIC_AI_ONLY="
+set "BASE_ONLY="
+set "NONINTERACTIVE="
 set "ACE_STEP_RUNTIME=.cache\ace-step"
 set "ACE_STEP_REVISION=dce621408bee8c31b4fcf4811682eb9359e1bc94"
 
@@ -16,6 +18,19 @@ if /i "%~1"=="--runtime-only" set "INSTALL_SPEC=.[all]"
 if /i "%~2"=="--runtime-only" set "INSTALL_SPEC=.[all]"
 if /i "%~1"=="--skip-music-ai" set "INSTALL_MUSIC_AI="
 if /i "%~2"=="--skip-music-ai" set "INSTALL_MUSIC_AI="
+if /i "%~1"=="--base-only" (
+  set "INSTALL_SPEC=.[video]"
+  set "INSTALL_MUSIC_AI="
+  set "BASE_ONLY=1"
+)
+if /i "%~2"=="--base-only" (
+  set "INSTALL_SPEC=.[video]"
+  set "INSTALL_MUSIC_AI="
+  set "BASE_ONLY=1"
+)
+if /i "%~1"=="--non-interactive" set "NONINTERACTIVE=1"
+if /i "%~2"=="--non-interactive" set "NONINTERACTIVE=1"
+if /i "%~3"=="--non-interactive" set "NONINTERACTIVE=1"
 if /i "%~1"=="--music-ai-only" (
   set "MUSIC_AI_ONLY=1"
   if not "%~2"=="" set "ACE_STEP_RUNTIME=%~2"
@@ -66,8 +81,10 @@ echo Updating packaging tools...
 "%PYTHON_EXE%" -m pip install --upgrade pip wheel "setuptools<82"
 if errorlevel 1 goto :error
 
-call :ensure_pytorch_cuda
-if errorlevel 1 goto :error
+if not defined BASE_ONLY (
+  call :ensure_pytorch_cuda
+  if errorlevel 1 goto :error
+)
 
 echo.
 echo Installing TravelMovieAI dependencies: %INSTALL_SPEC%
@@ -90,7 +107,11 @@ echo Configuration: configs\settings.toml
 
 echo.
 echo Verifying Python dependencies...
-"%PYTHON_EXE%" -c "import accelerate, bitsandbytes, cv2, fastapi, faster_whisper, faiss, huggingface_hub, json_repair, safetensors, scenedetect, sentence_transformers, torch, transformers, travelmovieai, uvicorn"
+if defined BASE_ONLY (
+  "%PYTHON_EXE%" -c "import cv2, fastapi, numpy, PIL, pydantic, scenedetect, sqlalchemy, travelmovieai, typer, uvicorn"
+) else (
+  "%PYTHON_EXE%" -c "import accelerate, bitsandbytes, cv2, fastapi, faster_whisper, faiss, huggingface_hub, json_repair, safetensors, scenedetect, sentence_transformers, torch, transformers, travelmovieai, uvicorn"
+)
 if errorlevel 1 goto :error
 
 echo.
@@ -105,8 +126,8 @@ echo Setup completed successfully.
 echo Start the application with:
 echo   scripts\run_web.bat
 echo.
+if not defined NONINTERACTIVE pause
 endlocal
-pause
 exit /b 0
 
 :music_ai_only
@@ -120,8 +141,8 @@ call :ensure_music_ai
 if errorlevel 1 goto :error
 echo.
 echo ACE-Step music runtime setup completed successfully.
+if not defined NONINTERACTIVE pause
 endlocal
-pause
 exit /b 0
 
 :ensure_music_ai
@@ -276,16 +297,19 @@ goto :error
 echo Usage:
 echo   scripts\setup_windows.bat
 echo   scripts\setup_windows.bat --runtime-only
+echo   scripts\setup_windows.bat --base-only --non-interactive
 echo   scripts\setup_windows.bat --skip-music-ai
 echo   scripts\setup_windows.bat --music-ai-only [runtime-directory]
 echo.
 echo Default mode installs the application, local AI dependencies, and the
 echo isolated ACE-Step music runtime.
 echo --runtime-only skips pytest, Ruff, mypy, and other development tools.
+echo --base-only installs the web UI and CPU video pipeline without heavy AI packages.
+echo --non-interactive never waits for a key press and is safe for child processes.
 echo --skip-music-ai skips the ACE-Step runtime.
 echo --music-ai-only repairs or installs only the isolated ACE-Step runtime.
+if not defined NONINTERACTIVE pause
 endlocal
-pause
 exit /b 0
 
 :error
@@ -293,6 +317,6 @@ echo.
 echo TravelMovieAI setup failed.
 echo Review the message above, then run scripts\setup_windows.bat again.
 echo.
+if not defined NONINTERACTIVE pause
 endlocal
-pause
 exit /b 1

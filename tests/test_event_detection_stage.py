@@ -5,7 +5,14 @@ from uuid import UUID
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.config import Settings
 from travelmovieai.domain.enums import MediaType, StageStatus
-from travelmovieai.domain.models import EventDetectionReport, MediaAsset, Scene
+from travelmovieai.domain.models import (
+    EmbeddingAnalysisReport,
+    EventDetectionReport,
+    MediaAsset,
+    Scene,
+    SceneEmbedding,
+)
+from travelmovieai.infrastructure.artifacts import write_json_atomic
 from travelmovieai.infrastructure.database import MediaAssetRepository
 from travelmovieai.pipeline.stages.event_detection import EventDetectionStage
 
@@ -63,6 +70,42 @@ def test_event_detection_cache_invalidates_when_embedding_changes(tmp_path: Path
     assert changed.status is StageStatus.COMPLETED
     assert cached.status is StageStatus.CACHED
     assert len(report.events) == 1
+
+
+def test_event_detection_reads_artifact_vectors_without_persisting_them(
+    tmp_path: Path,
+) -> None:
+    context, repository, _, scenes = _seed_project(tmp_path)
+    embedding_path = context.artifacts_dir / "embeddings.json"
+
+    def write_embeddings(vectors: list[list[float]]) -> None:
+        write_json_atomic(
+            embedding_path,
+            EmbeddingAnalysisReport(
+                created_at=datetime.now(UTC),
+                backend="test",
+                dimensions=2,
+                embeddings=[
+                    SceneEmbedding(scene_id=scene.id, vector=vector)
+                    for scene, vector in zip(scenes, vectors, strict=True)
+                ],
+            ),
+        )
+
+    write_embeddings([[1.0, 0.0], [0.0, 1.0]])
+    first = EventDetectionStage().run(context)
+    first_report = _event_report(context)
+    write_embeddings([[1.0, 0.0], [1.0, 0.0]])
+    changed = EventDetectionStage().run(context)
+    cached = EventDetectionStage().run(context)
+    changed_report = _event_report(context)
+
+    assert first.status is StageStatus.COMPLETED
+    assert changed.status is StageStatus.COMPLETED
+    assert cached.status is StageStatus.CACHED
+    assert len(first_report.events) == 2
+    assert len(changed_report.events) == 1
+    assert all("semantic_embedding" not in scene.metadata for scene in repository.list_scenes())
 
 
 def test_event_detection_reuses_valid_empty_result(tmp_path: Path) -> None:

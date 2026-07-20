@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from travelmovieai.analysis.quality import (
+    QUALITY_ALGORITHM_VERSION,
     analyze_scene_quality,
     create_quality_analyzer,
     resolve_quality_backend,
@@ -21,7 +22,7 @@ from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 from travelmovieai.pipeline.state import QUALITY_STATE, clear_stage_owned_state
 
-ARTIFACT_SCHEMA_VERSION = "quality-analysis-v2"
+ARTIFACT_SCHEMA_VERSION = "quality-analysis-v3-temporal-grid"
 
 
 class QualityAnalysisStage(Stage):
@@ -54,6 +55,7 @@ class QualityAnalysisStage(Stage):
             {
                 "requested_device": context.settings.device,
                 "resolved_backend": quality_backend.fingerprint_payload(),
+                "algorithm": QUALITY_ALGORITHM_VERSION,
                 "schema": ARTIFACT_SCHEMA_VERSION,
             }
         )
@@ -72,7 +74,7 @@ class QualityAnalysisStage(Stage):
                 message="Visual quality reused cached analysis artifacts.",
             )
 
-        resources = detect_resource_profile(
+        resources = context.resources or detect_resource_profile(
             context.settings.ffmpeg_binary,
             worker_override=context.settings.workers,
             batch_override=context.settings.batch_size,
@@ -129,6 +131,7 @@ def _quality_inputs(scenes: list[Scene]) -> list[dict[str, object]]:
             "end_seconds": scene.end_seconds,
             "keyframe_path": scene.keyframe_path,
             "scene_cache_key": scene.metadata.get("cache_key"),
+            "contact_sheet": scene.metadata.get("contact_sheet"),
         }
         for scene in sorted(scenes, key=lambda item: str(item.id))
     ]

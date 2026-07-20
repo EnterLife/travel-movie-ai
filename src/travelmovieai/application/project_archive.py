@@ -22,6 +22,7 @@ from travelmovieai.application.workspace_identity import (
     ProjectWorkspaceIdentity,
     source_fingerprint,
 )
+from travelmovieai.application.workspace_lease import WorkspaceTargetLease
 from travelmovieai.core.exceptions import (
     InvalidProjectPathError,
     ProjectArchiveError,
@@ -175,12 +176,20 @@ def restore_project_archive(archive_path: Path, workspace: Path) -> Path:
     resolved_workspace = workspace.expanduser().resolve()
     if not resolved_archive.is_file() or resolved_archive.suffix.casefold() != ".zip":
         raise InvalidProjectPathError("Project archive must be an existing .zip file.")
-    if resolved_workspace.exists() and any(resolved_workspace.iterdir()):
-        raise InvalidProjectPathError("Restore workspace must be absent or empty.")
     if resolved_workspace == resolved_archive.parent or resolved_archive.is_relative_to(
         resolved_workspace
     ):
         raise InvalidProjectPathError("Restore workspace conflicts with the archive path.")
+    with WorkspaceTargetLease(resolved_workspace, operation="restore"):
+        return _restore_project_archive_locked(resolved_archive, resolved_workspace)
+
+
+def _restore_project_archive_locked(
+    resolved_archive: Path,
+    resolved_workspace: Path,
+) -> Path:
+    if resolved_workspace.exists() and any(resolved_workspace.iterdir()):
+        raise InvalidProjectPathError("Restore workspace must be absent or empty.")
     temporary_workspace = resolved_workspace.with_name(
         f".{resolved_workspace.name}.restore.{uuid4().hex}"
     )

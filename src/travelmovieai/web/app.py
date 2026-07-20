@@ -1,22 +1,39 @@
 """FastAPI application for the local TravelMovieAI web interface."""
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+import json
+import logging
+import zipfile
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
+from datetime import UTC, datetime
 from importlib.util import find_spec
+from io import BytesIO
 from pathlib import Path
 from threading import RLock
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from travelmovieai import __version__
+from travelmovieai.application.diagnostics import (
+    model_snapshot_present,
+    run_system_diagnostics,
+)
 from travelmovieai.application.service import TravelMovieService
 from travelmovieai.application.validation import ProjectPaths
+from travelmovieai.application.workspace_lease import WorkspaceLease
 from travelmovieai.core.config import Settings, load_settings
-from travelmovieai.core.exceptions import InvalidProjectPathError, WorkspaceBusyError
+from travelmovieai.core.exceptions import (
+    InvalidProjectPathError,
+    JobPersistenceError,
+    WorkspaceBusyError,
+)
+from travelmovieai.core.logging import configured_log_path, correlation_context
+from travelmovieai.core.security import redact_sensitive_text
 from travelmovieai.domain.manual_editing import (
     compare_timeline_versions,
     summarize_timeline_version,
@@ -75,6 +92,7 @@ from travelmovieai.web.schemas import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
+LOGGER = logging.getLogger(__name__)
 
 
 def create_app(
@@ -103,6 +121,16 @@ def create_app(
     )
     workspace_mutation_lock = RLock()
 
+    @contextmanager
+    def workspace_edit(request: Request, workspace: Path) -> Iterator[None]:
+        with workspace_mutation_lock:
+            _ensure_workspace_editable(request, workspace)
+            try:
+                with WorkspaceLease(workspace, operation="manual_edit"):
+                    yield
+            except WorkspaceBusyError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
@@ -111,7 +139,7 @@ def create_app(
 
     app = FastAPI(
         title="TravelMovieAI",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
         docs_url="/api/docs",
         redoc_url=None,
@@ -122,19 +150,61 @@ def create_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        if not _is_allowed_host(request.headers.get("host", "")):
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "Requests require a loopback Host header."},
-            )
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            origin = request.headers.get("origin")
-            if origin and not _is_loopback_origin(origin):
-                return JSONResponse(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    content={"detail": "Mutating requests require a loopback browser origin."},
+        request_id = str(uuid4())
+        request.state.request_id = request_id
+        response: Response
+        with correlation_context(request_id):
+            if not _is_allowed_host(request.headers.get("host", "")):
+                response = JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={
+                        "detail": "Requests require a loopback Host header.",
+                        "request_id": request_id,
+                    },
                 )
-        return await call_next(request)
+                return _add_browser_security_headers(response, request_id)
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                fetch_site = request.headers.get("sec-fetch-site", "").casefold()
+                if fetch_site and fetch_site not in {"same-origin", "none"}:
+                    response = JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={
+                            "detail": "Cross-site mutating requests are not allowed.",
+                            "request_id": request_id,
+                        },
+                    )
+                    return _add_browser_security_headers(response, request_id)
+                origin = request.headers.get("origin")
+                if origin and not _is_same_origin(
+                    origin,
+                    scheme=request.url.scheme,
+                    host_header=request.headers.get("host", ""),
+                ):
+                    response = JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={
+                            "detail": "Mutating requests require the exact local browser origin.",
+                            "request_id": request_id,
+                        },
+                    )
+                    return _add_browser_security_headers(response, request_id)
+            try:
+                response = await call_next(request)
+            except Exception:
+                LOGGER.exception(
+                    "Unhandled local HTTP request failure: %s %s",
+                    request.method,
+                    request.url.path,
+                    extra={"request_id": request_id},
+                )
+                response = JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={
+                        "detail": "Internal server error. Details were written to the local log.",
+                        "request_id": request_id,
+                    },
+                )
+            return _add_browser_security_headers(response, request_id)
 
     app.state.job_manager = manager
     app.state.movie_job_manager = movie_manager
@@ -155,6 +225,49 @@ def create_app(
             ffprobe=DependencyStatus.model_validate(asdict(ffprobe)),
         )
 
+    @app.get("/api/diagnostics/bundle", response_class=Response)
+    def diagnostics_bundle() -> Response:
+        report = run_system_diagnostics(resolved_settings)
+        payload = {
+            "created_at": datetime.now(UTC).isoformat(),
+            "application": "TravelMovieAI",
+            "version": __version__,
+            "ready": report.ready,
+            "checks": [asdict(check) for check in report.checks],
+            "configuration": {
+                "downloads_enabled": resolved_settings.allow_model_download,
+                "device": resolved_settings.device,
+                "resource_mode": resolved_settings.resource_mode,
+                "vision_model": resolved_settings.vision_model,
+                "embedding_backend": resolved_settings.embedding_backend,
+                "story_provider": resolved_settings.story_provider,
+                "voice_provider": resolved_settings.voice_provider,
+            },
+        }
+        serialized = redact_sensitive_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            private_paths=(
+                Path.home(),
+                resolved_settings.workspace,
+                resolved_settings.model_cache,
+                resolved_settings.music_library,
+            ),
+            max_characters=100_000,
+        )
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("diagnostics.json", serialized)
+            log_tail = _diagnostic_log_tail(resolved_settings)
+            if log_tail:
+                archive.writestr("application.log", log_tail)
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": ('attachment; filename="travelmovieai-diagnostics.zip"')
+            },
+        )
+
     @app.get("/api/capabilities", response_model=CapabilitiesResponse)
     def capabilities() -> CapabilitiesResponse:
         cuda_status = cuda_checker(resolved_settings.ffmpeg_binary)
@@ -167,7 +280,8 @@ def create_app(
             gpu_memory_reserve_mb=resolved_settings.gpu_memory_reserve_mb,
             max_gpu_processes=resolved_settings.max_gpu_processes,
         )
-        local_model = resolve_local_vision_model(
+        local_model = _resolve_requested_vision_model(
+            resolved_settings.vision_provider,
             resolved_settings.vision_model,
             gpu_memory_mb=resources.gpu_memory_mb,
             system_memory_mb=resources.memory_mb,
@@ -177,8 +291,12 @@ def create_app(
             gpu_memory_mb=resources.gpu_memory_mb,
         )
         music_runtime = Path(".cache/ace-step/.venv/Scripts/python.exe").resolve()
-        semantic_capability = _semantic_capability(has_package)
-        speech_capability = _speech_capability(has_package)
+        semantic_capability = _semantic_capability(
+            has_package,
+            resolved_settings,
+            local_model,
+        )
+        speech_capability = _speech_capability(has_package, resolved_settings)
         narration_capability = _narration_capability(
             resolved_settings,
             executable_checker,
@@ -203,7 +321,7 @@ def create_app(
                 action=semantic_capability.action,
             ),
             music_ai=MusicAIStatus(
-                available=(music_runtime.is_file() or resolved_settings.allow_model_download),
+                available=music_runtime.is_file(),
                 configured_model=resolved_settings.music_model,
                 resolved_model=music_model,
                 cache_dir=str((resolved_settings.model_cache / "ace-step").expanduser().resolve()),
@@ -216,6 +334,16 @@ def create_app(
                     )
                     for model in LOCAL_MUSIC_MODELS
                 ],
+                reason=(
+                    None
+                    if music_runtime.is_file()
+                    else "The optional ACE-Step runtime is not installed."
+                ),
+                action=(
+                    None
+                    if music_runtime.is_file()
+                    else "Use procedural or library music, or install ACE-Step explicitly."
+                ),
             ),
             speech=speech_capability,
             narration=narration_capability,
@@ -264,6 +392,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         except WorkspaceBusyError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except JobPersistenceError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get("/api/scans", response_model=ScanJobHistory)
     def list_scans(
@@ -305,8 +435,12 @@ def create_app(
         try:
             _validate_requested_capabilities(
                 payload.settings,
-                semantic=_semantic_capability(has_package),
-                speech=_speech_capability(has_package),
+                semantic=_semantic_capability(
+                    has_package,
+                    resolved_settings,
+                    _requested_vision_model(payload.settings, resolved_settings, service),
+                ),
+                speech=_speech_capability(has_package, resolved_settings),
                 narration=_narration_capability(
                     resolved_settings,
                     executable_checker,
@@ -333,6 +467,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(error)) from error
         except WorkspaceBusyError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except JobPersistenceError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get("/api/movies/{job_id}", response_model=MovieJobResponse)
     def get_movie(job_id: UUID, request: Request) -> MovieJobResponse:
@@ -426,8 +562,7 @@ def create_app(
         request: Request,
     ) -> SceneListResponse:
         paths = _validated_paths(service, payload.input_path, payload.workspace)
-        with workspace_mutation_lock:
-            _ensure_workspace_editable(request, paths.workspace)
+        with workspace_edit(request, paths.workspace):
             repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
             repository.initialize()
             try:
@@ -474,8 +609,7 @@ def create_app(
     @app.put("/api/events/order", response_model=EventListResponse)
     def reorder_events(payload: ReorderRequest, request: Request) -> EventListResponse:
         paths = _validated_paths(service, payload.input_path, payload.workspace)
-        with workspace_mutation_lock:
-            _ensure_workspace_editable(request, paths.workspace)
+        with workspace_edit(request, paths.workspace):
             repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
             repository.initialize()
             try:
@@ -496,8 +630,7 @@ def create_app(
         request: Request,
     ) -> EventListResponse:
         paths = _validated_paths(service, payload.input_path, payload.workspace)
-        with workspace_mutation_lock:
-            _ensure_workspace_editable(request, paths.workspace)
+        with workspace_edit(request, paths.workspace):
             repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
             repository.initialize()
             fields = {"title", "summary", "landmarks"} & payload.model_fields_set
@@ -525,8 +658,7 @@ def create_app(
         request: Request,
     ) -> SceneListResponse:
         paths = _validated_paths(service, payload.input_path, payload.workspace)
-        with workspace_mutation_lock:
-            _ensure_workspace_editable(request, paths.workspace)
+        with workspace_edit(request, paths.workspace):
             repository = MediaAssetRepository(paths.workspace / resolved_settings.database_filename)
             repository.initialize()
             try:
@@ -660,27 +792,112 @@ def _package_available(package: str) -> bool:
 
 def _semantic_capability(
     package_checker: Callable[[str], bool],
+    settings: Settings,
+    resolved_model: str,
 ) -> FeatureCapability:
-    required = ("accelerate", "torch", "transformers")
+    required = ["accelerate", "torch", "transformers"]
+    if settings.embedding_backend == "sentence-transformers":
+        required.append("sentence_transformers")
+    if settings.embedding_index == "faiss":
+        required.append("faiss")
     missing = [package for package in required if not package_checker(package)]
-    if not missing:
-        return FeatureCapability(available=True)
-    return FeatureCapability(
-        available=False,
-        reason=f"Missing local vision dependencies: {', '.join(missing)}.",
-        action='Install them with python -m pip install -e ".[vision]".',
-    )
+    if missing:
+        return FeatureCapability(
+            available=False,
+            reason=f"Missing local semantic dependencies: {', '.join(missing)}.",
+            action='Install the required local groups with python -m pip install -e ".[all]".',
+        )
+    if not settings.allow_model_download:
+        required_models = [resolved_model]
+        if settings.embedding_backend == "sentence-transformers":
+            required_models.append(settings.embedding_model)
+        if settings.story_provider == "local":
+            required_models.append(settings.story_model)
+        missing_models = [
+            model
+            for model in required_models
+            if not model_snapshot_present(settings.model_cache, model)
+        ]
+        if missing_models:
+            return FeatureCapability(
+                available=False,
+                reason="Offline model cache is incomplete for: " + ", ".join(missing_models),
+                action="Download the selected local models or enable explicit model downloads.",
+            )
+    return FeatureCapability(available=True)
 
 
 def _speech_capability(
     package_checker: Callable[[str], bool],
+    settings: Settings,
 ) -> FeatureCapability:
-    if package_checker("faster_whisper"):
-        return FeatureCapability(available=True)
-    return FeatureCapability(
-        available=False,
-        reason="Faster Whisper is not installed.",
-        action='Install it with python -m pip install -e ".[speech]".',
+    if not package_checker("faster_whisper"):
+        return FeatureCapability(
+            available=False,
+            reason="Faster Whisper is not installed.",
+            action='Install it with python -m pip install -e ".[speech]".',
+        )
+    if not settings.allow_model_download:
+        whisper_model = f"Systran/faster-whisper-{settings.whisper_model}"
+        if not model_snapshot_present(settings.model_cache, whisper_model):
+            return FeatureCapability(
+                available=False,
+                reason=f"Offline Whisper snapshot is missing: {whisper_model}.",
+                action="Download the configured speech model or enable explicit downloads.",
+            )
+    return FeatureCapability(available=True)
+
+
+def _requested_vision_model(
+    montage: QuickMontageSettings,
+    settings: Settings,
+    service: TravelMovieService,
+) -> str:
+    resources = service.get_resource_profile()
+    return _resolve_requested_vision_model(
+        montage.vision_provider,
+        montage.vision_model or settings.vision_model,
+        gpu_memory_mb=resources.gpu_memory_mb,
+        system_memory_mb=resources.memory_mb,
+    )
+
+
+def _resolve_requested_vision_model(
+    provider: str,
+    model: str,
+    *,
+    gpu_memory_mb: int | None,
+    system_memory_mb: int | None,
+) -> str:
+    if provider == "florence":
+        return model if model != "auto" else "microsoft/Florence-2-large"
+    return resolve_local_vision_model(
+        model,
+        gpu_memory_mb=gpu_memory_mb,
+        system_memory_mb=system_memory_mb,
+    )
+
+
+def _diagnostic_log_tail(settings: Settings) -> str | None:
+    path = configured_log_path()
+    if path is None or not path.is_file():
+        return None
+    try:
+        with path.open("rb") as log_file:
+            size = path.stat().st_size
+            log_file.seek(max(0, size - 128 * 1024))
+            content = log_file.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    return redact_sensitive_text(
+        content,
+        private_paths=(
+            Path.home(),
+            settings.workspace,
+            settings.model_cache,
+            settings.music_library,
+        ),
+        max_characters=100_000,
     )
 
 
@@ -783,22 +1000,47 @@ def _render_cuda_capability(
     )
 
 
-def _is_loopback_origin(origin: str) -> bool:
+def _is_same_origin(origin: str, *, scheme: str, host_header: str) -> bool:
     try:
         parsed = urlsplit(origin)
-        _ = parsed.port
+        expected = urlsplit(f"//{host_header}")
+        origin_port = parsed.port
+        expected_port = expected.port
     except ValueError:
         return False
+    normalized_scheme = scheme.casefold()
+    if origin_port is None:
+        origin_port = 443 if parsed.scheme.casefold() == "https" else 80
+    if expected_port is None:
+        expected_port = 443 if normalized_scheme == "https" else 80
     return (
-        parsed.scheme in {"http", "https"}
+        parsed.scheme.casefold() == normalized_scheme
+        and parsed.scheme.casefold() in {"http", "https"}
         and parsed.hostname is not None
-        and parsed.hostname.casefold() in {"127.0.0.1", "localhost", "::1"}
+        and expected.hostname is not None
+        and parsed.hostname.casefold() == expected.hostname.casefold()
+        and parsed.hostname.casefold() in {"127.0.0.1", "localhost", "::1", "testserver"}
+        and origin_port == expected_port
         and parsed.username is None
         and parsed.password is None
         and parsed.path in {"", "/"}
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def _add_browser_security_headers(response: Response, request_id: str) -> Response:
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; "
+        "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 def _is_allowed_host(host_header: str) -> bool:

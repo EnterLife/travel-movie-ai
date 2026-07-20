@@ -142,6 +142,24 @@ a {
   font-size: 12px;
 }
 
+.server-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.diagnostics-link {
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+
+.diagnostics-link:hover,
+.diagnostics-link:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .server-dot {
   width: 7px;
   height: 7px;

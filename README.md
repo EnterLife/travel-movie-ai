@@ -15,7 +15,8 @@ Implemented:
 
 - recursive media discovery with FFprobe metadata and SQLite caching;
 - scene detection with PySceneDetect and a deterministic fallback;
-- RGB PNG contact sheets sampled from the start, middle, and end of scenes;
+- deterministic row-major RGB PNG contact sheets with 3, 5, or 9 temporal
+  samples per scene and content-hash metadata;
 - OpenCV analysis for sharpness, exposure, contrast, motion, shake, and noise;
 - direct local Qwen2.5-VL and Florence-2 analysis with automatic model download;
 - optional speech recognition with Faster Whisper;
@@ -35,8 +36,11 @@ Implemented:
 - NVIDIA NVENC acceleration with CPU fallback;
 - automatic CPU, RAM, GPU, model, FFmpeg, worker-profile, runtime, and disk
   diagnostics;
-- bounded 4K/8K analysis proxies and process-local Vision model reuse;
+- bounded 4K/8K analysis proxies, process-local Vision model reuse, validated
+  temporal highlight windows, isolated retries, and explicit degraded results;
 - persistent pause/cancel/recovery-aware movie jobs with history;
+- cross-process workspace leases, restart-safe per-asset/per-scene checkpoints,
+  weighted progress, and privacy-safe run manifests;
 - managed SQLite migrations, bounded cache cleanup, backup/export/restore, and
   self-contained HTML reports;
 - optional PySide6 desktop shell, Windows installer recipe, CI, and an explicit
@@ -53,7 +57,11 @@ Current limitations:
   Setup 6; it provides the base quick-edit UI, while FFmpeg, optional AI
   runtimes, Piper, and model weights remain separate local installations;
 - the loopback web interface has no authentication and must not be exposed on a
-  public network.
+  public network;
+- transition renders use lossless H.264 mezzanine segments before the final
+  delivery encode and therefore require more temporary disk/time than hard cuts;
+  delivery loudness uses one-pass normalization, and distributable overlay fonts
+  are not bundled yet.
 
 ## Requirements
 
@@ -114,7 +122,9 @@ neural music generation:
 
 `run_web.bat` starts `main.py` and opens `http://127.0.0.1:8000`. If `.venv`
 does not exist or lacks the basic web/video dependencies, it automatically runs
-the runtime-only setup first.
+the non-interactive base web/video setup first. This launcher does not install
+PyTorch, local AI models, or ACE-Step; install the optional groups explicitly
+when those features are needed.
 
 Optional launcher arguments:
 
@@ -273,6 +283,12 @@ Then set `story_provider = "local"`. Invalid or unavailable model output falls
 back to the deterministic builder and is deliberately not cached, so a later
 run retries the configured model.
 
+For longer trips, the deterministic builder assigns several chronological edge
+events to the opening and finale and distributes the strongest middle events
+across a highlight section. This prevents one large catch-all journey section
+from dominating the automatic edit while keeping every event in exactly one
+story section.
+
 ### Piper narration
 
 Voice Synthesis is disabled by default. To enable it, install Piper locally,
@@ -321,15 +337,18 @@ selector backfills from the remaining eligible scenes until it reaches the
 requested duration or exhausts the safe candidate pool.
 `min_semantic_score` is a base quality target, but the actual threshold is
 computed from the score distribution of the current project: it rises for strong
-archives and relaxes for consistently modest material. The `max_scenes_per_source`
-setting is a strict diversity guard by default when more than one source video is
-available, so one strong roll cannot dominate the movie. Set
-`strict_source_diversity=false` only when source variety is less important. A single long source video can still contribute
-multiple scenes because there is no alternate source to use. Event diversity is
-also applied first, but when the paced timeline remains short, semantic selection
-can add more scenes from the strongest events while still respecting source
-limits and technical quality gates. Use scene overrides when a specific fragment must
-be included or excluded.
+archives and relaxes for consistently modest material. The quality report records
+that effective threshold and evaluates the selected lower-score tail against the
+same value, rather than flagging the intentional adaptive relaxation as a defect.
+The `max_scenes_per_source`
+setting is a hard automatic-selection guard by default, so one strong roll cannot
+dominate the movie. Set `strict_source_diversity=false` only when source variety
+is less important. `max_scenes_per_event` is also a hard automatic-selection cap,
+including during target-duration backfill. Explicit `Include` overrides may
+exceed either cap because a manual editorial decision takes precedence. The
+automatic timeline can therefore be shorter than the requested target when the
+remaining candidates would violate diversity or technical-quality constraints.
+Use scene overrides when a specific fragment must be included or excluded.
 
 Semantic mode preserves capture chronology by default. Vision AI scores scenes
 and describes their story value, but the final timeline uses deterministic
@@ -342,12 +361,15 @@ Frame sampling depth is controlled by `analysis_quality_mode`. `fast` samples 3
 frames per scene, `balanced` samples 5, and `deep` samples 9. The web interface
 defaults AI edits to `deep` so the first semantic pass sees more of each scene.
 Use `fast` for rough previews and `balanced` when runtime matters more than
-maximum scene-understanding quality.
+maximum scene-understanding quality. Samples are stored in chronological,
+row-major contact sheets with exact source timestamps, normalized positions,
+grid geometry, and a SHA-256 content identity used by downstream caches.
 
 For long scenes, semantic montage does not blindly cut the middle of the scene.
-It builds candidate windows inside the scene and prefers explicit highlight
-windows, then the best visual panel from the sampled contact sheet, then a
-neutral center cut. This keeps the final movie focused on the strongest moment
+It builds typed candidate windows inside the scene and prefers validated Vision
+highlight windows, then the best visual panel from the sampled contact sheet,
+then a neutral center cut. Every chosen window records its source and is clipped
+to the scene bounds. This keeps the final movie focused on the strongest moment
 inside each selected scene.
 
 Visual quality analysis stores per-panel scores and ready-to-use
@@ -355,7 +377,11 @@ Visual quality analysis stores per-panel scores and ready-to-use
 analysis can add their own candidate windows to the same contract. Vision AI
 also returns a validated normalized focus point and `face`, `object`, or
 `subject` source for smart crop, allowing the timeline builder to choose the
-best moment inside a long source scene without changing the renderer.
+best moment inside a long source scene without changing the renderer. Vision
+cache identity includes the contact-sheet content, provider/model, effective
+device, prompt/parser versions, scoring settings, and analysis depth. Failed
+batches are isolated and retried; a per-scene deterministic fallback is reported
+as `degraded` instead of being cached as a successful model result.
 
 Audio Analysis stores scene-level labels such as `speech`, `silence`, `wind`,
 `music`, `crowd`, `water`, and `transport`. It adds audio candidate windows,
@@ -366,6 +392,14 @@ Speech Analysis stores Whisper segment boundaries in scene metadata when the
 provider returns them. Semantic timeline planning uses those boundaries as
 speech-safe candidate windows and penalizes source windows whose start or end
 would cut through a spoken phrase.
+
+Narration text is bounded by `narration_characters_per_second` before Piper is
+called. Voice Synthesis checkpoints one typed WAV per line without assigning
+premature absolute timestamps. Timeline Builder then uses the actual selected
+movie duration, places only lines that fit, creates declarative audio cues, and
+atomically materializes the combined narration track. A short diversity-limited
+timeline therefore degrades by omitting excess lines instead of failing after
+expensive synthesis or creating out-of-range cues.
 
 When music sync is enabled and the selected music plan contains a beat grid, the
 final timeline softly nudges neighboring clip durations so scene changes can land
@@ -455,16 +489,20 @@ accent points. It places musical structure at:
 - the opening and final moments.
 
 The cue sections, beat grid, timestamps, strengths, BPM, intensity, arrangement
-version, generator, model identifier, and fallback status are stored in
-`artifacts/music_plan.json`. Local music models receive both the prompt and the
-cue sheet. The prompt asks for a clean low-register instrumental travel
+version, generator, model identifier, source-content SHA-256, and fallback status
+are stored in `artifacts/music_plan.json`. Cached generated music is reused only
+while that fingerprint still matches the soundtrack file. Local music models
+receive both the prompt and the cue sheet. The prompt asks for a clean low-register
+instrumental travel
 underscore with a recurring motif, mellow midrange melody, no vocals or lyrics,
 no high-pitched sounds, polished production, and mastering headroom so the
 rendered movie can duck music under source audio without clipped peaks. The
 procedural fallback also follows the sections, varying melody energy, stereo
 width, electric-piano tones, muted-guitar pulses, and restrained low accent
 layers across intro, journey, highlight, and finale parts instead of producing
-a flat loop. Rebuilding the same timeline uses a
+a flat loop. A fallback result is reported as degraded and is not promoted to a
+successful stage cache entry, so a later run retries the configured local model.
+Rebuilding the same timeline uses a
 deterministic seed, while changing clip order, duration, or selected highlights
 reshapes the composition to match the new movie.
 
@@ -513,9 +551,10 @@ travelmovieai create `
   --input "D:\Media\Trip" `
   --output "D:\Movies\Trip-smart.mp4" `
   --semantic --variant "smart vertical cut" `
+  --analysis-quality deep --width 1920 --height 1080 --fps 30 `
   --framing smart --vertical-layout blur --photo-motion ken_burns `
   --color-normalization --hdr-to-sdr --event-titles --subtitles `
-  --bpm-analysis --music-envelope
+  --bpm-analysis --music-envelope --validate-full-render-decode
 ```
 
 Estimate a cold-run runtime range and peak workspace size from probed metadata:
@@ -646,10 +685,17 @@ is available, otherwise CPU/libx264.
 Vision batching is based on free VRAM at job start rather than total installed
 VRAM. Explicit `workers` and `batch_size` overrides remain available, but the
 NVENC process count still respects `max_gpu_processes`.
+One profile is captured in the project execution context and shared by all
+pipeline stages, avoiding repeated CUDA, NVENC, RAM, and CPU probes during the
+same run.
 
 When a source exceeds the configured analysis dimension, Scene Detection creates
 one atomically written project-local H.264 proxy before decoding the 4K/8K
 original; Frame Sampling reuses the same proxy.
+Scene Detection processes assets with a bounded deterministic worker pool
+(`safe` 1, `balanced` up to 4, `performance` up to 8) and checkpoints each
+completed asset before submitting more work. A cancelled run stops feeding the
+queue, and a retry resumes valid per-asset checkpoints.
 The proxy cache key includes source metadata and proxy settings. Vision and
 quality analysis consume the resulting contact sheet, while the declarative
 timeline and final renderer always retain the original source path. A bounded
@@ -730,7 +776,7 @@ Media Scan
 | Stage | Purpose | Status |
 | --- | --- | --- |
 | Media Scan | Discover media and cache FFprobe/EXIF metadata | Implemented |
-| Scene Detection | Create/reuse 4K/8K proxies, then detect bounded scenes | Implemented |
+| Scene Detection | Create/reuse 4K/8K proxies, then detect bounded scenes in a restartable worker pool | Implemented |
 | Frame Sampling | Generate cached RGB contact sheets | Implemented |
 | Visual Quality | Measure technical quality with OpenCV/Pillow | Implemented |
 | Vision AI | Generate structured semantic understanding, shot scale, and camera motion | Implemented |
@@ -951,7 +997,16 @@ messages. Job state is atomically persisted below the workspace-root `.web`
 directory. A process restart requeues interrupted scans and movie jobs with the
 same job ID; paused jobs remain paused. Resume reuses every valid stage artifact
 and each atomically completed render segment. Manual edits are locked while the
-same workspace has an active scan or movie job.
+same workspace has an active scan or movie job. Every persisted message is
+redacted against the job's source, workspace, output, model, music, font, and
+voice paths, and background log records carry the job UUID as their correlation
+ID.
+
+Canonical runs emit typed `ProgressEvent` records with the exact stage ID,
+stage-local current/total/unit, and weighted monotonic overall progress. The
+legacy `(current, total, message)` callback remains supported. CLI progress is
+written to stderr, leaving stdout as the concise command result; web jobs use
+the typed stage ID instead of inferring phases from provider-specific text.
 
 ## Workspace
 
@@ -961,14 +1016,18 @@ stage-specific `*.cache.json` manifests are expected:
 ```text
 workspace/<source-name>-<source-fingerprint>/
 |-- .travelmovieai-project.json
+|-- .travelmovieai.lock
+|-- .travelmovieai.lock.json
 |-- project.db
 |-- frames/
 |-- cache/
 |   |-- proxies/
 |   `-- quick_montage_segments/
 `-- artifacts/
+    |-- pipeline_run.json
     |-- analysis.json
     |-- scenes.json
+    |-- scene_detection_shards/
     |-- frame_sampling.json
     |-- frame_sampling.cache.json
     |-- quality_analysis.json
@@ -977,6 +1036,7 @@ workspace/<source-name>-<source-fingerprint>/
     |-- vision_analysis.cache.json
     |-- speech_analysis.json
     |-- speech_analysis.cache.json
+    |-- speech_analysis_shards/
     |-- audio_analysis.json
     |-- audio_analysis.cache.json
     |-- embeddings.json
@@ -990,6 +1050,7 @@ workspace/<source-name>-<source-fingerprint>/
     |-- storyboard.cache.json
     |-- narration.json
     |-- voice_synthesis.json
+    |-- narration_lines/
     |-- narration.wav
     |-- selection_decisions.json
     |-- quick_timeline.cache.json
@@ -1021,11 +1082,26 @@ by a newer unsupported application version are rejected instead of being
 silently modified.
 
 Critical JSON and media outputs are written atomically. Source media remains
-read-only.
+read-only. An operating-system workspace lease serializes mutating CLI, service,
+pipeline, and manual-edit operations across processes. Lease metadata identifies
+the process, operation, and start time; the OS releases ownership after a crash,
+so a stale metadata file cannot permanently lock a project. Restore and first-use
+operations additionally take a target-keyed sidecar lease outside the workspace;
+concurrent restores are serialized without making an otherwise empty restore
+target non-empty or copying lock metadata into an archive.
+
+`pipeline_run.json` is a privacy-safe run manifest containing a fresh run ID,
+target, start/end time, weighted stage durations, status/cache outcomes, and
+allow-listed retry counts, primary provider/model, and explicit fallback-provider
+metadata. Cache reuse is recorded independently from `completed`/`degraded`, so
+a cached fallback cannot look like a fresh successful inference. It never stores
+source, workspace, output, or artifact paths, and persisted failures redact both
+relative and resolved local paths plus secrets.
 
 `montage_quality_report.json` is a pre-render quality gate for the planned
 movie. It records duration coverage, event and source diversity, average
-semantic and visual quality, selected window types, music coverage, and
+semantic and visual quality, the effective adaptive semantic threshold, selected
+window types, music coverage, and
 music diagnostics such as cue section count, beat grid size, WAV loudness,
 peak level, and clipping ratio. It reports actionable issues such as a short
 timeline, repeated source dominance, disabled music, missing music cue metadata,
@@ -1033,8 +1109,12 @@ unsynced music cuts, speech boundary cuts, excessive center cuts, quiet/clipped
 source music, or selected dark/blurred scenes.
 After rendering, the same report is enriched with FFprobe/FFmpeg checks for the
 actual MP4: rendered duration, video/audio stream presence, plan-vs-render
-duration delta, sampled audio RMS, and sampled video luma near the beginning,
-middle, and end of the movie. The end-audio check samples several windows before
+duration delta, sampled audio RMS and video-luma distributions, plus a
+full-duration scan for black video, freezes, silence, integrated loudness,
+loudness range, and true peak. The typed `gate_status` is `passed`, `degraded`,
+or `failed`; an unavailable full scan is a warning rather than a false pass, and
+`--validate-full-render-decode` makes that scan mandatory. Critical delivery
+faults fail the job. Tail checks sample several windows before
 the intentional final fade so a short musical pause does not become a false
 warning.
 
@@ -1043,15 +1123,30 @@ warning.
 Media metadata is reused when path, size, and `modified_ns` match. Scene,
 Vision, and speech cache keys include the relevant source metadata, time
 boundaries, measured quality, model, style, and prompt/schema version. Vision AI
-also atomically checkpoints every completed inference batch. If a long run is
+uses the validated contact-sheet SHA-256 rather than its filesystem timestamp,
+so atomically regenerating identical pixels does not repeat model inference.
+Legacy stat-based Vision entries migrate only when the provider configuration,
+scene identity, measured quality, contact-sheet metadata, and actual content hash
+all match. Integral numeric scene settings are canonicalized before hashing, so
+equivalent TOML/JSON values such as `27` and `27.0` share one cache identity.
+Vision AI also atomically checkpoints every completed inference batch. If a long run is
 interrupted, the next run validates and reuses the completed scene records from
 the partial artifact instead of restarting the whole model pass.
+
+Scene Detection keeps atomic per-asset shards, while Speech Analysis keeps
+config- and source-validated per-scene transcript shards. These shards preserve
+completed work across a later asset/model failure and merge only speech-owned
+fields back into the current scene, so newer quality or Vision metadata is not
+rolled back. Embedding vectors live once in `embeddings.json` and the optional
+FAISS index; Event Detection loads them transiently and does not duplicate the
+vectors in SQLite scene metadata.
 
 Frame Sampling, Quality Analysis, Vision Analysis, Speech Analysis, Audio
 Analysis, Embeddings, Story Builder, Timeline Builder, Music Selection, Voice
 Synthesis, and Rendering write typed sidecar cache manifests with input
 fingerprints, configuration fingerprints, artifact schema versions, and output
-paths. A stage reports `completed`, `cached`, `disabled`, or `no_input`; it
+paths. A stage reports `completed`, `cached`, `degraded`, `disabled`, or
+`no_input`; it
 reuses work only when the manifest matches current inputs and every required
 artifact still exists and validates. Frame fingerprints include source media, scene boundaries, and
 `analysis_quality_mode`, while ignoring later semantic metadata. Quality
@@ -1061,13 +1156,28 @@ fingerprints include ranked scenes and media assets. Music fingerprints include
 the timeline without embedded music, scene metadata, media assets, and local
 soundtrack file metadata. Rendering fingerprints include the final timeline,
 output path, FFmpeg/FFprobe settings, and worker configuration.
+Generated soundtrack content is also matched by SHA-256; replacing a WAV while
+preserving its name or timestamps invalidates both the stage and internal music
+cache. Voice cache hits decode every WAV and verify duration, sample rate, and
+channel count rather than accepting a merely non-empty file.
+
+Frame Sampling does not trust metadata alone: every reused contact sheet is
+fully decoded, checked against its expected grid geometry and sample positions,
+and matched to its stored SHA-256. A truncated, substituted, or untracked PNG is
+atomically regenerated before quality or Vision analysis can reuse downstream
+artifacts.
 
 Rendering additionally publishes each prepared clip segment atomically under a
 fingerprinted cache key. A cancelled, paused, or interrupted job therefore
 reuses valid completed segments on the same timeline instead of transcoding
 them again; changed source metadata, clip settings, or encoder settings produce
-a different key. FFprobe verifies cached segment video, audio, and duration
-before reuse, so a non-empty but corrupt checkpoint is rebuilt.
+a different key. Custom overlay-font content and timestamps also participate in
+the cache identity. FFprobe verifies cached segment video, audio, and duration
+before reuse. Transition checkpoints must additionally be lossless H.264
+`High 4:4:4 Predictive` with ALAC audio; a geometrically valid lossy checkpoint
+is rebuilt. On cache hits, Vision restores only Vision-owned fields and Story
+Builder reapplies only story-role fields, preserving later speech, audio, and
+manual-edit state.
 
 Before a pipeline run, the project `cache` and `frames` trees are measured. If
 their combined size exceeds `project_cache_limit_mb`, oldest safe regular files
@@ -1097,22 +1207,35 @@ The renderer:
   fallback and configurable Ken Burns motion for photos;
 - optionally normalizes exposure/color and performs HDR-to-SDR tone mapping;
 - creates silent audio for sources without audio;
-- prepares independent segments with bounded parallelism;
+- prepares independent segments with bounded parallelism and lossless ALAC
+  intermediate audio;
 - joins prepared segments with direct cuts by default, or real `xfade` and
   `acrossfade` overlaps when a transition is requested;
+- stream-copies prepared H.264 video for hard cuts and uses lossless H.264
+  mezzanine video before the one delivery encode when transitions are active;
 - adds generated, library, or manual music;
 - analyzes BPM for local tracks, applies timeline-aware volume envelopes, and
   ducks music/source ambience around optional Piper narration;
+- applies source/music/narration/final fades, delivery loudness normalization,
+  and a true-peak limiter before AAC encoding;
 - draws event titles, scene captions, and credits inside validated safe areas;
 - uses `h264_nvenc` automatically when available and falls back to `libx264`;
 - strips source container metadata such as camera comments and GPS tags from
   rendered movies;
-- writes the final movie atomically;
-- validates video, audio, and duration with FFprobe.
+- renders to a hidden sibling candidate and validates video, audio, shape,
+  duration, and optional full decode before running the full-duration delivery
+  quality scan;
+- atomically publishes the candidate only after the quality gate accepts it, so
+  a failed render cannot replace an earlier valid movie.
 
 Prepared clip segments are independent, bounded-parallel tasks with atomic,
 fingerprinted checkpoints. Recovery can resume at the first missing segment;
 the final concat/transition pass is rebuilt from the validated segment set.
+The render preflight uses the actual timeline to reserve the complete peak
+working set: QP0 H.264 and ALAC mezzanines, the delivery movie, its atomic
+temporary output, and the configured safety reserve. Workspace and output
+volumes are evaluated independently when they are on different drives; hard-cut
+plans retain the smaller delivery-oriented estimate.
 
 All new visual treatments are opt-in in `QuickMontageSettings`, preserving
 legacy output by default. `framing_mode = "smart"`,
@@ -1129,8 +1252,11 @@ those combinations early, and the web controls disable them in quick mode.
 
 During a movie job, `Pause` stops before the next scene or subtask and
 `Continue` resumes it. `Full stop` cancels the remaining work while preserving
-valid cache artifacts. An already running FFmpeg process or AI batch is allowed
-to finish before the worker fully releases the workspace.
+valid cache artifacts. Active FFmpeg, ACE-Step, and Piper subprocess trees poll
+the cancellation heartbeat and are terminated promptly; on Windows each process
+is created suspended, assigned to a kill-on-close Job Object, and only then
+resumed, so descendants cannot escape before cancellation ownership is in place.
+Completed atomic stage, scene, line, and segment checkpoints remain reusable.
 
 Preview mode is limited to 854x480 and 24 FPS. The standard output defaults to
 1280x720 at 30 FPS.
@@ -1149,20 +1275,28 @@ travelmovieai-desktop
 Build a per-user Windows installer from a clean project-local build environment:
 
 ```powershell
-.\scripts\build_windows_installer.ps1 -Version 0.1.0
+.\scripts\build_windows_installer.ps1
 ```
 
 The build requires Python 3.12 and Inno Setup 6. It uses PyInstaller, writes
 generated files only below ignored `.cache`, `build`, and `dist` directories,
-and does not bundle model weights or make administrator-level changes. The
+reads the version from `pyproject.toml`, and emits a SHA-256 sidecar. Pass
+`-SignCertificateThumbprint` (or set `TRAVELMOVIEAI_SIGN_CERTIFICATE`) to sign
+the exact current-version installer with `signtool.exe`; stale executables in
+the output directory are never signed or reported as the new build. The desktop
+holds the same named mutex used by Inno Setup for its full lifetime, protecting
+upgrade and uninstall operations while it is running. It does not bundle model
+weights or make administrator-level changes. The
 installed shell includes package-local web assets and default configuration,
 stores mutable workspace/model state below `%LOCALAPPDATA%\TravelMovieAI`, checks
-for a port conflict, and opens the browser only after Uvicorn reports ready.
+for a port conflict, keeps an editable per-user `settings.toml`, writes bounded
+privacy-redacted logs, and opens the browser only after Uvicorn reports ready.
 Unavailable semantic, speech, narration, CUDA, or FFmpeg-dependent controls are
 disabled by the web capability response. From a Python installation,
 `travelmovieai doctor` reports missing FFmpeg filters, configured offline model
 snapshots, and optional AI runtimes; the base installer does not install that
-shell command.
+shell command. The web UI's `Diagnostics` download contains a sanitized runtime
+report and, when available, the tail of the rotating application log.
 
 `travelmovieai report` writes one CSP-restricted, self-contained offline HTML
 file with project metrics, events, scene selection explanations, diagnostics,
@@ -1272,19 +1406,44 @@ still required where noted above.
 ### P0: Long-running job reliability
 
 - [x] pause and cancel movie jobs;
+- [x] terminate active FFmpeg, ACE-Step, and Piper process trees on cancellation;
+- [x] serialize pipeline, manual edits, reports, exports, and restores with
+  cross-process workspace/target leases;
+- [x] fail fast when restart-safe job state cannot be written and expose
+  degraded persistence after later write failures;
+- [x] add correlation IDs, privacy-redacted rotating logs, safe background-error
+  boundaries, and a downloadable diagnostic bundle;
+- [x] persist truthful cache, retry, primary/fallback provider, and model
+  execution metadata without resolved local paths;
 - [x] requeue interrupted scan/movie jobs with the same ID and reuse valid
   stage/render-segment checkpoints;
 - [x] persist movie-job history;
 - [x] add a local Piper provider to the explicit Voice Synthesis stage;
 - [x] enforce disk-cache limits and cleanup;
 - [x] check free disk space before rendering;
+- [x] size transition preflight from the full lossless mezzanine working set and
+  account for split workspace/output volumes;
+- [x] validate persisted interval/count/provider contracts and self-repair
+  Vision, story, voice, and generated-music caches without overwriting manual
+  fields;
 - [x] add frozen, ordered, retry-safe SQLite migrations.
+- [x] distinguish missing audio windows from decode failures and retry previously
+  failed media probes instead of caching errors as success;
 
 ### P1: Editing quality
 
 - [x] FAISS indexing and archive search over local semantic embeddings;
 - [x] GPS and embeddings in event detection;
 - [x] richer shot-scale and camera-motion extraction from Vision AI;
+- [x] 3/5/9-frame contact-sheet integrity checks and typed temporal highlight
+  windows with provider-aware Vision retry/degraded metadata;
+- [x] hard automatic source/event diversity caps, micro-event limits, editorial
+  title filtering, and role-aware deterministic backfill;
+- [x] full-duration black/freeze/silence/loudness/true-peak quality gates;
+- [x] lossless transition mezzanine video, ALAC segment audio, delivery fades,
+  loudness normalization, and custom-font cache invalidation;
+- [x] verify lossless transition checkpoint codecs and publish rendered movies
+  only after the delivery quality gate passes;
 - [x] timeline version comparison in the web UI.
 
 ### P1: Story and manual editing
@@ -1305,11 +1464,19 @@ still required where noted above.
 - [x] event titles, subtitles, credits, and safe-area validation;
 - [x] BPM analysis for library/manual tracks and automatic music volume envelopes;
 - [x] Piper narration synthesis.
+- [x] speech-budgeted narration lines timed against the actual selected timeline;
 
 ### P2: Performance
 
 - [x] batched Vision inference;
 - [x] persistent loaded-model reuse;
+- [x] hardware-aware shared resource profiles, offline model diagnostics, and a
+  configurable bounded Vision model LRU;
+- [x] weighted typed pipeline progress and privacy-safe per-run timing manifest;
+- [x] bounded parallel scene detection with per-asset restart checkpoints;
+- [x] per-scene Whisper restart checkpoints;
+- [x] artifact-only embedding vectors without SQLite duplication;
+- [x] non-retaining SQLite connection pools for short-lived CLI/web repositories;
 - [x] source-keyed proxy media before 4K/8K scene and frame decoding;
 - [x] metadata/SQLite benchmark for 512 assets and a virtual 100+ GB source set;
 - [x] CLI runtime, output, and peak-workspace estimates.
@@ -1317,6 +1484,11 @@ still required where noted above.
 ### P3: Product delivery
 
 - [x] per-user Windows installer recipe with `%LOCALAPPDATA%` runtime state;
+- [x] frozen per-user configuration bootstrap, installer hashing/signing hooks,
+  and a base-only non-interactive launcher;
+- [x] application-lifetime installer mutex, exact-version installer artifact
+  selection, and kill-on-close Windows Job Objects for long-running tools;
+- [x] exact same-origin mutation checks and a restrictive CSP for the local web UI;
 - [x] FFmpeg/filter, configured model-snapshot, and optional-runtime diagnostics;
 - [x] project backup and export;
 - [x] HTML report;

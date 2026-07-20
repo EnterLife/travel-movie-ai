@@ -60,6 +60,35 @@ def test_project_resource_estimate_uses_known_scene_count() -> None:
         )
 
 
+def test_project_resource_estimate_includes_explicit_transition_mezzanine() -> None:
+    assets = [_asset("clip.mp4", size_bytes=1000, duration_seconds=120, width=1920)]
+    settings = Settings(render_disk_safety_factor=3)
+    hard_cut = estimate_project_resources(
+        assets,
+        settings=settings,
+        montage_settings=QuickMontageSettings(
+            target_duration_seconds=60,
+            width=1920,
+            height=1080,
+            transition="none",
+        ),
+    )
+    transitioned = estimate_project_resources(
+        assets,
+        settings=settings,
+        montage_settings=QuickMontageSettings(
+            target_duration_seconds=60,
+            width=1920,
+            height=1080,
+            transition="fade",
+        ),
+    )
+
+    assert transitioned.estimated_peak_workspace_bytes > (
+        hard_cut.estimated_peak_workspace_bytes * 20
+    )
+
+
 def _asset(
     filename: str,
     *,

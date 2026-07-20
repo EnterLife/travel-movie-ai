@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -13,6 +17,11 @@ from typing import Literal
 from travelmovieai.core.exceptions import MusicGenerationError
 from travelmovieai.core.security import sanitize_process_error
 from travelmovieai.domain.models import MusicCueSection
+from travelmovieai.infrastructure.processes import (
+    release_process_resources,
+    start_process,
+    terminate_process_tree,
+)
 
 LOCAL_MUSIC_MODELS = ("ACE-Step/acestep-v15-turbo",)
 ACE_STEP_REPOSITORY = "https://github.com/ACE-Step/ACE-Step-1.5.git"
@@ -24,6 +33,7 @@ ACE_STEP_REQUIRED_CONFIGS = (
 )
 
 MusicProgress = Callable[[int, int, str], None]
+CancelCheck = Callable[[], bool]
 
 
 def resolve_local_music_model(
@@ -54,6 +64,8 @@ class AceStepMusicGenerator:
         device: str,
         gpu_memory_mb: int | None,
         ffmpeg_timeout_seconds: float = 7200,
+        process_timeout_seconds: float | None = None,
+        cancel_requested: CancelCheck | None = None,
     ) -> None:
         self.model = model
         self.runtime_dir = runtime_dir
@@ -63,6 +75,12 @@ class AceStepMusicGenerator:
         self.device = device
         self.gpu_memory_mb = gpu_memory_mb
         self.ffmpeg_timeout_seconds = ffmpeg_timeout_seconds if ffmpeg_timeout_seconds > 0 else 7200
+        self.process_timeout_seconds = (
+            process_timeout_seconds
+            if process_timeout_seconds is not None and process_timeout_seconds > 0
+            else self.ffmpeg_timeout_seconds
+        )
+        self.cancel_requested = cancel_requested
 
     def generate(
         self,
@@ -157,9 +175,16 @@ class AceStepMusicGenerator:
             return
         if not self.allow_download:
             raise MusicGenerationError("Auto-download is disabled and ACE-Step runtime is missing.")
-        setup_script = Path(__file__).resolve().parents[3] / "scripts" / "setup_windows.bat"
-        if not setup_script.is_file():
-            raise MusicGenerationError("scripts\\setup_windows.bat was not found.")
+        setup_script = _find_setup_script()
+        if setup_script is None:
+            packaged = bool(getattr(sys, "frozen", False))
+            detail = (
+                "The packaged application does not include the ACE-Step setup runtime. "
+                "Reinstall with AI music support or configure an existing .cache\\ace-step runtime."
+                if packaged
+                else "scripts\\setup_windows.bat was not found. Reinstall the project files."
+            )
+            raise MusicGenerationError(detail)
         if progress:
             progress(0, 4, "ACE-Step: installing isolated runtime")
         command_processor = os.environ.get("COMSPEC", "cmd.exe")
@@ -171,6 +196,7 @@ class AceStepMusicGenerator:
                 str(setup_script),
                 "--music-ai-only",
                 str(self.runtime_dir),
+                "--non-interactive",
             ],
             cwd=setup_script.parent.parent,
             environment=os.environ.copy(),
@@ -282,8 +308,9 @@ class AceStepMusicGenerator:
         progress: MusicProgress | None,
     ) -> list[str]:
         try:
-            process = subprocess.Popen(
+            process = start_process(
                 command,
+                popen_factory=subprocess.Popen,
                 cwd=cwd,
                 env=environment,
                 stdout=subprocess.PIPE,
@@ -297,9 +324,43 @@ class AceStepMusicGenerator:
 
         lines: list[str] = []
         line_count = 0
-        assert process.stdout is not None
+        reader: threading.Thread | None = None
         try:
-            for raw_line in process.stdout:
+            stdout = process.stdout
+            assert stdout is not None
+            output_queue: queue.Queue[str | None] = queue.Queue()
+
+            def read_output() -> None:
+                try:
+                    for raw_line in stdout:
+                        output_queue.put(raw_line)
+                finally:
+                    output_queue.put(None)
+
+            reader = threading.Thread(
+                target=read_output,
+                name="travelmovieai-ace-step-output",
+                daemon=True,
+            )
+            reader.start()
+            deadline = time.monotonic() + self.process_timeout_seconds
+            while True:
+                if self.cancel_requested is not None and self.cancel_requested():
+                    raise MusicGenerationError("ACE-Step generation was cancelled.")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MusicGenerationError(
+                        "ACE-Step timed out after "
+                        f"{self.process_timeout_seconds:g}s; the process tree was stopped."
+                    )
+                try:
+                    raw_line = output_queue.get(timeout=min(0.25, remaining))
+                except queue.Empty:
+                    if process.poll() is not None and not reader.is_alive():
+                        break
+                    continue
+                if raw_line is None:
+                    break
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -316,14 +377,14 @@ class AceStepMusicGenerator:
                         progress(2, 4, "ACE-Step: generating composition")
                     elif line_count % 20 == 0:
                         progress(1, 4, "ACE-Step: preparing local components")
-            return_code = process.wait()
+            return_code = process.wait(timeout=5)
         except BaseException:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+            terminate_process_tree(process)
             raise
+        finally:
+            if reader is not None:
+                reader.join(timeout=1)
+            release_process_resources(process)
         if return_code != 0:
             detail = _ace_step_error_detail(lines)
             raise MusicGenerationError(f"ACE-Step exited with code {return_code}. {detail}".strip())
@@ -336,50 +397,69 @@ class AceStepMusicGenerator:
         duration_seconds: float,
     ) -> None:
         temporary_path = output_path.with_name(f".{output_path.stem}.ace-step.wav")
+        command = [
+            self.ffmpeg_binary,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(source_path),
+            "-t",
+            f"{duration_seconds:.3f}",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-c:a",
+            "pcm_s16le",
+            str(temporary_path),
+        ]
         try:
-            completed = subprocess.run(
-                [
-                    self.ffmpeg_binary,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-stream_loop",
-                    "-1",
-                    "-i",
-                    str(source_path),
-                    "-t",
-                    f"{duration_seconds:.3f}",
-                    "-ar",
-                    "44100",
-                    "-ac",
-                    "2",
-                    "-c:a",
-                    "pcm_s16le",
-                    str(temporary_path),
-                ],
-                capture_output=True,
+            process = start_process(
+                command,
+                popen_factory=subprocess.Popen,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 encoding="utf-8",
                 errors="replace",
-                check=False,
-                timeout=self.ffmpeg_timeout_seconds,
+                text=True,
             )
         except FileNotFoundError as error:
             temporary_path.unlink(missing_ok=True)
             raise MusicGenerationError(
                 f"FFmpeg executable was not found: {self.ffmpeg_binary}"
             ) from error
-        except subprocess.TimeoutExpired as error:
+
+        deadline = time.monotonic() + self.ffmpeg_timeout_seconds
+        stderr = ""
+        try:
+            while process.poll() is None:
+                if self.cancel_requested is not None and self.cancel_requested():
+                    raise MusicGenerationError(
+                        "ACE-Step output normalization was cancelled; the FFmpeg process "
+                        "tree was stopped."
+                    )
+                if time.monotonic() >= deadline:
+                    raise MusicGenerationError(
+                        "FFmpeg timed out while normalizing ACE-Step output after "
+                        f"{self.ffmpeg_timeout_seconds:g}s; the process tree was stopped."
+                    )
+                time.sleep(0.1)
+            _, stderr = process.communicate(timeout=5)
+        except BaseException:
+            terminate_process_tree(process)
             temporary_path.unlink(missing_ok=True)
-            raise MusicGenerationError(
-                "FFmpeg timed out while normalizing ACE-Step output after "
-                f"{self.ffmpeg_timeout_seconds:g}s."
-            ) from error
-        if completed.returncode != 0 or not temporary_path.is_file():
+            raise
+        finally:
+            release_process_resources(process)
+        if process.returncode != 0 or not temporary_path.is_file():
             temporary_path.unlink(missing_ok=True)
             detail = sanitize_process_error(
-                completed.stderr,
-                private_paths=[temporary_path, output_path],
+                stderr,
+                private_paths=[source_path, temporary_path, output_path],
                 fallback="",
             )
             suffix = f" {detail}" if detail else ""
@@ -390,6 +470,15 @@ class AceStepMusicGenerator:
 def _toml_string(value: str | Path) -> str:
     escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _find_setup_script() -> Path | None:
+    candidates = [Path(__file__).resolve().parents[3] / "scripts" / "setup_windows.bat"]
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if isinstance(bundle_root, str):
+        candidates.append(Path(bundle_root) / "scripts" / "setup_windows.bat")
+    candidates.append(Path(sys.executable).resolve().parent / "scripts" / "setup_windows.bat")
+    return next((path for path in candidates if path.is_file()), None)
 
 
 def _toml_bool(value: bool) -> str:

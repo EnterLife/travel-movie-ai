@@ -142,6 +142,41 @@ def test_semantic_selection_skips_weak_scenes_even_when_duration_remains(
     assert decisions[weak.id].reason.startswith("semantic score below")
 
 
+def test_semantic_timeline_persists_cleaned_caption(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    asset = _asset(tmp_path / "coastline.mp4", created_at)
+    scene = _scene(asset, uuid4(), 90).model_copy(
+        update={"caption": "A series of frames showing a coastline at sunset"}
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        overlay_max_characters=24,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([asset], [scene], settings)
+
+    assert plan.clips[0].caption == "A coastline at sunset."
+
+
+def test_semantic_timeline_discards_generic_only_caption(tmp_path: Path) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    asset = _asset(tmp_path / "generic.mp4", created_at)
+    scene = _scene(asset, uuid4(), 90).model_copy(update={"caption": "A series of images"})
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([asset], [scene], settings)
+
+    assert plan.clips[0].caption is None
+
+
 def test_semantic_threshold_relaxes_for_modest_but_consistent_material(
     tmp_path: Path,
 ) -> None:
@@ -262,7 +297,7 @@ def test_semantic_selection_can_relax_source_limit_for_coverage(
     assert len(dominant_clips) > 1
 
 
-def test_semantic_selection_relaxes_event_limit_for_duration_coverage(
+def test_semantic_selection_keeps_hard_event_limit_when_target_is_unreachable(
     tmp_path: Path,
 ) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
@@ -284,12 +319,12 @@ def test_semantic_selection_relaxes_event_limit_for_duration_coverage(
 
     plan = build_semantic_montage_plan(assets, scenes, settings)
 
-    assert len(plan.clips) == 4
-    assert plan.total_duration_seconds == 12
+    assert len(plan.clips) == settings.max_scenes_per_event
+    assert plan.total_duration_seconds == 6
     assert {clip.event_id for clip in plan.clips} == {event_id}
 
 
-def test_semantic_selection_relaxes_source_limit_for_few_long_videos(
+def test_semantic_selection_keeps_strict_source_limit_when_target_is_unreachable(
     tmp_path: Path,
 ) -> None:
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
@@ -305,7 +340,7 @@ def test_semantic_selection_relaxes_source_limit_for_few_long_videos(
 
     plan = build_semantic_montage_plan([source], scenes, settings)
 
-    assert len(plan.clips) == 4
+    assert len(plan.clips) == settings.max_scenes_per_source
     assert {clip.asset_id for clip in plan.clips} == {source.id}
 
 
@@ -369,6 +404,75 @@ def test_semantic_selection_prefers_explicit_highlight_window(
 
     assert plan.clips[0].source_start_seconds == 6
     assert "highlight window: best smile" in plan.clips[0].selection_reason
+
+
+def test_semantic_selection_uses_typed_relative_vision_highlight(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "typed-highlight.mp4", created_at, duration=10)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=10,
+        highlight_windows=[
+            {
+                "relative_start": 0.75,
+                "relative_end": 0.95,
+                "relative_position": 0.85,
+                "confidence": 0.98,
+                "score": 98,
+                "source": "vision",
+                "label": "summit reveal",
+            }
+        ],
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert plan.clips[0].source_start_seconds == 7
+    assert plan.clips[0].window_source == "vision_highlight"
+    assert "highlight window: summit reveal" in plan.clips[0].selection_reason
+
+
+def test_semantic_selection_ignores_invalid_typed_highlight_bounds(
+    tmp_path: Path,
+) -> None:
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    source = _asset(tmp_path / "invalid-highlight.mp4", created_at, duration=10)
+    scene = _scene(
+        source,
+        uuid4(),
+        95,
+        duration=10,
+        highlight_windows=[
+            {
+                "relative_start": 0.8,
+                "relative_end": 0.3,
+                "relative_position": 0.6,
+                "confidence": 0.99,
+                "source": "vision",
+            }
+        ],
+    )
+    settings = QuickMontageSettings(
+        semantic_analysis=True,
+        target_duration_seconds=5,
+        max_video_clip_seconds=3,
+        transition="none",
+    )
+
+    plan = build_semantic_montage_plan([source], [scene], settings)
+
+    assert plan.clips[0].source_start_seconds == 3.5
+    assert plan.clips[0].window_source == "center"
 
 
 def test_semantic_selection_uses_quality_candidate_windows(
@@ -975,8 +1079,13 @@ def test_semantic_selection_backfills_after_directed_pacing_shortens_clips(
 
     plan = build_semantic_montage_plan(assets, scenes, settings)
 
-    assert abs(plan.total_duration_seconds - 90) <= 0.05
-    assert len(plan.clips) > settings.max_scenes_per_event * len(event_ids)
+    event_counts = {
+        event_id: sum(clip.event_id == event_id for clip in plan.clips) for event_id in event_ids
+    }
+    assert len(plan.clips) == settings.max_scenes_per_event * len(event_ids)
+    assert max(event_counts.values()) <= settings.max_scenes_per_event
+    assert set(event_counts.values()) == {settings.max_scenes_per_event}
+    assert plan.total_duration_seconds < settings.target_duration_seconds
 
 
 def test_semantic_timeline_directs_cinematic_transitions_by_event(tmp_path: Path) -> None:

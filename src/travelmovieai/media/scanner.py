@@ -55,6 +55,7 @@ class MediaScanner:
             cached = cached_by_path.get(_path_key(path))
             if (
                 cached is not None
+                and cached.scan_error is None
                 and cached.size_bytes == stat.st_size
                 and cached.modified_ns == stat.st_mtime_ns
             ):
@@ -67,8 +68,6 @@ class MediaScanner:
                     )
                 )
                 cached_count += 1
-                if cached.scan_error:
-                    error_count += 1
                 if progress is not None:
                     progress(index, total, f"Media scan: {index}/{total}")
                 continue
@@ -105,6 +104,8 @@ class MediaScanner:
         image_result = (
             _read_image_metadata(path) if MEDIA_TYPES[extension] is MediaType.PHOTO else None
         )
+        if image_result is not None:
+            scan_error = None
         created_at = probe_result.created_at or _filesystem_created_at(stat)
         width = probe_result.width
         height = probe_result.height

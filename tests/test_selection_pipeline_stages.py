@@ -1,9 +1,13 @@
+import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from PIL import Image
 
+from travelmovieai.analysis.speech import speech_cache_key
 from travelmovieai.application.context import ProjectContext
 from travelmovieai.core.config import Settings
 from travelmovieai.domain.enums import (
@@ -17,6 +21,7 @@ from travelmovieai.domain.models import (
     AudioAnalysisReport,
     AudioSceneAnalysis,
     Event,
+    FrameSamplingReport,
     MediaAsset,
     MontageClip,
     MontageQualityReport,
@@ -56,6 +61,7 @@ from travelmovieai.pipeline.stages.speech_analysis import SpeechAnalysisStage
 from travelmovieai.pipeline.stages.storyboard import StoryBuilderStage
 from travelmovieai.pipeline.stages.timeline_builder import TimelineBuilderStage
 from travelmovieai.pipeline.stages.vision_analysis import VisionAnalysisStage
+from travelmovieai.story.music import MusicPlanExecution
 
 
 def test_scene_ranking_stage_persists_ranked_scenes(tmp_path: Path) -> None:
@@ -141,15 +147,38 @@ def test_frame_sampling_stage_reuses_cached_contact_sheets(
         backend_summary = "fake"
 
         def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
+            self.frame_sample_count = int(kwargs["frame_sample_count"])
 
         def extract(self, source_scene: Scene, media_asset: MediaAsset, frames_dir: Path) -> Path:
+            del media_asset
             nonlocal calls
             calls += 1
             output = frames_dir / f"{source_scene.id}.png"
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"png")
+            Image.new(
+                "RGB",
+                (1440, ((self.frame_sample_count + 2) // 3) * 270),
+                (0, calls, 0),
+            ).save(output)
             return output
+
+        def sampling_metadata(
+            self,
+            source_scene: Scene,
+            media_asset: MediaAsset,
+            image_path: Path,
+        ) -> dict[str, object]:
+            del source_scene, media_asset
+            count = self.frame_sample_count
+            return {
+                "schema_version": frame_sampling.CONTACT_SHEET_SCHEMA_VERSION,
+                "sample_count": count,
+                "sample_positions": [index / count for index in range(count)],
+                "sample_timestamps_seconds": [float(index) for index in range(count)],
+                "columns": min(3, count),
+                "rows": (count + 2) // 3,
+                "content_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
+            }
 
     monkeypatch.setattr(frame_sampling, "RepresentativeFrameExtractor", FakeExtractor)
     monkeypatch.setattr(
@@ -167,6 +196,170 @@ def test_frame_sampling_stage_reuses_cached_contact_sheets(
     assert second.status is StageStatus.CACHED
     assert calls == 1
     assert (context.artifacts_dir / "frame_sampling.cache.json").is_file()
+
+
+def test_frame_sampling_cache_restores_missing_database_frame_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "frame-source.mp4")
+    scene = _scene(asset, score=80, start=0)
+    _seed_project(context, [asset], [scene])
+    calls = 0
+
+    class FakeExtractor:
+        backend_summary = "fake"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.frame_sample_count = int(kwargs["frame_sample_count"])
+
+        def extract(self, source_scene: Scene, media_asset: MediaAsset, frames_dir: Path) -> Path:
+            del media_asset
+            nonlocal calls
+            calls += 1
+            output = frames_dir / f"{source_scene.id}.png"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            Image.new(
+                "RGB",
+                (1440, ((self.frame_sample_count + 2) // 3) * 270),
+                (0, calls, 0),
+            ).save(output)
+            return output
+
+        def sampling_metadata(
+            self,
+            source_scene: Scene,
+            media_asset: MediaAsset,
+            image_path: Path,
+        ) -> dict[str, object]:
+            del source_scene, media_asset
+            count = self.frame_sample_count
+            return {
+                "schema_version": frame_sampling.CONTACT_SHEET_SCHEMA_VERSION,
+                "sample_count": count,
+                "sample_positions": [index / count for index in range(count)],
+                "sample_timestamps_seconds": [float(index) for index in range(count)],
+                "columns": min(3, count),
+                "rows": (count + 2) // 3,
+                "content_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
+            }
+
+    monkeypatch.setattr(frame_sampling, "RepresentativeFrameExtractor", FakeExtractor)
+    monkeypatch.setattr(
+        frame_sampling,
+        "detect_resource_profile",
+        lambda *args, **kwargs: type("Profile", (), {"nvenc": False, "frame_workers": 2})(),
+    )
+
+    FrameSamplingStage().run(context)
+    with MediaAssetRepository(context.database_path) as repository:
+        stored = repository.list_scenes()[0]
+        contact_sheet = stored.metadata["contact_sheet"]
+        damaged_metadata = {
+            key: value for key, value in stored.metadata.items() if key != "contact_sheet"
+        }
+        damaged_metadata["downstream_marker"] = "preserve"
+        repository.synchronize_scenes(
+            [
+                stored.model_copy(
+                    update={
+                        "keyframe_path": None,
+                        "caption": "Later-stage caption",
+                        "metadata": damaged_metadata,
+                    }
+                )
+            ]
+        )
+
+    cached = FrameSamplingStage().run(context)
+    with MediaAssetRepository(context.database_path) as repository:
+        restored = repository.list_scenes()[0]
+
+    assert cached.status is StageStatus.CACHED
+    assert calls == 1
+    assert restored.keyframe_path is not None
+    assert restored.keyframe_path.is_file()
+    assert restored.metadata["contact_sheet"] == contact_sheet
+    assert restored.metadata["downstream_marker"] == "preserve"
+    assert restored.caption == "Later-stage caption"
+
+
+@pytest.mark.parametrize("tamper_mode", ["corrupt", "substitute"])
+def test_frame_sampling_stage_reextracts_tampered_contact_sheet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper_mode: str,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "frame-source.mp4")
+    scene = _scene(asset, score=80, start=0)
+    _seed_project(context, [asset], [scene])
+    calls = 0
+
+    class FakeExtractor:
+        backend_summary = "fake"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.frame_sample_count = int(kwargs["frame_sample_count"])
+
+        def extract(self, source_scene: Scene, media_asset: MediaAsset, frames_dir: Path) -> Path:
+            del media_asset
+            nonlocal calls
+            calls += 1
+            output = frames_dir / f"{source_scene.id}.png"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            Image.new(
+                "RGB",
+                (1440, ((self.frame_sample_count + 2) // 3) * 270),
+                (0, calls, 0),
+            ).save(output)
+            return output
+
+        def sampling_metadata(
+            self,
+            source_scene: Scene,
+            media_asset: MediaAsset,
+            image_path: Path,
+        ) -> dict[str, object]:
+            del source_scene, media_asset
+            count = self.frame_sample_count
+            return {
+                "schema_version": frame_sampling.CONTACT_SHEET_SCHEMA_VERSION,
+                "sample_count": count,
+                "sample_positions": [index / count for index in range(count)],
+                "sample_timestamps_seconds": [float(index) for index in range(count)],
+                "columns": min(3, count),
+                "rows": (count + 2) // 3,
+                "content_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest(),
+            }
+
+    monkeypatch.setattr(frame_sampling, "RepresentativeFrameExtractor", FakeExtractor)
+    monkeypatch.setattr(
+        frame_sampling,
+        "detect_resource_profile",
+        lambda *args, **kwargs: type("Profile", (), {"nvenc": False, "frame_workers": 2})(),
+    )
+
+    FrameSamplingStage().run(context)
+    report = FrameSamplingReport.model_validate_json(
+        (context.artifacts_dir / "frame_sampling.json").read_text(encoding="utf-8")
+    )
+    contact_sheet_path = report.scenes[0].keyframe_path
+    assert contact_sheet_path is not None
+    if tamper_mode == "corrupt":
+        contact_sheet_path.write_bytes(b"not a decodable image")
+    else:
+        with Image.open(contact_sheet_path) as cached_image:
+            size = cached_image.size
+        Image.new("RGB", size, (255, 0, 0)).save(contact_sheet_path)
+
+    rerun = FrameSamplingStage().run(context)
+
+    assert rerun.status is StageStatus.COMPLETED
+    assert calls == 2
+    with Image.open(contact_sheet_path) as regenerated:
+        assert regenerated.getpixel((0, 0)) == (0, 2, 0)
 
 
 def test_frame_sampling_stage_bounds_parallel_nvdec_decode(
@@ -331,12 +524,18 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
     scene = _scene(asset, score=80, start=0).model_copy(update={"keyframe_path": keyframe})
     _seed_project(context, [asset], [scene])
     calls = 0
+    provider_devices: list[str] = []
 
     def fake_profile(*args: object, **kwargs: object) -> object:
         return type(
             "Profile",
             (),
-            {"gpu_memory_mb": None, "memory_mb": None, "model_batch_size": 1},
+            {
+                "gpu_memory_mb": None,
+                "memory_mb": None,
+                "model_batch_size": 1,
+                "device": "cpu",
+            },
         )()
 
     releases = 0
@@ -350,6 +549,7 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
             releases += 1
 
     def fake_provider(*args: object, **kwargs: object) -> object:
+        provider_devices.append(str(kwargs["device"]))
         return FakeVisionProvider()
 
     def fake_analyze(
@@ -365,7 +565,11 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
                 update={
                     "caption": "Cached view",
                     "importance_score": 88,
-                    "metadata": {**item.metadata, "vision_cache_key": "fake"},
+                    "metadata": {
+                        **item.metadata,
+                        "vision_cache_key": "fake",
+                        "vision_provider": "fake-vision",
+                    },
                 }
             )
             for item in scenes
@@ -386,12 +590,20 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
     first = VisionAnalysisStage().run(context)
     repository = MediaAssetRepository(context.database_path)
     stored = repository.list_scenes()[0]
+    tampered_metadata = {
+        **stored.metadata,
+        "speech_cache_key": "speech",
+    }
+    tampered_metadata.pop("vision_cache_key")
+    tampered_metadata.pop("vision_provider")
     repository.synchronize_scenes(
         [
             stored.model_copy(
                 update={
+                    "caption": None,
+                    "importance_score": None,
                     "transcript": "Later speech result",
-                    "metadata": {**stored.metadata, "speech_cache_key": "speech"},
+                    "metadata": tampered_metadata,
                 }
             )
         ]
@@ -411,9 +623,83 @@ def test_vision_analysis_stage_reuses_cached_artifacts(
     assert first.status is StageStatus.COMPLETED
     assert second.status is StageStatus.CACHED
     assert calls == 1
+    assert provider_devices == ["cpu"]
+    assert first.execution.provider == "fake-vision"
+    assert first.execution.model == "fake-model"
+    assert second.execution.provider == "fake-vision"
+    assert second.execution.model == "fake-model"
+    assert second.execution.fallback_count == 0
+    assert second.execution.fallback_provider is None
     assert releases == 1
-    assert repository.list_scenes()[0].transcript == "Later speech result"
+    restored = repository.list_scenes()[0]
+    assert restored.transcript == "Later speech result"
+    assert restored.caption == "Cached view"
+    assert restored.importance_score == 88
+    assert restored.metadata["vision_cache_key"] == "fake"
+    assert restored.metadata["vision_provider"] == "fake-vision"
+    assert restored.metadata["speech_cache_key"] == "speech"
     assert (context.artifacts_dir / "vision_analysis.cache.json").is_file()
+
+
+def test_vision_stage_surfaces_non_sticky_scene_fallback_as_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "vision-fallback.mp4")
+    keyframe = tmp_path / "vision-fallback.png"
+    keyframe.write_bytes(b"frame")
+    scene = _scene(asset, score=80, start=0).model_copy(update={"keyframe_path": keyframe})
+    _seed_project(context, [asset], [scene])
+
+    class FakeVisionProvider:
+        name = "fake-vision"
+        model = "fake-model"
+
+        def release(self) -> None:
+            return None
+
+    def fake_analyze(
+        scenes: list[Scene],
+        provider: object,
+        style: object,
+        **kwargs: object,
+    ) -> VisionAnalysisReport:
+        del provider, style, kwargs
+        degraded = scenes[0].model_copy(
+            update={
+                "caption": "Retry required",
+                "importance_score": 25,
+                "metadata": {**scenes[0].metadata, "vision_status": "degraded"},
+            }
+        )
+        return VisionAnalysisReport(
+            created_at=datetime.now(UTC),
+            provider="fake-vision",
+            model="fake-model",
+            prompt_version="test",
+            scenes=[degraded],
+            degraded_count=1,
+            retry_count=2,
+        )
+
+    monkeypatch.setattr(vision_analysis, "analyze_scenes", fake_analyze)
+    monkeypatch.setattr(
+        vision_analysis,
+        "build_vision_provider",
+        lambda **_: FakeVisionProvider(),
+    )
+
+    result = VisionAnalysisStage().run(context)
+
+    assert result.status is StageStatus.DEGRADED
+    assert result.cache_hit is False
+    assert result.skipped is False
+    assert result.execution.fallback_count == 1
+    assert result.execution.retry_count == 2
+    assert result.execution.provider == "fake-vision"
+    assert result.execution.fallback_provider == "deterministic"
+    assert result.execution.model == "fake-model"
 
 
 def test_speech_analysis_stage_reuses_cached_transcripts(
@@ -469,7 +755,72 @@ def test_speech_analysis_stage_reuses_cached_transcripts(
     assert first.status is StageStatus.COMPLETED
     assert second.status is StageStatus.CACHED
     assert calls == 1
+    assert first.execution.provider == "fake-whisper"
+    assert first.execution.model == "medium"
+    assert second.execution.provider == "faster-whisper"
     assert (context.artifacts_dir / "speech_analysis.cache.json").is_file()
+
+
+def test_speech_analysis_stage_resumes_checkpoint_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "speech-source.mp4").model_copy(
+        update={"probe_metadata": {"streams": [{"codec_type": "audio"}]}}
+    )
+    scene = _scene(asset, score=80, start=0)
+    _seed_project(context, [asset], [scene])
+    calls = 0
+
+    def fake_analyze(
+        scenes: list[Scene],
+        assets: list[MediaAsset],
+        provider: object,
+        ffmpeg_binary: str,
+        audio_dir: Path,
+        *,
+        timeout_seconds: float = 120,
+        progress: object | None = None,
+        checkpoint=None,
+    ) -> SpeechAnalysisReport:
+        del ffmpeg_binary, audio_dir, timeout_seconds, progress
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert callable(checkpoint)
+            model = str(provider.model)
+            updated = scenes[0].model_copy(
+                update={
+                    "transcript": "Saved partial transcript.",
+                    "metadata": {
+                        **scenes[0].metadata,
+                        "speech_cache_key": speech_cache_key(scenes[0], assets[0], model),
+                    },
+                }
+            )
+            checkpoint(updated)
+            raise RuntimeError("later whisper scene failed")
+        assert scenes[0].transcript == "Saved partial transcript."
+        return SpeechAnalysisReport(
+            created_at=datetime.now(UTC),
+            provider="fake-whisper",
+            model=str(provider.model),
+            scenes=scenes,
+            cached_count=1,
+        )
+
+    monkeypatch.setattr(speech_analysis, "analyze_speech", fake_analyze)
+
+    with pytest.raises(RuntimeError, match="later whisper scene failed"):
+        SpeechAnalysisStage().run(context)
+    resumed = SpeechAnalysisStage().run(context)
+
+    assert calls == 2
+    assert resumed.status is StageStatus.CACHED
+    assert MediaAssetRepository(context.database_path).list_scenes()[0].transcript == (
+        "Saved partial transcript."
+    )
 
 
 def test_speech_analysis_stage_respects_disabled_montage_setting(
@@ -909,7 +1260,11 @@ def test_music_selection_stage_passes_local_ai_generator(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    context = _context(tmp_path)
+    heartbeats: list[tuple[int, int, str]] = []
+    context = replace(
+        _context(tmp_path),
+        progress=lambda current, total, message: heartbeats.append((current, total, message)),
+    )
     asset = _asset(tmp_path / "clip.mp4")
     scene = _scene(asset, score=90, start=0)
     _seed_project(context, [asset], [scene])
@@ -927,7 +1282,13 @@ def test_music_selection_stage_passes_local_ai_generator(
         captured["generator"] = kwargs.get("neural_generator")
         soundtrack = context.artifacts_dir / "theme.wav"
         soundtrack.write_bytes(b"fake wav")
-        return MusicPlan(mode="generated", source_path=soundtrack, duration_seconds=6)
+        return MusicPlan(
+            mode="generated",
+            source_path=soundtrack,
+            duration_seconds=6,
+            generator="ace-step",
+            model="fake-ace-step",
+        )
 
     monkeypatch.setattr(music_selection, "AceStepMusicGenerator", FakeGenerator)
     monkeypatch.setattr(
@@ -937,10 +1298,20 @@ def test_music_selection_stage_passes_local_ai_generator(
     )
     monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
 
-    MusicSelectionStage().run(context)
+    result = MusicSelectionStage().run(context)
 
     assert isinstance(captured["generator"], FakeGenerator)
     assert captured["model"] == "ACE-Step/acestep-v15-turbo"
+    options = captured["options"]
+    assert isinstance(options, dict)
+    cancel_requested = options["cancel_requested"]
+    assert callable(cancel_requested)
+    assert cancel_requested() is False
+    assert heartbeats[-1] == (1, 4, "ACE-Step: generation is still running")
+    assert result.status is StageStatus.COMPLETED
+    assert result.execution.provider == "ace-step"
+    assert result.execution.model == "fake-ace-step"
+    assert result.execution.fallback_count == 0
 
 
 def test_music_selection_stage_rejects_missing_generated_soundtrack(
@@ -985,7 +1356,15 @@ def test_music_selection_stage_reuses_current_cache_and_rejects_legacy_schema(
         calls += 1
         montage_plan = args[5]
         assert isinstance(montage_plan, QuickMontagePlan)
-        return MusicPlan(mode="none", duration_seconds=montage_plan.total_duration_seconds)
+        soundtrack = context.artifacts_dir / "cached-theme.wav"
+        soundtrack.write_bytes(b"fake wav")
+        return MusicPlan(
+            mode="generated",
+            source_path=soundtrack,
+            duration_seconds=montage_plan.total_duration_seconds,
+            generator="ace-step",
+            model="cached-model",
+        )
 
     monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
 
@@ -994,7 +1373,21 @@ def test_music_selection_stage_reuses_current_cache_and_rejects_legacy_schema(
 
     assert first.skipped is False
     assert second.skipped is True
+    assert first.status is StageStatus.COMPLETED
+    assert first.execution.provider == "ace-step"
+    assert first.execution.model == "cached-model"
+    assert second.status is StageStatus.CACHED
+    assert second.cache_hit is True
+    assert second.execution.provider == "ace-step"
+    assert second.execution.model == "cached-model"
     assert calls == 1
+
+    (context.artifacts_dir / "cached-theme.wav").write_bytes(b"replaced soundtrack")
+    replaced = MusicSelectionStage().run(context)
+
+    assert replaced.status is StageStatus.COMPLETED
+    assert replaced.cache_hit is False
+    assert calls == 2
     cache_path = context.artifacts_dir / "music_plan.cache.json"
     manifest = StageCacheManifest.model_validate_json(cache_path.read_text(encoding="utf-8"))
     music_selection.write_json_atomic(
@@ -1005,7 +1398,84 @@ def test_music_selection_stage_reuses_current_cache_and_rejects_legacy_schema(
     legacy = MusicSelectionStage().run(context)
 
     assert legacy.skipped is False
+    assert calls == 3
+
+
+def test_music_selection_stage_reports_internal_composition_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "music-internal-cache.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+
+    def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
+        execution = kwargs.get("execution")
+        assert isinstance(execution, MusicPlanExecution)
+        execution.cache_hit = True
+        soundtrack = context.artifacts_dir / "reused-theme.wav"
+        soundtrack.write_bytes(b"cached wav")
+        return MusicPlan(
+            mode="generated",
+            source_path=soundtrack,
+            duration_seconds=6,
+            generator="ace-step",
+            model="reused-model",
+        )
+
+    monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
+
+    result = MusicSelectionStage().run(context)
+
+    assert result.status is StageStatus.CACHED
+    assert result.cache_hit is True
+    assert result.skipped is True
+    assert result.execution.provider == "ace-step"
+    assert result.execution.model == "reused-model"
+    assert result.execution.fallback_count == 0
+
+
+def test_music_selection_stage_reports_non_sticky_procedural_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "music-fallback.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    calls = 0
+
+    def fake_build_music_plan(*args: object, **kwargs: object) -> MusicPlan:
+        nonlocal calls
+        calls += 1
+        soundtrack = context.artifacts_dir / "fallback-theme.wav"
+        soundtrack.write_bytes(b"procedural wav")
+        return MusicPlan(
+            mode="generated",
+            source_path=soundtrack,
+            duration_seconds=6,
+            generator="procedural",
+            fallback_used=True,
+        )
+
+    monkeypatch.setattr(music_selection, "build_music_plan", fake_build_music_plan)
+
+    first = MusicSelectionStage().run(context)
+    second = MusicSelectionStage().run(context)
+
+    assert first.status is StageStatus.DEGRADED
+    assert first.cache_hit is False
+    assert first.execution.provider == "ace-step"
+    assert first.execution.fallback_provider == "procedural"
+    assert first.execution.fallback_count == 1
+    assert second.status is StageStatus.DEGRADED
+    assert second.cache_hit is False
+    assert second.execution.provider == "ace-step"
+    assert second.execution.fallback_provider == "procedural"
+    assert second.execution.fallback_count == 1
     assert calls == 2
+    assert not (context.artifacts_dir / "music_plan.cache.json").exists()
 
 
 def test_music_selection_stage_rebuilds_after_disable_then_enable(
@@ -1148,6 +1618,9 @@ def test_rendering_stage_renders_timeline_and_writes_quality_report(
         plan.model_dump_json(),
         encoding="utf-8",
     )
+    output_path = context.artifacts_dir / "final.mp4"
+    output_path.write_bytes(b"previous movie")
+    render_targets: list[Path] = []
 
     class FakeRenderer:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -1161,6 +1634,11 @@ def test_rendering_stage_renders_timeline_and_writes_quality_report(
         ) -> str:
             assert montage_plan == plan
             assert work_dir == context.cache_dir
+            assert output_path.parent == (context.artifacts_dir / "final.mp4").parent
+            assert output_path != context.artifacts_dir / "final.mp4"
+            assert output_path.name.startswith(".final.")
+            assert (context.artifacts_dir / "final.mp4").read_bytes() == b"previous movie"
+            render_targets.append(output_path)
             output_path.write_bytes(b"fake mp4")
             return "fake-encoder"
 
@@ -1193,8 +1671,83 @@ def test_rendering_stage_renders_timeline_and_writes_quality_report(
     assert result.stage is PipelineStage.RENDERING
     assert result.skipped is False
     assert (context.artifacts_dir / "final.mp4").read_bytes() == b"fake mp4"
+    assert quality.rendered_path == context.artifacts_dir / "final.mp4"
     assert quality.rendered_has_video is True
     assert quality.rendered_has_audio is True
+    assert len(render_targets) == 1
+    assert not render_targets[0].exists()
+
+
+def test_rendering_stage_preserves_existing_delivery_when_quality_gate_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(tmp_path)
+    asset = _asset(tmp_path / "clip.mp4")
+    scene = _scene(asset, score=90, start=0)
+    _seed_project(context, [asset], [scene])
+    plan = _timeline_plan(asset, scene)
+    timeline_artifact = context.artifacts_dir / "quick_timeline.json"
+    timeline_artifact.write_text(plan.model_dump_json(), encoding="utf-8")
+    output_path = context.artifacts_dir / "final.mp4"
+    quality_artifact = context.artifacts_dir / "montage_quality_report.json"
+    cache_artifact = context.artifacts_dir / "rendering.cache.json"
+    output_path.write_bytes(b"previous movie")
+    quality_artifact.write_bytes(b"previous quality report")
+    cache_artifact.write_bytes(b"previous cache manifest")
+    render_targets: list[Path] = []
+
+    class FakeRenderer:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def render(
+            self,
+            montage_plan: QuickMontagePlan,
+            candidate_path: Path,
+            work_dir: Path,
+        ) -> str:
+            del montage_plan, work_dir
+            render_targets.append(candidate_path)
+            candidate_path.write_bytes(b"rejected movie")
+            return "fake-encoder"
+
+    def fake_detect_resource_profile(*args: object, **kwargs: object) -> object:
+        return type("Profile", (), {"render_workers": 1, "ffmpeg_threads": 1})()
+
+    def fake_enrich(
+        report: MontageQualityReport,
+        candidate_path: Path,
+        **kwargs: object,
+    ) -> MontageQualityReport:
+        return report.model_copy(
+            update={
+                "rendered_path": candidate_path,
+                "rendered_duration_seconds": report.planned_duration_seconds,
+                "rendered_has_video": True,
+                "rendered_has_audio": True,
+            }
+        )
+
+    def reject_quality(report: MontageQualityReport) -> None:
+        assert report.rendered_path == render_targets[0]
+        assert output_path.read_bytes() == b"previous movie"
+        raise rendering.MontageError("simulated quality gate failure")
+
+    monkeypatch.setattr(rendering, "QuickMontageRenderer", FakeRenderer)
+    monkeypatch.setattr(rendering, "detect_resource_profile", fake_detect_resource_profile)
+    monkeypatch.setattr(rendering, "enrich_montage_quality_report_with_render", fake_enrich)
+    monkeypatch.setattr(rendering, "enforce_montage_quality", reject_quality)
+
+    with pytest.raises(rendering.MontageError, match="quality gate failure"):
+        RenderingStage().run(context)
+
+    assert output_path.read_bytes() == b"previous movie"
+    assert quality_artifact.read_bytes() == b"previous quality report"
+    assert cache_artifact.read_bytes() == b"previous cache manifest"
+    assert timeline_artifact.read_text(encoding="utf-8") == plan.model_dump_json()
+    assert len(render_targets) == 1
+    assert not render_targets[0].exists()
 
 
 def test_rendering_stage_reuses_cached_movie_and_quality_report(
@@ -1242,8 +1795,14 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
                 (),
                 {
                     "duration_seconds": 3.0,
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 30.0,
                     "metadata": {
-                        "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                        "streams": [
+                            {"codec_type": "video", "pix_fmt": "yuv420p"},
+                            {"codec_type": "audio"},
+                        ],
                     },
                 },
             )()
@@ -1273,7 +1832,8 @@ def test_rendering_stage_reuses_cached_movie_and_quality_report(
     third = RenderingStage().run(context)
 
     assert first.skipped is False
-    assert second.skipped is True
+    assert second.status is StageStatus.DEGRADED
+    assert "cached movie with quality warnings" in second.message
     assert third.skipped is False
     assert calls == 2
     assert (context.artifacts_dir / "rendering.cache.json").is_file()
@@ -1319,8 +1879,14 @@ def test_rendering_stage_rerenders_after_renderer_behavior_change(
                 (),
                 {
                     "duration_seconds": 3.0,
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 30.0,
                     "metadata": {
-                        "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                        "streams": [
+                            {"codec_type": "video", "pix_fmt": "yuv420p"},
+                            {"codec_type": "audio"},
+                        ],
                     },
                 },
             )()
@@ -1415,8 +1981,14 @@ def test_rendering_stage_ignores_legacy_render_cache_schema(
                 (),
                 {
                     "duration_seconds": 3.0,
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 30.0,
                     "metadata": {
-                        "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
+                        "streams": [
+                            {"codec_type": "video", "pix_fmt": "yuv420p"},
+                            {"codec_type": "audio"},
+                        ],
                     },
                 },
             )()
@@ -1560,8 +2132,10 @@ def test_rendering_stage_checks_disk_space_before_starting_renderer(
         plan.model_dump_json(),
         encoding="utf-8",
     )
+    preflight: dict[str, object] = {}
 
     def reject_render(**kwargs: object) -> None:
+        preflight.update(kwargs)
         raise rendering.MontageError("Not enough free disk space for rendering.")
 
     class UnexpectedRenderer:
@@ -1574,6 +2148,7 @@ def test_rendering_stage_checks_disk_space_before_starting_renderer(
     with pytest.raises(rendering.MontageError, match="Not enough free disk space"):
         RenderingStage().run(context)
 
+    assert preflight["plan"] == plan
     assert not (context.artifacts_dir / "final.mp4").exists()
 
 
@@ -1597,14 +2172,35 @@ def test_story_builder_stage_applies_story_metadata_to_scenes(tmp_path: Path) ->
     _seed_project(context, [asset], [scene], [event])
 
     result = StoryBuilderStage().run(context)
+    repository = MediaAssetRepository(context.database_path)
+    stored = repository.list_scenes()[0]
+    repository.synchronize_scenes(
+        [
+            stored.model_copy(
+                update={
+                    "metadata": {
+                        **stored.metadata,
+                        "story_section_index": 99,
+                        "story_section_role": "finale",
+                        "story_section_title": "Tampered",
+                        "story_role_order": 99,
+                        "unrelated_metadata": "preserve",
+                    }
+                }
+            )
+        ]
+    )
     cached = StoryBuilderStage().run(context)
-    stored = MediaAssetRepository(context.database_path).list_scenes()[0]
+    restored = repository.list_scenes()[0]
 
     assert result.stage is PipelineStage.STORY_BUILDER
     assert result.skipped is False
     assert cached.skipped is True
-    assert stored.metadata["story_section_role"] == "opening"
-    assert stored.metadata["story_role_order"] == 0
+    assert restored.metadata["story_section_index"] == 0
+    assert restored.metadata["story_section_role"] == "opening"
+    assert restored.metadata["story_section_title"] == "Arrival"
+    assert restored.metadata["story_role_order"] == 0
+    assert restored.metadata["unrelated_metadata"] == "preserve"
 
 
 def test_narration_stage_writes_and_reuses_story_text(tmp_path: Path) -> None:

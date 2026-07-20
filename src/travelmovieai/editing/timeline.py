@@ -1,9 +1,10 @@
 """Timeline assembly."""
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from travelmovieai.core.exceptions import MontageError
@@ -17,7 +18,9 @@ from travelmovieai.domain.models import (
     Scene,
     SceneSelectionDecision,
     SceneSelectionReport,
+    TemporalHighlightWindow,
 )
+from travelmovieai.story.editorial import clean_caption
 from travelmovieai.story.optimizer import optimize_story_timeline_candidates
 from travelmovieai.story.ranking import rank_scenes
 
@@ -140,19 +143,11 @@ def build_semantic_montage_plan(
         assets_by_id,
         settings,
     )
-    if _estimated_candidate_duration(candidates, settings) < (
-        settings.target_duration_seconds - 0.05
-    ):
-        candidate_ids = {scene.id for scene in candidates}
-        for scene in story_candidates:
-            if scene.id in candidate_ids:
-                continue
-            candidates.append(scene)
-            candidate_ids.add(scene.id)
-            if _estimated_candidate_duration(candidates, settings) >= (
-                settings.target_duration_seconds - 0.05
-            ):
-                break
+    candidates = _backfill_candidates_with_hard_caps(
+        candidates,
+        story_candidates,
+        settings,
+    )
     for scene in candidates:
         asset = assets_by_id.get(scene.asset_id)
         if asset is None or asset.scan_error:
@@ -178,8 +173,17 @@ def build_semantic_montage_plan(
 
         source_start = 0.0
         window_reason = ""
+        window_source: Literal[
+            "vision_highlight",
+            "visual_quality",
+            "speech",
+            "people",
+            "center",
+            "scene_bounds",
+            "other",
+        ] = "scene_bounds"
         if asset.media_type is MediaType.VIDEO:
-            source_start, window_reason = _best_scene_window(
+            source_start, window_reason, window_source = _best_scene_window(
                 scene,
                 available_seconds=available,
                 duration_seconds=duration,
@@ -198,10 +202,14 @@ def build_semantic_montage_plan(
                 source_start_seconds=source_start,
                 duration_seconds=duration,
                 has_audio=_has_audio(asset),
-                caption=scene.caption,
+                caption=clean_caption(
+                    scene.caption,
+                    max_characters=settings.overlay_max_characters,
+                ),
                 semantic_score=float(scene.metadata.get("ranking_score", 50)),
                 event_id=event_id,
                 event_title=_optional_text(scene.metadata.get("event_title")),
+                window_source=window_source,
                 selection_reason=selection_reason,
                 source_width=render_metadata.source_width,
                 source_height=render_metadata.source_height,
@@ -327,7 +335,7 @@ def build_selection_report(
     settings: QuickMontageSettings,
 ) -> SceneSelectionReport:
     ranked = rank_scenes(scenes)
-    semantic_threshold = _semantic_score_threshold(ranked, settings)
+    semantic_threshold = semantic_score_threshold(ranked, settings)
     selected = {
         timeline_clip.scene_id: timeline_clip
         for timeline_clip in plan.clips
@@ -694,12 +702,12 @@ def _chronological_timeline_sort_key(
         bucket = math.floor(capture_seconds / settings.chronology_tolerance_seconds)
         return (
             float(bucket),
-            _metadata_int(scene, "story_section_index", 99),
-            _metadata_int(scene, "story_role_order", 99),
             _metadata_int(scene, "story_timeline_order", 9999),
             capture_seconds,
             clip.relative_path.as_posix().casefold(),
             clip.source_start_seconds,
+            _metadata_int(scene, "story_section_index", 99),
+            _metadata_int(scene, "story_role_order", 99),
         )
     return (
         capture_seconds,
@@ -1056,7 +1064,7 @@ def _story_candidates(
     ranked: list[Scene],
     settings: QuickMontageSettings,
 ) -> list[Scene]:
-    semantic_threshold = _semantic_score_threshold(ranked, settings)
+    semantic_threshold = semantic_score_threshold(ranked, settings)
     eligible = [scene for scene in ranked if _eligible(scene, settings, semantic_threshold)]
     eligible = _include_story_role_representatives(
         ranked,
@@ -1111,6 +1119,8 @@ def _story_candidates(
             if source_counts.get(source_id, 0) >= source_limit:
                 continue
             event_id = str(scene.metadata.get("event_id", scene.id))
+            if event_counts.get(event_id, 0) >= settings.max_scenes_per_event:
+                continue
             ordered.append(scene)
             selected_ids.add(scene.id)
             event_counts[event_id] = event_counts.get(event_id, 0) + 1
@@ -1141,6 +1151,45 @@ def _estimated_candidate_duration(
             )
         previous_event = _event_id(scene)
     return max(0.0, duration)
+
+
+def _backfill_candidates_with_hard_caps(
+    selected: list[Scene],
+    pool: list[Scene],
+    settings: QuickMontageSettings,
+) -> list[Scene]:
+    """Fill pacing-induced duration deficits without bypassing event/source limits."""
+
+    if _estimated_candidate_duration(selected, settings) >= settings.target_duration_seconds - 0.05:
+        return selected
+    result = list(selected)
+    selected_ids = {scene.id for scene in result}
+    event_counts: dict[str, int] = {}
+    source_counts: dict[UUID, int] = {}
+    for scene in result:
+        event_key = str(scene.metadata.get("event_id", scene.id))
+        event_counts[event_key] = event_counts.get(event_key, 0) + 1
+        source_counts[scene.asset_id] = source_counts.get(scene.asset_id, 0) + 1
+    for scene in pool:
+        if scene.id in selected_ids:
+            continue
+        event_key = str(scene.metadata.get("event_id", scene.id))
+        if event_counts.get(event_key, 0) >= settings.max_scenes_per_event:
+            continue
+        if (
+            settings.strict_source_diversity
+            and source_counts.get(scene.asset_id, 0) >= settings.max_scenes_per_source
+        ):
+            continue
+        result.append(scene)
+        selected_ids.add(scene.id)
+        event_counts[event_key] = event_counts.get(event_key, 0) + 1
+        source_counts[scene.asset_id] = source_counts.get(scene.asset_id, 0) + 1
+        if _estimated_candidate_duration(result, settings) >= (
+            settings.target_duration_seconds - 0.05
+        ):
+            break
+    return result
 
 
 def _include_story_role_representatives(
@@ -1217,9 +1266,21 @@ def _best_scene_window(
     *,
     available_seconds: float,
     duration_seconds: float,
-) -> tuple[float, str]:
+) -> tuple[
+    float,
+    str,
+    Literal[
+        "vision_highlight",
+        "visual_quality",
+        "speech",
+        "people",
+        "center",
+        "scene_bounds",
+        "other",
+    ],
+]:
     if available_seconds <= duration_seconds + 0.05:
-        return scene.start_seconds, ""
+        return scene.start_seconds, "", "scene_bounds"
 
     candidates: list[tuple[float, float, str]] = []
     candidates.extend(_speech_segment_candidates(scene, available_seconds, duration_seconds))
@@ -1233,7 +1294,7 @@ def _best_scene_window(
             available_seconds,
             duration_seconds,
         )
-        return scene.start_seconds + middle_start, "center of scene"
+        return scene.start_seconds + middle_start, "center of scene", "center"
 
     max_start = max(0.0, available_seconds - duration_seconds)
     best_score, best_start, reason = max(
@@ -1251,11 +1312,16 @@ def _best_scene_window(
     if best_score < 20:
         best_start = max_start / 2
         reason = "center of scene"
-    return scene.start_seconds + _clamp_window_start(
-        best_start,
-        available_seconds,
-        duration_seconds,
-    ), reason
+    return (
+        scene.start_seconds
+        + _clamp_window_start(
+            best_start,
+            available_seconds,
+            duration_seconds,
+        ),
+        reason,
+        _window_source_from_reason(reason),
+    )
 
 
 def _explicit_window_candidates(
@@ -1277,6 +1343,11 @@ def _explicit_window_candidates(
     for item in raw_windows:
         if not isinstance(item, dict):
             continue
+        if "relative_start" in item or "relative_end" in item:
+            try:
+                item = TemporalHighlightWindow.model_validate(item).model_dump()
+            except ValueError:
+                continue
         start = _window_start_from_metadata(scene, item)
         end = _window_end_from_metadata(scene, item)
         if start is None:
@@ -1287,9 +1358,13 @@ def _explicit_window_candidates(
         if end is not None and end > start:
             center = start + (end - start) / 2
             start = center - duration_seconds / 2
+        confidence = _first_float(item.get("confidence"))
         score = _float_value(
             item.get("score"),
-            _float_value(item.get("importance_score"), 75.0),
+            _float_value(
+                item.get("importance_score"),
+                (confidence * 100) if confidence is not None else 75.0,
+            ),
         )
         label = str(item.get("label", "")).strip()
         source = str(item.get("source", "")).strip()
@@ -1382,6 +1457,30 @@ def _candidate_reason(source: str, label: str) -> str:
     if source == "visual_quality":
         return "visual candidate" if not label else f"visual candidate: {label[:80]}"
     return "highlight window" if not label else f"highlight window: {label[:80]}"
+
+
+def _window_source_from_reason(
+    reason: str,
+) -> Literal[
+    "vision_highlight",
+    "visual_quality",
+    "speech",
+    "people",
+    "center",
+    "scene_bounds",
+    "other",
+]:
+    if reason.startswith("speech-safe"):
+        return "speech"
+    if reason.startswith("people-safe"):
+        return "people"
+    if reason.startswith(("visual candidate", "best visual")):
+        return "visual_quality"
+    if reason.startswith("highlight window"):
+        return "vision_highlight"
+    if reason == "center of scene":
+        return "center"
+    return "other"
 
 
 def _director_window_score(
@@ -1503,6 +1602,11 @@ def _quality_metric_window_candidates(
     for item in raw_windows:
         if not isinstance(item, dict):
             continue
+        if "relative_start" in item or "relative_end" in item:
+            try:
+                item = TemporalHighlightWindow.model_validate(item).model_dump()
+            except ValueError:
+                continue
         position = _first_float(
             item.get("relative_position"),
             item.get("position"),
@@ -1517,7 +1621,11 @@ def _quality_metric_window_candidates(
             start = available_seconds * max(0.0, min(1.0, position)) - duration_seconds / 2
         if start is None:
             continue
-        score = _float_value(item.get("score"), 60.0)
+        confidence = _first_float(item.get("confidence"))
+        score = _float_value(
+            item.get("score"),
+            (confidence * 100) if confidence is not None else 60.0,
+        )
         label = str(item.get("label", "")).strip()
         source = str(item.get("source", "")).strip()
         if source == "visual_quality" and label.startswith("visual panel "):
@@ -1558,7 +1666,15 @@ def _best_panel_position_candidate(
     ]
 
 
-def _window_start_from_metadata(scene: Scene, item: dict[object, object]) -> float | None:
+def _window_start_from_metadata(
+    scene: Scene,
+    item: Mapping[Any, Any],
+) -> float | None:
+    relative_start = _first_float(item.get("relative_start"))
+    if relative_start is not None:
+        if not 0 <= relative_start <= 1:
+            return None
+        return max(0.0, scene.end_seconds - scene.start_seconds) * relative_start
     start = _first_float(
         item.get("relative_start_seconds"),
         item.get("start_offset_seconds"),
@@ -1572,7 +1688,15 @@ def _window_start_from_metadata(scene: Scene, item: dict[object, object]) -> flo
     return max(0.0, start)
 
 
-def _window_end_from_metadata(scene: Scene, item: dict[object, object]) -> float | None:
+def _window_end_from_metadata(
+    scene: Scene,
+    item: Mapping[Any, Any],
+) -> float | None:
+    relative_end = _first_float(item.get("relative_end"))
+    if relative_end is not None:
+        if not 0 <= relative_end <= 1:
+            return None
+        return max(0.0, scene.end_seconds - scene.start_seconds) * relative_end
     end = _first_float(
         item.get("relative_end_seconds"),
         item.get("end_offset_seconds"),
@@ -1627,10 +1751,12 @@ def _estimated_needed_clips(settings: QuickMontageSettings) -> int:
     return max(1, math.ceil(settings.target_duration_seconds / effective_clip_duration))
 
 
-def _semantic_score_threshold(
+def semantic_score_threshold(
     ranked: list[Scene],
     settings: QuickMontageSettings,
 ) -> float:
+    """Return the adaptive score floor used by automatic semantic selection."""
+
     scores = [
         float(score)
         for scene in ranked

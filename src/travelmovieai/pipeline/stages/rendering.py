@@ -32,8 +32,8 @@ from travelmovieai.infrastructure.ffmpeg import FFprobeClient
 from travelmovieai.infrastructure.system import detect_resource_profile
 from travelmovieai.pipeline.base import Stage
 
-ARTIFACT_SCHEMA_VERSION = "rendering-v12-native-overlay-linebreaks"
-RENDERER_BEHAVIOR_VERSION = "verified-lossless-candidate-publication-v15-native-linebreaks"
+ARTIFACT_SCHEMA_VERSION = "rendering-v13-optional-text-overlays"
+RENDERER_BEHAVIOR_VERSION = "verified-lossless-candidate-publication-v16-text-overlays"
 
 
 class RenderingStage(Stage):

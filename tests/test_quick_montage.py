@@ -908,8 +908,14 @@ def test_renderer_rejects_missing_soundtrack_before_ffmpeg(tmp_path: Path) -> No
         (QuickMontageSettings(narration_enabled=True), "Narration requires semantic"),
         (QuickMontageSettings(framing_mode="smart"), "smart crop.*require semantic"),
         (QuickMontageSettings(color_normalization=True), "color normalization.*require semantic"),
-        (QuickMontageSettings(event_titles_enabled=True), "event titles.*require semantic"),
-        (QuickMontageSettings(scene_subtitles_enabled=True), "scene subtitles.*require semantic"),
+        (
+            QuickMontageSettings(text_overlays_enabled=True, event_titles_enabled=True),
+            "event titles.*require semantic",
+        ),
+        (
+            QuickMontageSettings(text_overlays_enabled=True, scene_subtitles_enabled=True),
+            "scene subtitles.*require semantic",
+        ),
     ],
 )
 def test_service_rejects_ai_audio_features_without_semantic_pipeline(

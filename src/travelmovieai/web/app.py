@@ -947,9 +947,9 @@ def _validate_requested_capabilities(
         semantic_render_features.append("smart crop")
     if settings.color_normalization:
         semantic_render_features.append("color normalization")
-    if settings.event_titles_enabled:
+    if settings.text_overlays_enabled and settings.event_titles_enabled:
         semantic_render_features.append("event titles")
-    if settings.scene_subtitles_enabled:
+    if settings.text_overlays_enabled and settings.scene_subtitles_enabled:
         semantic_render_features.append("scene subtitles")
     if semantic_render_features and not settings.semantic_analysis:
         raise HTTPException(

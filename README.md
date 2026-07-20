@@ -1218,7 +1218,8 @@ The renderer:
   ducks music/source ambience around optional Piper narration;
 - applies source/music/narration/final fades, delivery loudness normalization,
   and a true-peak limiter before AAC encoding;
-- draws event titles, scene captions, and credits inside validated safe areas;
+- optionally draws event titles, scene captions, and credits inside validated
+  safe areas when the master text-overlay switch is enabled;
 - uses `h264_nvenc` automatically when available and falls back to `libx264`;
 - strips source container metadata such as camera comments and GPS tags from
   rendered movies;
@@ -1240,11 +1241,16 @@ plans retain the smaller delivery-oriented estimate.
 All new visual treatments are opt-in in `QuickMontageSettings`, preserving
 legacy output by default. `framing_mode = "smart"`,
 `photo_motion = "ken_burns"`, `vertical_video_layout`,
-`color_normalization`, `hdr_to_sdr`, `event_titles_enabled`,
-`scene_subtitles_enabled`, `credits_text`, `music_bpm_analysis`, and
+`color_normalization`, `hdr_to_sdr`, `text_overlays_enabled`,
+`event_titles_enabled`, `scene_subtitles_enabled`, `credits_text`,
+`music_bpm_analysis`, and
 `music_volume_envelope` control them. The timeline remains declarative: the
 renderer consumes focus coordinates, rotation/color metadata, overlays, music,
 and narration paths rather than choosing story content.
+`text_overlays_enabled` is the master switch and defaults to `false`; event
+titles, scene captions, and credits are never burned into the movie unless it is
+explicitly enabled (CLI: `--text-overlays`). The individual title, subtitle, and
+credits settings remain available as sub-controls.
 Smart crop, metric-based color normalization, event titles, and scene subtitles
 require semantic analysis because quick chronological mode does not produce the
 focus, quality, event, or caption metadata they consume. CLI/API requests reject

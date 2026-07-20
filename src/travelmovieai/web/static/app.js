@@ -46,6 +46,7 @@ const verticalVideoLayout = document.querySelector("#vertical-video-layout");
 const photoMotion = document.querySelector("#photo-motion");
 const colorNormalization = document.querySelector("#color-normalization");
 const hdrToSdr = document.querySelector("#hdr-to-sdr");
+const textOverlaysEnabled = document.querySelector("#text-overlays-enabled");
 const eventTitlesEnabled = document.querySelector("#event-titles-enabled");
 const sceneSubtitlesEnabled = document.querySelector("#scene-subtitles-enabled");
 const creditsText = document.querySelector("#credits-text");
@@ -401,11 +402,22 @@ function updateDependentCapabilityControls() {
   const smartFraming = framingMode.querySelector('option[value="smart"]');
   if (smartFraming) smartFraming.disabled = !semanticReady;
   if (!semanticReady && framingMode.value === "smart") framingMode.value = "fit";
-  for (const control of [colorNormalization, eventTitlesEnabled, sceneSubtitlesEnabled]) {
-    control.disabled = !semanticReady;
+  colorNormalization.disabled = !semanticReady;
+  if (!semanticReady) colorNormalization.checked = false;
+  colorNormalization.title = semanticReady ? "" : "Requires semantic scene analysis.";
+
+  const textOverlaysReady = textOverlaysEnabled.checked;
+  for (const control of [eventTitlesEnabled, sceneSubtitlesEnabled]) {
+    control.disabled = !textOverlaysReady || !semanticReady;
     if (!semanticReady) control.checked = false;
-    control.title = semanticReady ? "" : "Requires semantic scene analysis.";
+    control.title = !textOverlaysReady
+      ? "Enable Text in video first."
+      : semanticReady
+        ? ""
+        : "Requires semantic scene analysis.";
   }
+  creditsText.disabled = !textOverlaysReady;
+  creditsText.title = textOverlaysReady ? "" : "Enable Text in video first.";
 }
 
 function capabilityChip(label, available) {
@@ -714,9 +726,12 @@ movieButton.addEventListener("click", async () => {
           photo_motion: photoMotion.value,
           color_normalization: colorNormalization.checked,
           hdr_to_sdr: hdrToSdr.checked,
-          event_titles_enabled: eventTitlesEnabled.checked,
-          scene_subtitles_enabled: sceneSubtitlesEnabled.checked,
-          credits_text: creditsText.value.trim() || null,
+          text_overlays_enabled: textOverlaysEnabled.checked,
+          event_titles_enabled:
+            textOverlaysEnabled.checked && eventTitlesEnabled.checked,
+          scene_subtitles_enabled:
+            textOverlaysEnabled.checked && sceneSubtitlesEnabled.checked,
+          credits_text: textOverlaysEnabled.checked ? creditsText.value.trim() || null : null,
           music_enabled: musicMode.value !== "none",
           music_mode: musicMode.value,
           music_engine: musicEngine.value,
@@ -1491,6 +1506,7 @@ visionProvider.addEventListener("change", () => {
   populateModels(loadedCapabilities);
 });
 semanticAnalysis.addEventListener("change", updateDependentCapabilityControls);
+textOverlaysEnabled.addEventListener("change", updateDependentCapabilityControls);
 musicMode.addEventListener("change", () => {
   musicPath.disabled = musicMode.value !== "manual";
   musicProfile.disabled = ["manual", "library", "none"].includes(musicMode.value);

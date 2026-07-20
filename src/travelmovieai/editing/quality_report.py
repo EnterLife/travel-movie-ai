@@ -400,7 +400,11 @@ def _quality_issues(
     if generic_title_count:
         issues.append(
             MontageQualityIssue(
-                severity="warning" if plan.settings.event_titles_enabled else "info",
+                severity=(
+                    "warning"
+                    if plan.settings.text_overlays_enabled and plan.settings.event_titles_enabled
+                    else "info"
+                ),
                 code="generic_event_titles",
                 message="Generated event titles contain generic or weak visual guesses.",
             )

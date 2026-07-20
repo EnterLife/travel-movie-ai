@@ -279,6 +279,7 @@ def test_web_interface_serves_page_and_health() -> None:
     assert 'id="photo-motion"' in page.text
     assert 'id="color-normalization" type="checkbox">' in page.text
     assert 'id="hdr-to-sdr" type="checkbox">' in page.text
+    assert 'id="text-overlays-enabled" type="checkbox">' in page.text
     assert 'id="event-titles-enabled" type="checkbox">' in page.text
     assert 'id="scene-subtitles-enabled" type="checkbox">' in page.text
     assert 'id="music-bpm-analysis" type="checkbox">' in page.text
@@ -299,6 +300,7 @@ def test_web_interface_serves_page_and_health() -> None:
     assert 'workspace.value = ""' in script.text
     assert "framing_mode: framingMode.value" in script.text
     assert "color_normalization: colorNormalization.checked" in script.text
+    assert "text_overlays_enabled: textOverlaysEnabled.checked" in script.text
     assert "music_bpm_analysis: musicBpmAnalysis.checked" in script.text
     assert "music_volume_envelope: musicVolumeEnvelope.checked" in script.text
     assert 'query.set("offset", String(scenes.length))' in script.text
@@ -666,8 +668,8 @@ def test_web_movie_rejects_speech_without_semantic_pipeline(tmp_path: Path) -> N
     [
         {"framing_mode": "smart"},
         {"color_normalization": True},
-        {"event_titles_enabled": True},
-        {"scene_subtitles_enabled": True},
+        {"text_overlays_enabled": True, "event_titles_enabled": True},
+        {"text_overlays_enabled": True, "scene_subtitles_enabled": True},
     ],
 )
 def test_web_movie_rejects_semantic_visual_features_in_quick_mode(

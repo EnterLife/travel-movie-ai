@@ -720,6 +720,7 @@ class QuickMontageSettings(BaseModel):
     photo_zoom_ratio: float = Field(default=1.08, ge=1.0, le=1.35)
     color_normalization: bool = False
     hdr_to_sdr: bool = False
+    text_overlays_enabled: bool = False
     event_titles_enabled: bool = False
     scene_subtitles_enabled: bool = False
     credits_text: str | None = Field(default=None, max_length=500)

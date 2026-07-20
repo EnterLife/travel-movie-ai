@@ -162,7 +162,11 @@ class QuickMontageRenderer:
         render_items: list[tuple[MontageClip, Path, bool, bool]] = []
         for index, clip in enumerate(plan.clips):
             show_event_title = _show_event_title(plan, index)
-            show_credits = index == len(plan.clips) - 1
+            show_credits = (
+                plan.settings.text_overlays_enabled
+                and bool(plan.settings.credits_text)
+                and index == len(plan.clips) - 1
+            )
             fingerprint = _segment_fingerprint(
                 clip,
                 plan,
@@ -876,7 +880,7 @@ def _segment_fingerprint(
     except OSError:
         source_state = {"missing": True}
     return artifact_fingerprint(
-        "render-segment-v12-native-overlay-linebreaks",
+        "render-segment-v13-optional-text-overlays",
         clip,
         plan.settings,
         overlay_font_revision(plan.settings),
@@ -1200,6 +1204,8 @@ def _overlay_filters(
     show_event_title: bool,
     show_credits: bool,
 ) -> list[str]:
+    if not settings.text_overlays_enabled:
+        return []
     filters: list[str] = []
     margin = settings.overlay_safe_margin
     font = _drawtext_font_option(settings)
@@ -1345,7 +1351,7 @@ def _resolve_overlay_font(configured: Path | None) -> Path | None:
 def overlay_font_revision(settings: QuickMontageSettings) -> dict[str, object] | None:
     """Return the selected overlay font identity for render cache keys."""
 
-    if not (
+    if not settings.text_overlays_enabled or not (
         settings.event_titles_enabled or settings.scene_subtitles_enabled or settings.credits_text
     ):
         return None
@@ -1404,6 +1410,8 @@ def _escape_drawtext(text: str) -> str:
 
 
 def _show_event_title(plan: QuickMontagePlan, clip_index: int) -> bool:
+    if not plan.settings.text_overlays_enabled or not plan.settings.event_titles_enabled:
+        return False
     clip = plan.clips[clip_index]
     title = clean_title(clip.event_title)
     if title is None:

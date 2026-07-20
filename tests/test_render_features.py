@@ -44,6 +44,7 @@ def test_render_feature_settings_are_opt_in_and_validate_safe_area() -> None:
     assert settings.vertical_video_layout == "fit"
     assert settings.color_normalization is False
     assert settings.hdr_to_sdr is False
+    assert settings.text_overlays_enabled is False
     assert settings.event_titles_enabled is False
     assert settings.scene_subtitles_enabled is False
     assert settings.music_bpm_analysis is False
@@ -58,6 +59,33 @@ def test_render_feature_settings_are_opt_in_and_validate_safe_area() -> None:
         QuickMontageSettings(delivery_loudness_lufs=-40)
     with pytest.raises(ValueError, match="delivery_true_peak_dbfs"):
         QuickMontageSettings(delivery_true_peak_dbfs=0)
+
+
+def test_text_overlay_master_switch_fails_closed(tmp_path: Path) -> None:
+    clip = _clip(
+        tmp_path / "clip.mp4",
+        caption="A mountain panorama at sunset",
+        event_title="Mountain Adventure",
+    )
+    settings = QuickMontageSettings(
+        event_titles_enabled=True,
+        scene_subtitles_enabled=True,
+        credits_text="TravelMovieAI",
+        overlay_font_path=tmp_path / "missing.ttf",
+    )
+    plan = _plan(clip, settings)
+
+    graph = _build_segment_video_graph(
+        clip,
+        plan,
+        trim_start=0,
+        show_event_title=True,
+        show_credits=True,
+    )
+
+    assert "drawtext=" not in graph
+    assert overlay_font_revision(settings) is None
+    assert _show_event_title(plan, 0) is False
 
 
 def test_probe_retains_rotation_dimensions_and_hdr_metadata() -> None:
@@ -216,6 +244,7 @@ def test_photo_ken_burns_and_unicode_overlays_are_escaped(tmp_path: Path) -> Non
     )
     settings = QuickMontageSettings(
         photo_motion="ken_burns",
+        text_overlays_enabled=True,
         event_titles_enabled=True,
         scene_subtitles_enabled=True,
         credits_text="Снято в Сочи: команда's 100%",
@@ -269,6 +298,7 @@ def test_custom_overlay_font_revision_invalidates_cache_and_rejects_deletion(
     font = tmp_path / "custom.ttf"
     font.write_bytes(b"font revision one")
     settings = QuickMontageSettings(
+        text_overlays_enabled=True,
         event_titles_enabled=True,
         overlay_font_path=font,
     )
@@ -305,6 +335,7 @@ def test_overlay_rejects_generic_model_text_and_limits_reading_speed(tmp_path: P
         caption="A series of images",
     )
     settings = QuickMontageSettings(
+        text_overlays_enabled=True,
         event_titles_enabled=True,
         scene_subtitles_enabled=True,
         caption_characters_per_second=12,
@@ -329,6 +360,7 @@ def test_overlay_rejects_generic_model_text_and_limits_reading_speed(tmp_path: P
 
 def test_multiline_caption_escape_and_duplicate_event_title_suppression(tmp_path: Path) -> None:
     settings = QuickMontageSettings(
+        text_overlays_enabled=True,
         event_titles_enabled=True,
         scene_subtitles_enabled=True,
         caption_characters_per_second=30,
@@ -378,6 +410,7 @@ def test_multiline_caption_reaches_ffmpeg_drawtext_as_two_lines(tmp_path: Path) 
         width=426,
         height=240,
         fps=24,
+        text_overlays_enabled=True,
         scene_subtitles_enabled=True,
         caption_characters_per_second=30,
     )
@@ -425,7 +458,11 @@ def test_overlay_uses_explicit_local_font_and_rejects_missing_font(tmp_path: Pat
     font = tmp_path / "Local Font.ttf"
     font.write_bytes(b"font fixture")
     clip = _clip(tmp_path / "clip.mp4", event_title="Coastal walk")
-    settings = QuickMontageSettings(event_titles_enabled=True, overlay_font_path=font)
+    settings = QuickMontageSettings(
+        text_overlays_enabled=True,
+        event_titles_enabled=True,
+        overlay_font_path=font,
+    )
 
     graph = _build_segment_video_graph(
         clip,
@@ -692,6 +729,7 @@ def test_renderer_creates_movie_with_unicode_titles_ken_burns_and_narration(
         render_device="cpu",
         transition="none",
         photo_motion="ken_burns",
+        text_overlays_enabled=True,
         event_titles_enabled=True,
         scene_subtitles_enabled=True,
         credits_text="Сочи: команда's 100%",

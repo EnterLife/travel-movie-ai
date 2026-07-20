@@ -393,6 +393,7 @@ def test_montage_quality_report_exposes_lower_tail_and_dominance(
             target_duration_seconds=32,
             transition="none",
             music_enabled=False,
+            text_overlays_enabled=True,
             event_titles_enabled=True,
         ),
         clips=clips,

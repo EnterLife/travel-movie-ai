@@ -219,6 +219,7 @@ def test_create_command_plumbs_advanced_render_settings(
             "ken_burns",
             "--color-normalization",
             "--hdr-to-sdr",
+            "--text-overlays",
             "--event-titles",
             "--subtitles",
             "--credits",
@@ -242,6 +243,7 @@ def test_create_command_plumbs_advanced_render_settings(
     assert settings.photo_motion == "ken_burns"
     assert settings.color_normalization is True
     assert settings.hdr_to_sdr is True
+    assert settings.text_overlays_enabled is True
     assert settings.event_titles_enabled is True
     assert settings.scene_subtitles_enabled is True
     assert settings.music_bpm_analysis is True

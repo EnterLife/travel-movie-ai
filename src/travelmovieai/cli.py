@@ -170,6 +170,13 @@ def create(
         bool,
         typer.Option("--hdr-to-sdr/--keep-hdr"),
     ] = False,
+    text_overlays: Annotated[
+        bool,
+        typer.Option(
+            "--text-overlays/--no-text-overlays",
+            help="Burn event titles, scene captions, or credits into the video.",
+        ),
+    ] = False,
     event_titles: Annotated[
         bool,
         typer.Option("--event-titles/--no-event-titles"),
@@ -219,6 +226,7 @@ def create(
                 "photo_motion": photo_motion,
                 "color_normalization": color_normalization,
                 "hdr_to_sdr": hdr_to_sdr,
+                "text_overlays_enabled": text_overlays,
                 "event_titles_enabled": event_titles,
                 "scene_subtitles_enabled": subtitles,
                 "credits_text": credits,

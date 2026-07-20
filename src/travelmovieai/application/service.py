@@ -704,9 +704,9 @@ def _validate_montage_feature_requests(
         semantic_render_features.append("smart crop")
     if montage_settings.color_normalization:
         semantic_render_features.append("color normalization")
-    if montage_settings.event_titles_enabled:
+    if montage_settings.text_overlays_enabled and montage_settings.event_titles_enabled:
         semantic_render_features.append("event titles")
-    if montage_settings.scene_subtitles_enabled:
+    if montage_settings.text_overlays_enabled and montage_settings.scene_subtitles_enabled:
         semantic_render_features.append("scene subtitles")
     if semantic_render_features and not montage_settings.semantic_analysis:
         raise MontageError(

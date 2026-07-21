@@ -36,7 +36,7 @@ from travelmovieai.story.music import (
     music_source_content_sha256,
 )
 
-ARTIFACT_SCHEMA_VERSION = "music-selection-v3-execution"
+ARTIFACT_SCHEMA_VERSION = "music-selection-v5-tail-audit"
 MusicGeneratorFactory = Callable[
     [ProjectContext, QuickMontageSettings],
     NeuralMusicGenerator | None,
@@ -89,6 +89,8 @@ class MusicSelectionStage(Stage):
             _music_source_fingerprints(
                 context.settings.music_library.expanduser().resolve(),
                 settings.music_path,
+                settings.music_reference_path,
+                settings.music_lora_path,
             ),
         )
         config_fingerprint = artifact_fingerprint(
@@ -265,6 +267,7 @@ def _neural_music_generator(
     model = resolve_local_music_model(
         settings.music_model or context.settings.music_model,
         gpu_memory_mb=resources.gpu_memory_mb,
+        quality=settings.music_quality,
     )
     return cast(
         NeuralMusicGenerator,
@@ -282,6 +285,19 @@ def _neural_music_generator(
                 if context.progress is not None
                 else None
             ),
+            quality=settings.music_quality,
+            reference_audio=(
+                settings.music_reference_path.expanduser().resolve()
+                if settings.music_reference_path is not None
+                else None
+            ),
+            reference_strength=settings.music_reference_strength,
+            lora_path=(
+                settings.music_lora_path.expanduser().resolve()
+                if settings.music_lora_path is not None
+                else None
+            ),
+            lora_strength=settings.music_lora_strength,
         ),
     )
 
@@ -293,7 +309,10 @@ def _progress_heartbeat(progress: Callable[[int, int, str], None] | None) -> boo
 
 
 def _music_source_fingerprints(
-    music_library: Path, manual_music_path: Path | None
+    music_library: Path,
+    manual_music_path: Path | None,
+    reference_music_path: Path | None,
+    lora_path: Path | None,
 ) -> list[dict[str, object]]:
     paths: list[Path] = []
     if music_library.is_dir():
@@ -304,6 +323,19 @@ def _music_source_fingerprints(
         )
     if manual_music_path is not None:
         paths.append(manual_music_path.expanduser().resolve())
+    if reference_music_path is not None:
+        paths.append(reference_music_path.expanduser().resolve())
+    if lora_path is not None:
+        resolved_lora = lora_path.expanduser().resolve()
+        if resolved_lora.is_dir():
+            paths.extend(
+                path
+                for path in resolved_lora.rglob("*")
+                if path.is_file()
+                and path.suffix.casefold() in {".safetensors", ".bin", ".pt", ".json"}
+            )
+        else:
+            paths.append(resolved_lora)
     return [_path_fingerprint(path) for path in sorted(paths, key=lambda item: item.as_posix())]
 
 

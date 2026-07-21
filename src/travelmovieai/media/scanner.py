@@ -23,6 +23,8 @@ MEDIA_TYPES = {
     **dict.fromkeys(AUDIO_EXTENSIONS, MediaType.AUDIO),
 }
 
+MEDIA_SCAN_SCHEMA_VERSION = "media-scan-v2-primary-video-duration"
+
 
 class MediaProbe(Protocol):
     def probe(self, path: Path) -> ProbeResult: ...
@@ -58,6 +60,8 @@ class MediaScanner:
                 and cached.scan_error is None
                 and cached.size_bytes == stat.st_size
                 and cached.modified_ns == stat.st_mtime_ns
+                and cached.probe_metadata.get("media_scan_schema_version")
+                == MEDIA_SCAN_SCHEMA_VERSION
             ):
                 assets.append(
                     cached.model_copy(
@@ -94,6 +98,7 @@ class MediaScanner:
 
     def _inspect_asset(self, root: Path, path: Path, stat: os.stat_result) -> MediaAsset:
         extension = path.suffix.lower()
+        media_type = MEDIA_TYPES[extension]
         probe_result = ProbeResult()
         scan_error: str | None = None
         try:
@@ -119,23 +124,34 @@ class MediaScanner:
         if not _valid_coordinates(latitude, longitude):
             latitude = None
             longitude = None
+        duration_seconds = probe_result.duration_seconds
+        if (
+            media_type is MediaType.VIDEO
+            and probe_result.video_duration_seconds is not None
+            and probe_result.video_duration_seconds > 0
+        ):
+            duration_seconds = probe_result.video_duration_seconds
+        probe_metadata = {
+            **probe_result.metadata,
+            "media_scan_schema_version": MEDIA_SCAN_SCHEMA_VERSION,
+        }
 
         return MediaAsset(
             path=path,
             relative_path=path.relative_to(root),
-            media_type=MEDIA_TYPES[extension],
+            media_type=media_type,
             extension=extension,
             size_bytes=stat.st_size,
             modified_at=datetime.fromtimestamp(stat.st_mtime, UTC),
             modified_ns=stat.st_mtime_ns,
             created_at=created_at,
-            duration_seconds=probe_result.duration_seconds,
+            duration_seconds=duration_seconds,
             width=width,
             height=height,
             fps=probe_result.fps,
             latitude=latitude,
             longitude=longitude,
-            probe_metadata=probe_result.metadata,
+            probe_metadata=probe_metadata,
             scan_error=scan_error,
         )
 

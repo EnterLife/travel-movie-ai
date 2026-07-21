@@ -376,6 +376,27 @@
                 <option value="auto">ACE-Step 1.5 Turbo</option>
               </select>
 
+              <label for="music-quality">Generation quality <span>Best of N</span></label>
+              <select id="music-quality">
+                <option value="draft">Draft · 1 candidate</option>
+                <option value="balanced" selected>Balanced · 4 candidates</option>
+                <option value="studio">Studio · 6 candidates + best available model</option>
+              </select>
+
+              <label for="music-candidate-count">Candidates <span>0 = quality preset</span></label>
+              <input id="music-candidate-count" type="number" min="0" max="8" value="0">
+
+              <label for="music-style">Production style <span>story-aware</span></label>
+              <select id="music-style">
+                <option value="auto">Auto from the story</option>
+                <option value="modern_cinematic">Modern cinematic</option>
+                <option value="organic_electronic">Organic electronic</option>
+                <option value="indie_travel">Indie travel</option>
+                <option value="melodic_ambient">Melodic ambient</option>
+                <option value="ambient_house">Ambient house</option>
+                <option value="modern_documentary">Modern documentary</option>
+              </select>
+
               <label for="music-profile">Mood <span>AI Auto</span></label>
               <select id="music-profile">
                 <option value="auto">Very calm and low-key</option>
@@ -421,6 +442,16 @@
                 autocomplete="off"
                 disabled
               >
+
+              <label for="music-reference-path">Style reference <span>owned audio, optional</span></label>
+              <input id="music-reference-path" type="text" placeholder="D:\Music\reference.wav" autocomplete="off">
+              <label for="music-reference-strength">Reference strength <span>style only</span></label>
+              <input id="music-reference-strength" type="number" min="0" max="1" step="0.05" value="0.2">
+
+              <label for="music-lora-path">ACE-Step LoRA <span>optional local adapter</span></label>
+              <input id="music-lora-path" type="text" placeholder="D:\Models\travel-music-lora" autocomplete="off">
+              <label for="music-lora-strength">LoRA strength</label>
+              <input id="music-lora-strength" type="number" min="0" max="1" step="0.05" value="0.7">
 
               <div class="compact-settings mix-settings">
                 <label for="narration-volume">Narration gain</label>
@@ -509,6 +540,11 @@
             </a>
           </div>
           <video id="movie-preview" controls preload="metadata"></video>
+          <section class="music-candidates hidden" id="music-candidates">
+            <h4>Generated soundtrack candidates</h4>
+            <p>The selected composition is marked as best; alternatives remain local.</p>
+            <div id="music-candidate-list"></div>
+          </section>
         </article>
 
         <article class="panel scene-review hidden" id="scene-review">

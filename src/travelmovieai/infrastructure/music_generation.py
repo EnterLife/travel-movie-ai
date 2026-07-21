@@ -23,10 +23,17 @@ from travelmovieai.infrastructure.processes import (
     terminate_process_tree,
 )
 
-LOCAL_MUSIC_MODELS = ("ACE-Step/acestep-v15-turbo",)
+LOCAL_MUSIC_MODELS = (
+    "ACE-Step/acestep-v15-turbo",
+    "ACE-Step/acestep-v15-sft",
+    "ACE-Step/acestep-v15-base",
+    "ACE-Step/acestep-v15-xl-turbo",
+    "ACE-Step/acestep-v15-xl-sft",
+    "ACE-Step/acestep-v15-xl-base",
+)
 ACE_STEP_REPOSITORY = "https://github.com/ACE-Step/ACE-Step-1.5.git"
 ACE_STEP_MODEL_REPOSITORY = "ACE-Step/Ace-Step1.5"
-ACE_STEP_MAX_GENERATION_SECONDS = 90.0
+ACE_STEP_MAX_GENERATION_SECONDS = 600.0
 ACE_STEP_REQUIRED_CONFIGS = (
     "Qwen3-Embedding-0.6B/config.json",
     "vae/config.json",
@@ -40,12 +47,21 @@ def resolve_local_music_model(
     configured_model: str | None,
     *,
     gpu_memory_mb: int | None,
+    quality: Literal["draft", "balanced", "studio"] = "balanced",
 ) -> str:
     """Resolve the default model while preserving explicit selections."""
 
     if configured_model and configured_model != "auto":
         return configured_model
-    return LOCAL_MUSIC_MODELS[0]
+    memory = gpu_memory_mb or 0
+    if quality == "studio":
+        if memory >= 20 * 1024:
+            return "ACE-Step/acestep-v15-xl-sft"
+        if memory >= 12 * 1024:
+            return "ACE-Step/acestep-v15-sft"
+    if quality == "balanced" and memory >= 20 * 1024:
+        return "ACE-Step/acestep-v15-xl-turbo"
+    return "ACE-Step/acestep-v15-turbo"
 
 
 class AceStepMusicGenerator:
@@ -66,6 +82,11 @@ class AceStepMusicGenerator:
         ffmpeg_timeout_seconds: float = 7200,
         process_timeout_seconds: float | None = None,
         cancel_requested: CancelCheck | None = None,
+        quality: Literal["draft", "balanced", "studio"] = "balanced",
+        reference_audio: Path | None = None,
+        reference_strength: float = 0.2,
+        lora_path: Path | None = None,
+        lora_strength: float = 0.7,
     ) -> None:
         self.model = model
         self.runtime_dir = runtime_dir
@@ -81,6 +102,11 @@ class AceStepMusicGenerator:
             else self.ffmpeg_timeout_seconds
         )
         self.cancel_requested = cancel_requested
+        self.quality = quality
+        self.reference_audio = reference_audio
+        self.reference_strength = reference_strength
+        self.lora_path = lora_path
+        self.lora_strength = lora_strength
 
     def generate(
         self,
@@ -93,33 +119,64 @@ class AceStepMusicGenerator:
         seed: int,
         progress: MusicProgress | None = None,
     ) -> None:
+        generated = self.generate_candidates(
+            output_path.parent / f".{output_path.stem}-candidates",
+            prompt=prompt,
+            cue_sheet=cue_sheet,
+            duration_seconds=duration_seconds,
+            bpm=bpm,
+            keyscale="C Major",
+            seeds=[seed],
+            progress=progress,
+        )
+        os.replace(generated[0][0], output_path)
+
+    def generate_candidates(
+        self,
+        output_dir: Path,
+        *,
+        prompt: str,
+        cue_sheet: list[MusicCueSection],
+        duration_seconds: float,
+        bpm: int,
+        keyscale: str,
+        seeds: list[int],
+        progress: MusicProgress | None = None,
+    ) -> list[tuple[Path, int]]:
+        if not seeds:
+            raise MusicGenerationError("ACE-Step requires at least one candidate seed.")
+        if duration_seconds > ACE_STEP_MAX_GENERATION_SECONDS:
+            raise MusicGenerationError(
+                "ACE-Step supports native compositions up to 600 seconds. "
+                "Use AI Auto for procedural fallback or provide a manual/library soundtrack."
+            )
         self._ensure_runtime(progress)
         self._ensure_model_configs(progress)
         python_executable = self.runtime_dir / ".venv" / "Scripts" / "python.exe"
-        cli_path = self.runtime_dir / "cli.py"
-        if not python_executable.is_file() or not cli_path.is_file():
+        if not python_executable.is_file():
             raise MusicGenerationError("The isolated ACE-Step environment is incomplete.")
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
             prefix=".ace-step-",
-            dir=output_path.parent,
+            dir=output_dir,
         ) as temporary:
             temporary_dir = Path(temporary)
             model_output = temporary_dir / "output"
             model_output.mkdir()
-            config_path = temporary_dir / "generation.toml"
-            generation_duration = min(
-                ACE_STEP_MAX_GENERATION_SECONDS,
-                max(10.0, duration_seconds),
-            )
-            config_path.write_text(
-                self._configuration(
-                    prompt=_prompt_with_cue_sheet(prompt, cue_sheet),
-                    duration_seconds=generation_duration,
-                    bpm=bpm,
-                    seed=seed,
-                    output_dir=model_output,
+            request_path = temporary_dir / "generation.json"
+            generation_duration = max(10.0, duration_seconds)
+            request_path.write_text(
+                json.dumps(
+                    self._worker_request(
+                        prompt=_prompt_with_cue_sheet(prompt, cue_sheet),
+                        duration_seconds=generation_duration,
+                        bpm=bpm,
+                        keyscale=keyscale,
+                        seeds=seeds,
+                        output_dir=model_output,
+                    ),
+                    ensure_ascii=False,
                 ),
                 encoding="utf-8",
             )
@@ -143,31 +200,30 @@ class AceStepMusicGenerator:
             lines = self._run_streaming(
                 [
                     str(python_executable),
-                    str(cli_path),
-                    "--config",
-                    str(config_path),
-                    "--backend",
-                    "pt",
-                    "--log-level",
-                    "INFO",
+                    str(Path(__file__).with_name("ace_step_worker.py")),
+                    "--request",
+                    str(request_path),
                 ],
                 cwd=self.runtime_dir,
                 environment=environment,
                 progress=progress,
             )
-            candidates = sorted(
-                model_output.rglob("*.wav"),
-                key=lambda path: path.stat().st_mtime_ns,
-                reverse=True,
-            )
-            if not candidates:
+            worker_candidates = _worker_candidates(lines, model_output)
+            if len(worker_candidates) != len(seeds):
                 detail = _ace_step_error_detail(lines)
-                raise MusicGenerationError(f"ACE-Step did not create a WAV file. {detail}".strip())
+                raise MusicGenerationError(
+                    "ACE-Step did not create all requested candidates. " + detail
+                )
             if progress:
-                progress(3, 4, "ACE-Step: normalizing output")
-            self._normalize(candidates[0], output_path, duration_seconds)
+                progress(3, 4, "ACE-Step: preparing lossless 48 kHz candidates")
+            prepared: list[tuple[Path, int]] = []
+            for index, (source, seed) in enumerate(worker_candidates):
+                destination = output_dir / f"candidate-{index + 1:02d}-{seed}.wav"
+                self._normalize(source, destination, duration_seconds)
+                prepared.append((destination, seed))
             if progress:
-                progress(4, 4, "ACE-Step: music created")
+                progress(4, 4, f"ACE-Step: created {len(prepared)} candidate(s)")
+            return prepared
 
     def _ensure_runtime(self, progress: MusicProgress | None) -> None:
         executable = self.runtime_dir / ".venv" / "Scripts" / "python.exe"
@@ -207,8 +263,10 @@ class AceStepMusicGenerator:
 
     def _ensure_model_configs(self, progress: MusicProgress | None) -> None:
         required = [*ACE_STEP_REQUIRED_CONFIGS]
-        if self.model.split("/")[-1] == "acestep-v15-turbo":
-            required.append("acestep-v15-turbo/config.json")
+        required.append(f"{self.model.split('/')[-1]}/config.json")
+        lm_model = self._lm_model()
+        if lm_model is not None:
+            required.append(f"{lm_model}/config.json")
         missing = [name for name in required if not _valid_ace_step_config(self.model_cache / name)]
         if not missing:
             return
@@ -298,6 +356,59 @@ class AceStepMusicGenerator:
                 "",
             )
         )
+
+    def _worker_request(
+        self,
+        *,
+        prompt: str,
+        duration_seconds: float,
+        bpm: int,
+        keyscale: str,
+        seeds: list[int],
+        output_dir: Path,
+    ) -> dict[str, object]:
+        turbo = "turbo" in self.model.casefold()
+        inference_steps = 8 if turbo else (64 if self.quality == "studio" else 48)
+        if turbo and self.quality == "studio":
+            inference_steps = 12
+        lm_model = self._lm_model()
+        low_vram = (self.gpu_memory_mb or 0) <= 8 * 1024
+        return {
+            "project_root": str(self.runtime_dir),
+            "checkpoint_dir": str(self.model_cache),
+            "config_path": self.model.split("/")[-1],
+            "device": "cpu" if self.device == "cpu" else "auto",
+            "offload_to_cpu": low_vram,
+            "offload_dit_to_cpu": low_vram,
+            "prompt": prompt,
+            "duration_seconds": duration_seconds,
+            "bpm": bpm,
+            "keyscale": keyscale,
+            "timesignature": "4",
+            "inference_steps": inference_steps,
+            "guidance_scale": 1.0 if turbo else 7.5,
+            "use_adg": not turbo and self.quality == "studio",
+            "shift": 3.0,
+            "seeds": seeds,
+            "output_dir": str(output_dir),
+            "thinking": lm_model is not None,
+            "lm_model": lm_model,
+            "lm_backend": "pt" if (self.gpu_memory_mb or 0) < 12 * 1024 else "vllm",
+            "reference_audio": str(self.reference_audio) if self.reference_audio else None,
+            "reference_strength": self.reference_strength,
+            "lora_path": str(self.lora_path) if self.lora_path else None,
+            "lora_strength": self.lora_strength,
+        }
+
+    def _lm_model(self) -> str | None:
+        memory = self.gpu_memory_mb or 0
+        if self.quality != "studio" or memory < 8 * 1024:
+            return None
+        if memory >= 24 * 1024:
+            return "acestep-5Hz-lm-4B"
+        if memory >= 12 * 1024:
+            return "acestep-5Hz-lm-1.7B"
+        return "acestep-5Hz-lm-0.6B"
 
     def _run_streaming(
         self,
@@ -403,18 +514,18 @@ class AceStepMusicGenerator:
             "-loglevel",
             "error",
             "-y",
-            "-stream_loop",
-            "-1",
             "-i",
             str(source_path),
+            "-af",
+            "apad",
             "-t",
             f"{duration_seconds:.3f}",
             "-ar",
-            "44100",
+            "48000",
             "-ac",
             "2",
             "-c:a",
-            "pcm_s16le",
+            "pcm_s24le",
             str(temporary_path),
         ]
         try:
@@ -492,6 +603,30 @@ def _ace_step_error_detail(lines: list[str]) -> str:
     return " ".join(selected)[-2000:]
 
 
+def _worker_candidates(lines: list[str], output_dir: Path) -> list[tuple[Path, int]]:
+    prefix = "TRAVELMOVIEAI_RESULT="
+    marker = next((line for line in reversed(lines) if line.startswith(prefix)), None)
+    if marker is None:
+        return []
+    try:
+        payload = json.loads(marker[len(prefix) :])
+        raw_candidates = payload["candidates"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return []
+    resolved_output = output_dir.resolve()
+    candidates: list[tuple[Path, int]] = []
+    for item in raw_candidates:
+        try:
+            path = Path(item["path"]).resolve()
+            seed = int(item["seed"])
+        except (KeyError, TypeError, ValueError):
+            return []
+        if seed < 0 or not path.is_relative_to(resolved_output) or not path.is_file():
+            return []
+        candidates.append((path, seed))
+    return candidates
+
+
 def _valid_ace_step_config(path: Path) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -505,7 +640,7 @@ def _valid_ace_step_config(path: Path) -> bool:
 
 
 def _prompt_with_cue_sheet(prompt: str, cue_sheet: list[MusicCueSection]) -> str:
-    if not cue_sheet:
+    if not cue_sheet or "macro arrangement:" in prompt.casefold():
         return prompt
     cues = "; ".join(
         (
@@ -516,4 +651,4 @@ def _prompt_with_cue_sheet(prompt: str, cue_sheet: list[MusicCueSection]) -> str
     )
     if len(cue_sheet) > 8:
         cues = f"{cues}; {len(cue_sheet) - 8} additional gentle sections"
-    return f"{prompt} Cue sheet: {cues}"[:900]
+    return f"{prompt} Macro arrangement: {cues}"[:1400]

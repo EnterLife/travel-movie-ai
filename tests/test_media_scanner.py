@@ -38,6 +38,19 @@ class InvalidLocationProbe:
         )
 
 
+class MismatchedVideoDurationProbe:
+    def probe(self, path: Path) -> ProbeResult:
+        del path
+        return ProbeResult(
+            duration_seconds=7,
+            video_duration_seconds=6.189517,
+            width=1280,
+            height=720,
+            fps=59.94,
+            metadata={"format_name": "mov,mp4"},
+        )
+
+
 def test_scan_discovers_supported_files_and_reuses_cache(tmp_path: Path) -> None:
     media = tmp_path / "Моя поездка"
     media.mkdir()
@@ -76,6 +89,36 @@ def test_scan_reports_each_discovered_asset_progress(tmp_path: Path) -> None:
         (1, 2, "Media scan: 1/2"),
         (2, 2, "Media scan: 2/2"),
     ]
+
+
+def test_scan_uses_primary_video_duration_instead_of_longer_container_duration(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "clip.mp4").write_bytes(b"video")
+
+    report = MediaScanner(MismatchedVideoDurationProbe()).scan(media)
+
+    assert report.assets[0].duration_seconds == 6.189517
+
+
+def test_scan_reprobes_cached_assets_from_older_duration_contract(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "clip.mp4").write_bytes(b"video")
+    legacy = (
+        MediaScanner(FakeProbe())
+        .scan(media)
+        .assets[0]
+        .model_copy(update={"probe_metadata": {"format_name": "fake"}})
+    )
+
+    report = MediaScanner(MismatchedVideoDurationProbe()).scan(media, cached_assets=[legacy])
+
+    assert report.probed_count == 1
+    assert report.cached_count == 0
+    assert report.assets[0].duration_seconds == 6.189517
 
 
 def test_scan_preserves_asset_identity_when_existing_file_changes(tmp_path: Path) -> None:

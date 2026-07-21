@@ -38,7 +38,7 @@ from travelmovieai.domain.manual_editing import (
     compare_timeline_versions,
     summarize_timeline_version,
 )
-from travelmovieai.domain.models import MediaScanReport, QuickMontageSettings
+from travelmovieai.domain.models import MediaScanReport, MusicPlan, QuickMontageSettings
 from travelmovieai.infrastructure.database import (
     EditConflictError,
     EditValidationError,
@@ -79,6 +79,8 @@ from travelmovieai.web.schemas import (
     MovieJobResponse,
     MovieRequest,
     MusicAIStatus,
+    MusicCandidateListResponse,
+    MusicCandidateResponse,
     ReorderRequest,
     ResourceProfileResponse,
     ScanJobHistory,
@@ -529,6 +531,52 @@ def create_app(
             filename=resolved_output.name,
         )
 
+    @app.get(
+        "/api/movies/{job_id}/music-candidates",
+        response_model=MusicCandidateListResponse,
+    )
+    def list_music_candidates(job_id: UUID, request: Request) -> MusicCandidateListResponse:
+        job, plan = _movie_music_plan(job_id, request)
+        return MusicCandidateListResponse(
+            candidates=[
+                MusicCandidateResponse(
+                    index=candidate.index,
+                    seed=candidate.seed,
+                    score=candidate.total_score,
+                    technical_score=candidate.technical_score,
+                    structure_score=candidate.structure_score,
+                    style_score=candidate.style_score,
+                    selected=candidate.selected,
+                    notes=candidate.notes,
+                    stream_url=f"/api/movies/{job.id}/music-candidates/{candidate.index}",
+                )
+                for candidate in plan.candidates
+            ]
+        )
+
+    @app.get(
+        "/api/movies/{job_id}/music-candidates/{candidate_index}",
+        response_class=FileResponse,
+    )
+    def stream_music_candidate(
+        job_id: UUID,
+        candidate_index: int,
+        request: Request,
+    ) -> FileResponse:
+        job, plan = _movie_music_plan(job_id, request)
+        candidate = next(
+            (item for item in plan.candidates if item.index == candidate_index),
+            None,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="Music candidate not found.")
+        candidate_path = candidate.source_path.expanduser().resolve()
+        if not candidate_path.is_relative_to(job.workspace.expanduser().resolve()):
+            raise HTTPException(status_code=403, detail="Invalid music candidate path.")
+        if not candidate_path.is_file():
+            raise HTTPException(status_code=404, detail="Music candidate file not found.")
+        return FileResponse(candidate_path, media_type="audio/wav", filename=candidate_path.name)
+
     @app.get("/api/scenes", response_model=SceneListResponse)
     def list_scenes(
         input_path: str = Query(min_length=1),
@@ -764,6 +812,25 @@ def _movie_manager(request: Request) -> MovieJobManager:
     return manager
 
 
+def _movie_music_plan(job_id: UUID, request: Request) -> tuple[MovieJobResponse, MusicPlan]:
+    job = _movie_manager(request).get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Movie job not found.")
+    if job.status != JobStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Music candidates are not ready yet.")
+    workspace = job.workspace.expanduser().resolve()
+    artifact = (workspace / "artifacts" / "music_plan.json").resolve()
+    if not artifact.is_relative_to(workspace):
+        raise HTTPException(status_code=403, detail="Invalid music plan path.")
+    try:
+        plan = MusicPlan.model_validate_json(artifact.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Music plan not found.") from error
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="Music plan is invalid.") from error
+    return job, plan
+
+
 def _ensure_workspace_editable(request: Request, workspace: Path) -> None:
     if _manager(request).is_workspace_active(workspace) or _movie_manager(
         request
@@ -942,6 +1009,50 @@ def _validate_requested_capabilities(
     narration: FeatureCapability,
     render_cuda: FeatureCapability,
 ) -> None:
+    if settings.music_reference_path is not None:
+        reference = settings.music_reference_path.expanduser().resolve()
+        if not reference.is_file():
+            raise HTTPException(
+                status_code=422,
+                detail="The selected music reference audio file does not exist.",
+            )
+        if reference.suffix.casefold() not in {".wav", ".flac", ".mp3", ".m4a", ".aac"}:
+            raise HTTPException(
+                status_code=422,
+                detail="The selected music reference uses an unsupported audio format.",
+            )
+    if settings.music_lora_path is not None:
+        lora = settings.music_lora_path.expanduser().resolve()
+        if not lora.exists():
+            raise HTTPException(
+                status_code=422,
+                detail="The selected music LoRA path does not exist.",
+            )
+        weights = (
+            [lora]
+            if lora.is_file()
+            else [
+                candidate
+                for name in (
+                    "adapter_model.safetensors",
+                    "adapter_model.bin",
+                    "lora_weights.pt",
+                )
+                if (candidate := lora / name).is_file()
+            ]
+        )
+        if not weights:
+            raise HTTPException(
+                status_code=422,
+                detail="The selected music LoRA does not contain supported weights.",
+            )
+    if settings.music_engine == "procedural" and (
+        settings.music_reference_path is not None or settings.music_lora_path is not None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Music reference audio and LoRA require the ACE-Step engine.",
+        )
     semantic_render_features = []
     if settings.framing_mode == "smart":
         semantic_render_features.append("smart crop")

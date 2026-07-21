@@ -35,6 +35,8 @@ from travelmovieai.domain.models import (
 from travelmovieai.domain.models import (
     MediaAsset,
     MediaScanReport,
+    MusicCandidate,
+    MusicPlan,
     QuickMontageResult,
     QuickMontageSettings,
     Scene,
@@ -259,6 +261,12 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "Create a travel film" in page.text
     assert 'id="music-engine"' in page.text
     assert 'id="music-model"' in page.text
+    assert 'id="music-quality"' in page.text
+    assert '<option value="balanced" selected>Balanced' in page.text
+    assert 'id="music-candidate-count"' in page.text
+    assert 'id="music-reference-path"' in page.text
+    assert 'id="music-lora-path"' in page.text
+    assert 'id="music-candidates"' in page.text
     assert 'id="transition"' in page.text
     assert (
         '<option value="cinematic" selected>Cuts + fade to black · event-aware</option>'
@@ -303,6 +311,9 @@ def test_web_interface_serves_page_and_health() -> None:
     assert "text_overlays_enabled: textOverlaysEnabled.checked" in script.text
     assert "music_bpm_analysis: musicBpmAnalysis.checked" in script.text
     assert "music_volume_envelope: musicVolumeEnvelope.checked" in script.text
+    assert "music_quality: musicQuality.value" in script.text
+    assert "music_reference_path: musicReferencePath.value.trim() || null" in script.text
+    assert "loadMusicCandidates(job.id)" in script.text
     assert 'query.set("offset", String(scenes.length))' in script.text
     assert 'variant_name: movieVariant.value.trim() || "Default"' in script.text
     assert 'requestJson("/api/events/order"' in script.text
@@ -906,6 +917,120 @@ def test_web_movie_job_can_be_downloaded(tmp_path: Path) -> None:
     assert history.json()["jobs"][0]["id"] == job_id
     assert download.status_code == 200
     assert download.content == b"fake mp4"
+
+
+def test_web_music_candidates_can_be_listed_and_streamed_only_from_workspace(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    workspace = tmp_path / "workspace"
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(FakeMovieService()),
+        )
+    ) as client:
+        response = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "workspace": str(workspace),
+                "settings": {"target_duration_seconds": 12},
+            },
+        )
+        job_id = response.json()["id"]
+        assert _wait_for_movie_job(client, job_id)["status"] == "completed"
+        candidate_path = workspace / "artifacts" / "music_candidates" / "candidate.wav"
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_bytes(b"candidate audio")
+        outside_path = tmp_path / "outside.wav"
+        outside_path.write_bytes(b"private audio")
+        plan = MusicPlan(
+            mode="generated",
+            generator="ace-step",
+            model="ACE-Step/acestep-v15-turbo",
+            selected_candidate_index=0,
+            candidates=[
+                MusicCandidate(
+                    index=0,
+                    source_path=candidate_path,
+                    source_content_sha256="a" * 64,
+                    seed=10,
+                    total_score=91,
+                    technical_score=94,
+                    structure_score=88,
+                    style_score=90,
+                    duration_seconds=12,
+                    sample_rate=48000,
+                    channels=2,
+                    selected=True,
+                ),
+                MusicCandidate(
+                    index=1,
+                    source_path=outside_path,
+                    source_content_sha256="b" * 64,
+                    seed=20,
+                    total_score=80,
+                    technical_score=80,
+                    structure_score=80,
+                    style_score=80,
+                    duration_seconds=12,
+                    sample_rate=48000,
+                    channels=2,
+                ),
+            ],
+        )
+        write_json_atomic(workspace / "artifacts" / "music_plan.json", plan)
+
+        listed = client.get(f"/api/movies/{job_id}/music-candidates")
+        streamed = client.get(f"/api/movies/{job_id}/music-candidates/0")
+        rejected = client.get(f"/api/movies/{job_id}/music-candidates/1")
+
+    assert listed.status_code == 200
+    assert listed.json()["candidates"][0]["selected"] is True
+    assert listed.json()["candidates"][0]["stream_url"].endswith("/0")
+    assert streamed.status_code == 200
+    assert streamed.content == b"candidate audio"
+    assert rejected.status_code == 403
+    assert rejected.json()["detail"] == "Invalid music candidate path."
+
+
+def test_web_rejects_missing_music_reference_and_incompatible_engine(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"reference")
+
+    with TestClient(
+        create_app(
+            job_manager=ScanJobManager(FakeScanService()),
+            movie_job_manager=MovieJobManager(FakeMovieService()),
+        )
+    ) as client:
+        missing = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "settings": {"music_reference_path": str(tmp_path / "missing.wav")},
+            },
+        )
+        procedural = client.post(
+            "/api/movies",
+            json={
+                "input_path": str(media),
+                "settings": {
+                    "music_engine": "procedural",
+                    "music_reference_path": str(reference),
+                },
+            },
+        )
+
+    assert missing.status_code == 422
+    assert "does not exist" in missing.json()["detail"]
+    assert procedural.status_code == 422
+    assert "require the ACE-Step engine" in procedural.json()["detail"]
 
 
 @pytest.mark.parametrize("transition", ["dissolve", "soft"])

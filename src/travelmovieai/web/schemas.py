@@ -227,6 +227,22 @@ class MovieJobHistory(BaseModel):
     jobs: list[MovieJobResponse] = Field(default_factory=list)
 
 
+class MusicCandidateResponse(BaseModel):
+    index: int = Field(ge=0)
+    seed: int = Field(ge=0)
+    score: float = Field(ge=0, le=100)
+    technical_score: float = Field(ge=0, le=100)
+    structure_score: float = Field(ge=0, le=100)
+    style_score: float = Field(ge=0, le=100)
+    selected: bool = False
+    notes: list[str] = Field(default_factory=list)
+    stream_url: str
+
+
+class MusicCandidateListResponse(BaseModel):
+    candidates: list[MusicCandidateResponse] = Field(default_factory=list)
+
+
 class MovieJobState(BaseModel):
     """Restart-safe state stored locally for one movie job."""
 

@@ -795,6 +795,8 @@ def _job_private_paths(job: _MovieJob, service: object) -> tuple[Path, ...]:
     add_path(job.input_path)
     add_path(job.workspace)
     add_path(job.settings.music_path)
+    add_path(job.settings.music_reference_path)
+    add_path(job.settings.music_lora_path)
     add_path(job.settings.overlay_font_path)
     add_path(job.settings.vision_model, strings_must_be_absolute=True)
     add_path(job.settings.music_model, strings_must_be_absolute=True)

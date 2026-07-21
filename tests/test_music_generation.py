@@ -1,6 +1,9 @@
 import hashlib
+import json
+import math
 import sys
 import wave
+from array import array
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,7 +16,11 @@ from travelmovieai.infrastructure.music_generation import (
     AceStepMusicGenerator,
     resolve_local_music_model,
 )
-from travelmovieai.story.music import MusicPlanExecution, build_music_plan
+from travelmovieai.story.music import (
+    MusicPlanExecution,
+    _score_music_candidate,
+    build_music_plan,
+)
 
 
 class FakeMusicGenerator:
@@ -35,13 +42,13 @@ class FakeMusicGenerator:
         progress: object = None,
     ) -> None:
         self.calls += 1
-        assert "no vocals" in prompt
-        assert "no lyrics" in prompt
-        assert "no high-pitched sounds" in prompt
-        assert "no bright bells" in prompt
-        assert "low dynamic range" in prompt
-        assert "mastered with headroom" in prompt
-        assert "no clipping" in prompt
+        normalized_prompt = prompt.casefold()
+        assert "no vocals" in normalized_prompt
+        assert "lyrics" in normalized_prompt
+        assert "2020s" in normalized_prompt
+        assert "macro arrangement" in normalized_prompt
+        assert "avoid mechanical looping" in normalized_prompt
+        assert "clipping" in normalized_prompt
         assert cue_sheet
         assert bpm == 76
         assert seed >= 0
@@ -67,6 +74,55 @@ class FailingMusicGenerator(FakeMusicGenerator):
         raise MusicGenerationError("model unavailable")
 
 
+class CandidateMusicGenerator:
+    name = "ace-step"
+    model = "ACE-Step/acestep-v15-turbo"
+
+    def __init__(self) -> None:
+        self.seeds: list[int] = []
+
+    def generate_candidates(
+        self,
+        output_dir: Path,
+        *,
+        prompt: str,
+        cue_sheet: object,
+        duration_seconds: float,
+        bpm: int,
+        keyscale: str,
+        seeds: list[int],
+        progress: object = None,
+    ) -> list[tuple[Path, int]]:
+        del prompt, cue_sheet, bpm, keyscale, progress
+        self.seeds = seeds
+        output_dir.mkdir(parents=True, exist_ok=True)
+        generated: list[tuple[Path, int]] = []
+        sample_rate = 8000
+        frame_count = round(duration_seconds * sample_rate)
+        for index, seed in enumerate(seeds):
+            path = output_dir / f"candidate-{index + 1:02d}.wav"
+            samples = array("h")
+            for frame in range(frame_count):
+                if index == 0:
+                    left = right = 0
+                else:
+                    seconds = frame / sample_rate
+                    envelope = 0.55 + 0.25 * math.sin(math.tau * seconds / max(duration_seconds, 1))
+                    frequency = 180 + index * 37 + 12 * math.sin(math.tau * seconds / 1.7)
+                    left = round(12000 * envelope * math.sin(math.tau * frequency * seconds))
+                    right = round(
+                        11500 * envelope * math.sin(math.tau * frequency * seconds + 0.35)
+                    )
+                samples.extend((left, right))
+            with wave.open(str(path), "wb") as audio:
+                audio.setnchannels(2)
+                audio.setsampwidth(2)
+                audio.setframerate(sample_rate)
+                audio.writeframes(samples.tobytes())
+            generated.append((path, seed))
+        return generated
+
+
 def _complete_ace_cache(path: Path) -> None:
     for relative_path in (*ACE_STEP_REQUIRED_CONFIGS, "acestep-v15-turbo/config.json"):
         config = path / relative_path
@@ -79,6 +135,18 @@ def _complete_ace_cache(path: Path) -> None:
 
 def test_music_model_auto_resolution() -> None:
     assert resolve_local_music_model("auto", gpu_memory_mb=6144) == "ACE-Step/acestep-v15-turbo"
+    assert (
+        resolve_local_music_model("auto", gpu_memory_mb=24 * 1024, quality="balanced")
+        == "ACE-Step/acestep-v15-xl-turbo"
+    )
+    assert (
+        resolve_local_music_model("auto", gpu_memory_mb=12 * 1024, quality="studio")
+        == "ACE-Step/acestep-v15-sft"
+    )
+    assert (
+        resolve_local_music_model("auto", gpu_memory_mb=24 * 1024, quality="studio")
+        == "ACE-Step/acestep-v15-xl-sft"
+    )
     assert resolve_local_music_model("custom/model", gpu_memory_mb=6144) == "custom/model"
 
 
@@ -110,7 +178,70 @@ def test_ace_step_configuration_enables_low_vram_offload(tmp_path: Path) -> None
     assert "offload_dit_to_cpu = true" in config
 
 
-def test_ace_step_generation_caps_model_duration_and_extends_output(
+def test_ace_step_studio_request_uses_slow_sampler_lm_reference_and_lora(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.wav"
+    lora = tmp_path / "adapter.safetensors"
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-sft",
+        runtime_dir=tmp_path / "runtime",
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=True,
+        device="auto",
+        gpu_memory_mb=12 * 1024,
+        quality="studio",
+        reference_audio=reference,
+        reference_strength=0.35,
+        lora_path=lora,
+        lora_strength=0.8,
+    )
+
+    request = generator._worker_request(
+        prompt="Modern instrumental",
+        duration_seconds=120,
+        bpm=92,
+        keyscale="D Dorian",
+        seeds=[11, 22],
+        output_dir=tmp_path / "output",
+    )
+
+    assert request["inference_steps"] == 64
+    assert request["guidance_scale"] == 7.5
+    assert request["use_adg"] is True
+    assert request["thinking"] is True
+    assert request["lm_model"] == "acestep-5Hz-lm-1.7B"
+    assert request["reference_audio"] == str(reference)
+    assert request["reference_strength"] == 0.35
+    assert request["lora_path"] == str(lora)
+    assert request["lora_strength"] == 0.8
+
+
+def test_ace_step_rejects_duration_beyond_native_model_limit(tmp_path: Path) -> None:
+    generator = AceStepMusicGenerator(
+        "ACE-Step/acestep-v15-turbo",
+        runtime_dir=tmp_path / "runtime",
+        model_cache=tmp_path / "models",
+        ffmpeg_binary="ffmpeg",
+        allow_download=False,
+        device="cpu",
+        gpu_memory_mb=None,
+    )
+
+    with pytest.raises(MusicGenerationError, match="up to 600 seconds"):
+        generator.generate_candidates(
+            tmp_path / "output",
+            prompt="Instrumental",
+            cue_sheet=[],
+            duration_seconds=601,
+            bpm=80,
+            keyscale="A Minor",
+            seeds=[42],
+        )
+
+
+def test_ace_step_generation_requests_native_full_duration_and_normalizes_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -130,7 +261,7 @@ def test_ace_step_generation_caps_model_duration_and_extends_output(
         device="auto",
         gpu_memory_mb=6144,
     )
-    captured_config = ""
+    captured_request: dict[str, object] = {}
     normalized_duration = 0.0
 
     def run_model(
@@ -140,13 +271,17 @@ def test_ace_step_generation_caps_model_duration_and_extends_output(
         environment: dict[str, str],
         progress: object,
     ) -> list[str]:
-        nonlocal captured_config
-        config_path = Path(command[command.index("--config") + 1])
-        captured_config = config_path.read_text(encoding="utf-8")
-        model_output = config_path.parent / "output"
-        model_output.mkdir(exist_ok=True)
-        (model_output / "base.wav").write_bytes(b"fake wav")
-        return ["done"]
+        nonlocal captured_request
+        request_path = Path(command[command.index("--request") + 1])
+        captured_request = json.loads(request_path.read_text(encoding="utf-8"))
+        model_output = Path(str(captured_request["output_dir"]))
+        source = model_output / "base.wav"
+        source.write_bytes(b"fake wav")
+        return [
+            "done",
+            "TRAVELMOVIEAI_RESULT="
+            + json.dumps({"candidates": [{"path": str(source), "seed": 42}]}),
+        ]
 
     def normalize(source_path: Path, output_path: Path, duration_seconds: float) -> None:
         nonlocal normalized_duration
@@ -167,7 +302,8 @@ def test_ace_step_generation_caps_model_duration_and_extends_output(
         seed=42,
     )
 
-    assert "duration = 90.000" in captured_config
+    assert captured_request["duration_seconds"] == 120
+    assert captured_request["seeds"] == [42]
     assert normalized_duration == 120
     assert output.read_bytes() == b"normalized"
 
@@ -236,7 +372,7 @@ def test_ace_step_rejects_incomplete_offline_model_cache(tmp_path: Path) -> None
         generator._ensure_model_configs(None)
 
 
-def test_ace_step_normalization_loops_short_model_output(
+def test_ace_step_normalization_pads_without_looping_and_writes_48khz_pcm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,7 +417,10 @@ def test_ace_step_normalization_loops_short_model_output(
 
     generator._normalize(source, output, 90)
 
-    assert commands[0][5:7] == ["-stream_loop", "-1"]
+    assert "-stream_loop" not in commands[0]
+    assert commands[0][commands[0].index("-af") + 1] == "apad"
+    assert commands[0][commands[0].index("-ar") + 1] == "48000"
+    assert commands[0][commands[0].index("-c:a") + 1] == "pcm_s24le"
     assert output.read_bytes() == b"normalized"
 
 
@@ -477,6 +616,7 @@ def test_build_music_plan_uses_local_model(tmp_path: Path) -> None:
         target_duration_seconds=5,
         music_engine="ace-step",
         music_profile="lounge",
+        music_quality="draft",
     )
     montage = QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -498,6 +638,87 @@ def test_build_music_plan_uses_local_model(tmp_path: Path) -> None:
     assert plan.model == "ACE-Step/acestep-v15-turbo"
     assert plan.fallback_used is False
     assert plan.source_path is not None and plan.source_path.is_file()
+
+
+def test_balanced_music_generates_four_candidates_and_selects_audited_winner(
+    tmp_path: Path,
+) -> None:
+    settings = QuickMontageSettings(
+        target_duration_seconds=5,
+        music_engine="ace-step",
+        music_profile="lounge",
+        music_quality="balanced",
+    )
+    montage = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        total_duration_seconds=5,
+    )
+    generator = CandidateMusicGenerator()
+
+    plan = build_music_plan(
+        [],
+        [],
+        settings,
+        tmp_path / "library",
+        tmp_path / "soundtrack.wav",
+        montage,
+        neural_generator=generator,
+    )
+
+    assert len(generator.seeds) == 4
+    assert len(set(generator.seeds)) == 4
+    assert len(plan.candidates) == 4
+    assert sum(candidate.selected for candidate in plan.candidates) == 1
+    assert plan.selected_candidate_index != 0
+    assert plan.candidates[0].notes
+    assert plan.source_path is not None
+    selected = next(candidate for candidate in plan.candidates if candidate.selected)
+    assert plan.source_path.read_bytes() == selected.source_path.read_bytes()
+
+
+def test_music_candidate_scoring_rejects_long_silent_tail(tmp_path: Path) -> None:
+    def write_tone(path: Path, *, silent_tail_seconds: float) -> None:
+        sample_rate = 8000
+        duration_seconds = 5
+        active_frames = round((duration_seconds - silent_tail_seconds) * sample_rate)
+        samples = array("h")
+        for frame in range(duration_seconds * sample_rate):
+            if frame >= active_frames:
+                left = right = 0
+            else:
+                seconds = frame / sample_rate
+                left = round(10000 * math.sin(math.tau * 220 * seconds))
+                right = round(10000 * math.sin(math.tau * 220 * seconds + 0.4))
+            samples.extend((left, right))
+        with wave.open(str(path), "wb") as audio:
+            audio.setnchannels(2)
+            audio.setsampwidth(2)
+            audio.setframerate(sample_rate)
+            audio.writeframes(samples.tobytes())
+
+    clean_path = tmp_path / "clean.wav"
+    silent_path = tmp_path / "silent-tail.wav"
+    write_tone(clean_path, silent_tail_seconds=0.5)
+    write_tone(silent_path, silent_tail_seconds=3)
+
+    clean = _score_music_candidate(
+        clean_path,
+        index=0,
+        seed=1,
+        expected_duration=5,
+        profile="cinematic",
+    )
+    silent = _score_music_candidate(
+        silent_path,
+        index=1,
+        seed=2,
+        expected_duration=5,
+        profile="cinematic",
+    )
+
+    assert clean.total_score > silent.total_score
+    assert any(note.startswith("silent tail") for note in silent.notes)
 
 
 def test_auto_music_falls_back_but_explicit_model_fails(tmp_path: Path) -> None:
@@ -544,6 +765,7 @@ def test_generated_music_is_reused_when_timeline_and_model_match(
         target_duration_seconds=5,
         music_engine="ace-step",
         music_profile="lounge",
+        music_quality="draft",
     )
     montage = QuickMontagePlan(
         created_at=datetime.now(UTC),
@@ -602,6 +824,65 @@ def test_generated_music_is_reused_when_timeline_and_model_match(
     assert generator.calls == 2
     assert third_execution.cache_hit is False
     assert third.source_content_sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
+
+
+def test_generated_music_cache_invalidates_when_reference_audio_changes(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"reference-v1")
+    settings = QuickMontageSettings(
+        target_duration_seconds=5,
+        music_engine="ace-step",
+        music_profile="lounge",
+        music_quality="draft",
+        music_reference_path=reference,
+    )
+    montage = QuickMontagePlan(
+        created_at=datetime.now(UTC),
+        settings=settings,
+        total_duration_seconds=5,
+    )
+    generator = FakeMusicGenerator()
+    output = tmp_path / "soundtrack.wav"
+    first = build_music_plan(
+        [],
+        [],
+        settings,
+        tmp_path / "library",
+        output,
+        montage,
+        neural_generator=generator,
+    )
+    (tmp_path / "music_plan.json").write_text(first.model_dump_json(), encoding="utf-8")
+
+    cached_execution = MusicPlanExecution()
+    build_music_plan(
+        [],
+        [],
+        settings,
+        tmp_path / "library",
+        output,
+        montage,
+        neural_generator=generator,
+        execution=cached_execution,
+    )
+    reference.write_bytes(b"reference-v2")
+    invalidated_execution = MusicPlanExecution()
+    build_music_plan(
+        [],
+        [],
+        settings,
+        tmp_path / "library",
+        output,
+        montage,
+        neural_generator=generator,
+        execution=invalidated_execution,
+    )
+
+    assert cached_execution.cache_hit is True
+    assert invalidated_execution.cache_hit is False
+    assert generator.calls == 2
 
 
 def test_procedural_fallback_is_not_reused_as_success(tmp_path: Path) -> None:

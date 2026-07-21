@@ -197,6 +197,53 @@ def create(
         Path | None,
         typer.Option("--music-path", exists=True, dir_okay=False, resolve_path=True),
     ] = None,
+    music_quality: Annotated[
+        str,
+        typer.Option("--music-quality", help="draft, balanced, or studio."),
+    ] = "balanced",
+    music_candidates: Annotated[
+        int,
+        typer.Option(
+            "--music-candidates",
+            min=0,
+            max=8,
+            help="Candidate count; 0 uses the selected quality preset.",
+        ),
+    ] = 0,
+    music_style: Annotated[
+        str,
+        typer.Option(
+            "--music-style",
+            help="auto or a modern cinematic/electronic/travel style preset.",
+        ),
+    ] = "auto",
+    music_reference: Annotated[
+        Path | None,
+        typer.Option(
+            "--music-reference",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
+            help="Owned local audio used as a style reference.",
+        ),
+    ] = None,
+    music_reference_strength: Annotated[
+        float,
+        typer.Option("--music-reference-strength", min=0, max=1),
+    ] = 0.2,
+    music_lora: Annotated[
+        Path | None,
+        typer.Option(
+            "--music-lora",
+            exists=True,
+            resolve_path=True,
+            help="Local ACE-Step LoRA weights or adapter directory.",
+        ),
+    ] = None,
+    music_lora_strength: Annotated[
+        float,
+        typer.Option("--music-lora-strength", min=0, max=1),
+    ] = 0.7,
     bpm_analysis: Annotated[
         bool,
         typer.Option("--bpm-analysis/--no-bpm-analysis"),
@@ -233,6 +280,13 @@ def create(
                 "music_enabled": music_mode != "none",
                 "music_mode": music_mode,
                 "music_path": music_path,
+                "music_quality": music_quality,
+                "music_candidate_count": music_candidates,
+                "music_style": music_style,
+                "music_reference_path": music_reference,
+                "music_reference_strength": music_reference_strength,
+                "music_lora_path": music_lora,
+                "music_lora_strength": music_lora_strength,
                 "music_bpm_analysis": bpm_analysis,
                 "music_volume_envelope": music_envelope,
                 "story_style": style,

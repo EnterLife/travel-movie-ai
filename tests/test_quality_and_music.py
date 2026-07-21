@@ -249,7 +249,7 @@ def test_auto_music_profile_uses_visual_metrics_and_generates_wav(
     assert plan.source_path == output
     assert plan.generated is True
     assert plan.duration_seconds == 8
-    assert plan.arrangement_version == "adaptive-lounge-v7-content-revision"
+    assert plan.arrangement_version == "story-music-v9-tail-audit"
     assert plan.cue_sections
     assert plan.cue_sections[0].bpm == 60
     assert plan.beat_grid

@@ -331,8 +331,11 @@ class QuickMontageRenderer:
             None,
         )
         transition_mezzanine = _transition_duration(plan) > 0
+        video_duration = getattr(probe, "video_duration_seconds", None) or probe.duration_seconds
         return bool(
             abs((probe.duration_seconds or 0) - clip.duration_seconds)
+            <= max(0.2, 2 / plan.settings.fps)
+            and abs((video_duration or 0) - clip.duration_seconds)
             <= max(0.2, 2 / plan.settings.fps)
             and probe.width == plan.settings.width
             and probe.height == plan.settings.height

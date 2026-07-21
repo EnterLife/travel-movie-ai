@@ -11,6 +11,7 @@ from travelmovieai.domain.models import (
     EmbeddingAnalysisReport,
     FrameSamplingReport,
     MediaScanReport,
+    MusicCandidate,
     MusicPlan,
     Scene,
     SceneDetectionReport,
@@ -166,6 +167,64 @@ def test_music_plan_preserves_legacy_generated_shape_and_validates_known_generat
     ):
         with pytest.raises(ValidationError):
             MusicPlan.model_validate({**complete_values, field: invalid})
+
+
+def test_music_plan_validates_selected_candidate_consistency() -> None:
+    candidate = MusicCandidate(
+        index=0,
+        source_path=Path("candidate.wav"),
+        source_content_sha256="a" * 64,
+        seed=42,
+        total_score=90,
+        technical_score=92,
+        structure_score=88,
+        style_score=89,
+        duration_seconds=30,
+        sample_rate=48000,
+        channels=2,
+        selected=True,
+    )
+
+    plan = MusicPlan(
+        mode="generated",
+        generator="ace-step",
+        model="ACE-Step/acestep-v15-turbo",
+        candidates=[candidate],
+        selected_candidate_index=0,
+    )
+
+    assert plan.candidates[0].selected is True
+    with pytest.raises(ValidationError, match="exactly one"):
+        MusicPlan(
+            mode="generated",
+            generator="ace-step",
+            model="ACE-Step/acestep-v15-turbo",
+            candidates=[candidate.model_copy(update={"selected": False})],
+            selected_candidate_index=0,
+        )
+    with pytest.raises(ValidationError, match="more than one"):
+        MusicPlan(
+            mode="generated",
+            generator="ace-step",
+            model="ACE-Step/acestep-v15-turbo",
+            candidates=[candidate, candidate.model_copy(update={"index": 1})],
+            selected_candidate_index=0,
+        )
+    with pytest.raises(ValidationError, match="must be unique"):
+        MusicPlan(
+            mode="generated",
+            generator="ace-step",
+            model="ACE-Step/acestep-v15-turbo",
+            candidates=[candidate, candidate.model_copy(update={"selected": False})],
+            selected_candidate_index=0,
+        )
+    with pytest.raises(ValidationError, match="requires a selected candidate index"):
+        MusicPlan(
+            mode="generated",
+            generator="ace-step",
+            model="ACE-Step/acestep-v15-turbo",
+            candidates=[candidate],
+        )
 
 
 def test_persisted_report_counts_and_identities_reject_invalid_values() -> None:

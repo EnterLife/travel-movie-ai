@@ -53,11 +53,18 @@ const creditsText = document.querySelector("#credits-text");
 const musicMode = document.querySelector("#music-mode");
 const musicEngine = document.querySelector("#music-engine");
 const musicModel = document.querySelector("#music-model");
+const musicQuality = document.querySelector("#music-quality");
+const musicCandidateCount = document.querySelector("#music-candidate-count");
+const musicStyle = document.querySelector("#music-style");
 const musicProfile = document.querySelector("#music-profile");
 const musicSync = document.querySelector("#music-sync");
 const musicVolume = document.querySelector("#music-volume");
 const musicVolumeValue = document.querySelector("#music-volume-value");
 const musicPath = document.querySelector("#music-path");
+const musicReferencePath = document.querySelector("#music-reference-path");
+const musicReferenceStrength = document.querySelector("#music-reference-strength");
+const musicLoraPath = document.querySelector("#music-lora-path");
+const musicLoraStrength = document.querySelector("#music-lora-strength");
 const musicBpmAnalysis = document.querySelector("#music-bpm-analysis");
 const musicVolumeEnvelope = document.querySelector("#music-volume-envelope");
 const narrationVolume = document.querySelector("#narration-volume");
@@ -88,6 +95,8 @@ const scenePageStatus = document.querySelector("#scene-page-status");
 const loadMoreScenes = document.querySelector("#load-more-scenes");
 const movieDownload = document.querySelector("#movie-download");
 const moviePreview = document.querySelector("#movie-preview");
+const musicCandidates = document.querySelector("#music-candidates");
+const musicCandidateList = document.querySelector("#music-candidate-list");
 const moviePauseButton = document.querySelector("#movie-pause-button");
 const movieCancelButton = document.querySelector("#movie-cancel-button");
 const editWorkspace = document.querySelector("#edit-workspace");
@@ -676,6 +685,8 @@ movieButton.addEventListener("click", async () => {
 
   hideError();
   movieResult.classList.add("hidden");
+  musicCandidates.classList.add("hidden");
+  musicCandidateList.replaceChildren();
   editWorkspace.classList.add("hidden");
   movieProgress.classList.remove("hidden");
   movieButton.disabled = true;
@@ -736,12 +747,19 @@ movieButton.addEventListener("click", async () => {
           music_mode: musicMode.value,
           music_engine: musicEngine.value,
           music_model: musicModel.value || null,
+          music_quality: musicQuality.value,
+          music_candidate_count: Number(musicCandidateCount.value),
+          music_style: musicStyle.value,
           music_profile: musicProfile.value,
           music_sync: musicSync.checked,
           music_bpm_analysis: musicBpmAnalysis.checked,
           music_volume_envelope: musicVolumeEnvelope.checked,
           music_volume: Number(musicVolume.value) / 100,
           music_path: musicPath.value.trim() || null,
+          music_reference_path: musicReferencePath.value.trim() || null,
+          music_reference_strength: Number(musicReferenceStrength.value),
+          music_lora_path: musicLoraPath.value.trim() || null,
+          music_lora_strength: Number(musicLoraStrength.value),
         },
       }),
     });
@@ -933,8 +951,40 @@ function showMovieResult(job) {
   movieDownload.href = downloadUrl;
   moviePreview.src = downloadUrl;
   movieResult.classList.remove("hidden");
+  loadMusicCandidates(job.id).catch((error) => showError(error.message));
   loadEditingWorkspace().catch((error) => showError(error.message));
   movieResult.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function loadMusicCandidates(jobId) {
+  const payload = await requestJson(`/api/movies/${jobId}/music-candidates`);
+  const candidates = payload.candidates || [];
+  musicCandidateList.replaceChildren();
+  musicCandidates.classList.toggle("hidden", candidates.length === 0);
+  for (const candidate of candidates) {
+    const card = document.createElement("article");
+    card.className = `music-candidate-card ${candidate.selected ? "selected" : ""}`;
+    const heading = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `Candidate ${candidate.index + 1}${candidate.selected ? " · selected" : ""}`;
+    const score = document.createElement("span");
+    score.textContent = `${Math.round(candidate.score)}/100`;
+    heading.append(title, score);
+    const details = document.createElement("small");
+    details.textContent =
+      `technical ${Math.round(candidate.technical_score)} · structure ${Math.round(candidate.structure_score)} · style ${Math.round(candidate.style_score)}`;
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.src = candidate.stream_url;
+    card.append(heading, details, audio);
+    if (candidate.notes.length) {
+      const notes = document.createElement("small");
+      notes.textContent = candidate.notes.join(" · ");
+      card.append(notes);
+    }
+    musicCandidateList.append(card);
+  }
 }
 
 async function loadSceneReview(reset = true) {
@@ -1359,6 +1409,8 @@ newScanButton.addEventListener("click", () => {
   results.classList.add("hidden");
   movieProgress.classList.add("hidden");
   movieResult.classList.add("hidden");
+  musicCandidates.classList.add("hidden");
+  musicCandidateList.replaceChildren();
   moviePreview.removeAttribute("src");
   moviePreview.load();
   jobState.classList.add("hidden");
@@ -1507,21 +1559,29 @@ visionProvider.addEventListener("change", () => {
 });
 semanticAnalysis.addEventListener("change", updateDependentCapabilityControls);
 textOverlaysEnabled.addEventListener("change", updateDependentCapabilityControls);
-musicMode.addEventListener("change", () => {
+function updateMusicControls() {
+  const generated = !["manual", "library", "none"].includes(musicMode.value);
+  const neural = generated && musicEngine.value !== "procedural";
   musicPath.disabled = musicMode.value !== "manual";
-  musicProfile.disabled = ["manual", "library", "none"].includes(musicMode.value);
-  musicSync.disabled = ["manual", "library", "none"].includes(musicMode.value);
-  musicEngine.disabled = ["manual", "library", "none"].includes(musicMode.value);
-  musicModel.disabled =
-    ["manual", "library", "none"].includes(musicMode.value) ||
-    musicEngine.value === "procedural";
-});
-musicEngine.addEventListener("change", () => {
-  musicModel.disabled = musicEngine.value === "procedural";
-});
+  musicProfile.disabled = !generated;
+  musicSync.disabled = !generated;
+  musicEngine.disabled = !generated;
+  musicModel.disabled = !neural;
+  musicQuality.disabled = !neural;
+  musicCandidateCount.disabled = !neural;
+  musicStyle.disabled = !neural;
+  musicReferencePath.disabled = !neural;
+  musicReferenceStrength.disabled = !neural;
+  musicLoraPath.disabled = !neural;
+  musicLoraStrength.disabled = !neural;
+}
+
+musicMode.addEventListener("change", updateMusicControls);
+musicEngine.addEventListener("change", updateMusicControls);
 musicVolume.addEventListener("input", () => {
   musicVolumeValue.textContent = `${musicVolume.value}%`;
 });
+updateMusicControls();
 submitButton.disabled = true;
 checkHealth();
 loadCapabilities();

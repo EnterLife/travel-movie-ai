@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import wave
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from travelmovieai.domain.models import (
     MediaAsset,
     MusicAccent,
     MusicBeat,
+    MusicCandidate,
     MusicCueSection,
     MusicPlan,
     QuickMontagePlan,
@@ -32,7 +34,7 @@ type MusicProfile = Literal["calm", "lounge", "cinematic", "warm", "energetic"]
 type FloatArray = NDArray[np.float64]
 type NeuralGeneratorName = Literal["ace-step", "musicgen"]
 type MusicGeneratorName = Literal["procedural", "ace-step", "musicgen"]
-ARRANGEMENT_VERSION = "adaptive-lounge-v7-content-revision"
+ARRANGEMENT_VERSION = "story-music-v9-tail-audit"
 MusicProgress = Callable[[int, int, str], None]
 
 
@@ -220,6 +222,15 @@ def build_music_plan(
         else "procedural"
     )
     target_model = neural_generator.model if neural_generator is not None else None
+    generation_prompt, keyscale = _music_generation_brief(
+        profile,
+        bpm,
+        accents,
+        cue_sections,
+        scenes,
+        settings,
+    )
+    candidate_count = _music_candidate_count(settings)
     cache_key = _music_cache_key(
         montage_plan,
         profile=profile,
@@ -228,6 +239,10 @@ def build_music_plan(
         cue_sections=cue_sections,
         generator=target_generator,
         model=target_model,
+        generation_prompt=generation_prompt,
+        keyscale=keyscale,
+        candidate_count=candidate_count,
+        settings=settings,
     )
     cached = _cached_music_plan(
         generated_path,
@@ -245,6 +260,8 @@ def build_music_plan(
     model_name = None
     fallback_used = False
     generation_reason = ""
+    candidates: list[MusicCandidate] = []
+    selected_candidate_index: int | None = None
     if settings.music_engine in {"auto", "ace-step"}:
         if neural_generator is None:
             if settings.music_engine == "ace-step":
@@ -255,19 +272,17 @@ def build_music_plan(
             generation_reason = " ACE-Step is unavailable, so procedural fallback was used."
         else:
             try:
-                neural_generator.generate(
+                candidates, selected_candidate_index = _generate_music_candidates(
+                    neural_generator,
                     generated_path,
-                    prompt=_music_generation_prompt(profile, bpm, accents, cue_sections),
+                    prompt=generation_prompt,
                     cue_sheet=cue_sections,
                     duration_seconds=duration_seconds,
                     bpm=bpm,
-                    seed=_music_seed(montage_plan, profile),
+                    keyscale=keyscale,
+                    seeds=_music_seeds(montage_plan, profile, candidate_count),
+                    profile=profile,
                     progress=progress,
-                )
-                apply_music_accents(
-                    generated_path,
-                    duration_seconds=duration_seconds,
-                    accents=accents,
                 )
                 generator_name = neural_generator.name
                 model_name = neural_generator.model
@@ -307,6 +322,15 @@ def build_music_plan(
         accents=accents,
         cue_sections=cue_sections,
         beat_grid=beat_grid,
+        candidates=candidates,
+        selected_candidate_index=selected_candidate_index,
+        quality_preset=settings.music_quality,
+        generation_prompt=generation_prompt if generator_name != "procedural" else None,
+        keyscale=keyscale if generator_name != "procedural" else None,
+        reference_audio_used=(
+            generator_name != "procedural" and settings.music_reference_path is not None
+        ),
+        lora_used=generator_name != "procedural" and settings.music_lora_path is not None,
         arrangement_version=ARRANGEMENT_VERSION,
         generator=generator_name,
         model=model_name,
@@ -675,37 +699,356 @@ def apply_music_accents(
         ) from error
 
 
-def _music_generation_prompt(
+def _music_generation_brief(
     profile: MusicProfile,
     bpm: int,
     accents: list[MusicAccent],
     cue_sections: list[MusicCueSection],
-) -> str:
-    profile_text = {
-        "calm": "very calm low-register ambient travel music",
-        "lounge": "soft low-register melodic lounge",
-        "cinematic": "restrained low-register cinematic travel ambience",
-        "warm": "soft low-register warm optimistic lounge",
-        "energetic": "light but still smooth low-register travel lounge",
+    scenes: list[Scene],
+    settings: QuickMontageSettings,
+) -> tuple[str, str]:
+    style = _resolved_music_style(profile, scenes, settings)
+    style_text = {
+        "modern_cinematic": (
+            "modern cinematic electronica, organic percussion, evolving analog synths, "
+            "felt piano and restrained strings"
+        ),
+        "organic_electronic": (
+            "organic electronic travel score, warm synth textures, hand percussion, "
+            "muted guitar and rounded bass"
+        ),
+        "indie_travel": (
+            "contemporary indie travel instrumental, clean guitars, warm keys, subtle "
+            "electronic drums and memorable understated motif"
+        ),
+        "melodic_ambient": (
+            "melodic ambient cinematic score, spacious pads, felt piano, soft pulse and "
+            "slowly evolving harmonic detail"
+        ),
+        "ambient_house": (
+            "elegant ambient house instrumental, deep rounded kick, modern soft synths, "
+            "organic textures and a tasteful melodic hook"
+        ),
+        "modern_documentary": (
+            "modern documentary underscore, intimate piano, subtle electronics, organic "
+            "rhythm and emotionally clear harmonic development"
+        ),
+    }[style]
+    mood = {
+        "calm": "serene and spacious",
+        "lounge": "relaxed, stylish and contemporary",
+        "cinematic": "expansive, emotional and visually driven",
+        "warm": "warm, optimistic and human",
+        "energetic": "forward-moving, uplifting and adventurous",
+    }[profile]
+    keyscale = {
+        "calm": "A Minor",
+        "lounge": "A Dorian",
+        "cinematic": "D Minor",
+        "warm": "G Major",
+        "energetic": "D Dorian",
     }[profile]
     highlights = sum(cue.kind == "highlight" for cue in accents)
     events = sum(cue.kind == "event_change" for cue in accents)
-    section_plan = _cue_sheet_prompt(cue_sections)
-    return (
-        f"Instrumental {profile_text}, {bpm} BPM, hi-fi travel film underscore, "
-        "one coherent recurring melody in a consistent key, warm electric piano, "
-        "clean muted guitar, deep soft round bass, very light brushed percussion, "
-        "subtle dark atmospheric pads, sparse arrangement with natural variation, "
-        "low notes, mellow midrange melody, no high-pitched sounds, no bright bells, "
-        "no plucks, no sharp synths, no piercing leads, no cymbal shimmer, "
-        "polished mix, mastered with headroom, no distortion, no clipping, "
-        "low dynamic range for dialogue ducking, no dramatic build-ups, no loud hits, "
-        "no aggressive percussion, elegant professional production, no vocals, "
-        "no lyrics, no speech, no lead singer, "
-        f"gradual narrative development, {events} section changes and "
-        f"{highlights} very restrained musical highlights, gentle resolved ending. "
-        f"Arrangement cue sheet: {section_plan}"
-    )[:700]
+    section_plan = _macro_cue_sheet_prompt(cue_sections)
+    visual_context = _visual_music_context(scenes)
+    prompt = (
+        f"Instrumental {style_text}. {mood.capitalize()}, {bpm} BPM, {keyscale}, 4/4. "
+        "Premium 2020s production, coherent recurring theme, natural musical phrasing, "
+        "wide detailed stereo image, controlled transients, clean low end and mastering "
+        "headroom. Build a complete composition with a clear opening, gradual development, "
+        f"{events} narrative transition(s), {highlights} visual highlight(s), and a resolved "
+        f"ending. Visual context: {visual_context}. Macro arrangement: {section_plan}. "
+        "Keep space for location sound and dialogue; avoid mechanical looping. No vocals, "
+        "lyrics, speech, stock-music cliches, abrupt genre changes, distortion or clipping."
+    )
+    return prompt[:1400], keyscale
+
+
+def _resolved_music_style(
+    profile: MusicProfile,
+    scenes: list[Scene],
+    settings: QuickMontageSettings,
+) -> str:
+    if settings.music_style != "auto":
+        return settings.music_style
+    text = " ".join(scene.caption or "" for scene in scenes).casefold()
+    if any(word in text for word in ("city", "street", "night", "urban")):
+        return "ambient_house" if profile in {"lounge", "energetic"} else "modern_documentary"
+    if any(word in text for word in ("family", "child", "people", "friends")):
+        return "indie_travel"
+    if profile == "cinematic":
+        return "modern_cinematic"
+    if profile == "calm":
+        return "melodic_ambient"
+    if profile == "warm":
+        return "indie_travel"
+    return "organic_electronic"
+
+
+def _visual_music_context(scenes: list[Scene]) -> str:
+    text = " ".join(scene.caption or "" for scene in scenes).casefold()
+    groups = (
+        (("mountain", "peak", "valley"), "mountain landscapes"),
+        (("sea", "ocean", "coast", "beach"), "coastal views"),
+        (("city", "street", "urban"), "urban travel"),
+        (("sunset", "sunrise", "golden"), "golden-hour light"),
+        (("forest", "tree", "nature"), "natural scenery"),
+        (("people", "family", "friends", "person"), "human moments"),
+        (("aerial", "drone", "overlook"), "wide aerial movement"),
+    )
+    labels = [label for words, label in groups if any(word in text for word in words)]
+    return ", ".join(labels[:4]) or "a varied travel journey"
+
+
+def _macro_cue_sheet_prompt(sections: list[MusicCueSection]) -> str:
+    if not sections:
+        return "opening, development, highlight and resolved finale"
+    macro: list[MusicCueSection] = []
+    for section in sections:
+        if macro and macro[-1].role == section.role:
+            previous = macro[-1]
+            macro[-1] = previous.model_copy(
+                update={
+                    "end_seconds": section.end_seconds,
+                    "intensity": max(previous.intensity, section.intensity),
+                    "accent_count": previous.accent_count + section.accent_count,
+                }
+            )
+        else:
+            macro.append(section)
+    if len(macro) > 6:
+        stride = max(1, math.ceil(len(macro) / 6))
+        macro = macro[::stride][:6]
+    return "; ".join(
+        f"{section.role} {section.start_seconds:.0f}-{section.end_seconds:.0f}s, "
+        f"energy {section.intensity:.2f}"
+        for section in macro
+    )
+
+
+def _music_candidate_count(settings: QuickMontageSettings) -> int:
+    if settings.music_candidate_count:
+        return settings.music_candidate_count
+    return {"draft": 1, "balanced": 4, "studio": 6}[settings.music_quality]
+
+
+def _music_seeds(
+    plan: QuickMontagePlan,
+    profile: MusicProfile,
+    count: int,
+) -> list[int]:
+    base = _music_seed(plan, profile)
+    return [
+        int.from_bytes(
+            hashlib.sha256(f"{base}:{index}".encode("ascii")).digest()[:4],
+            "big",
+        )
+        for index in range(count)
+    ]
+
+
+def _generate_music_candidates(
+    generator: NeuralMusicGenerator,
+    generated_path: Path,
+    *,
+    prompt: str,
+    cue_sheet: list[MusicCueSection],
+    duration_seconds: float,
+    bpm: int,
+    keyscale: str,
+    seeds: list[int],
+    profile: MusicProfile,
+    progress: MusicProgress | None,
+) -> tuple[list[MusicCandidate], int]:
+    candidate_dir = generated_path.parent / "music_candidates"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    generate_many = getattr(generator, "generate_candidates", None)
+    if callable(generate_many):
+        generated = generate_many(
+            candidate_dir,
+            prompt=prompt,
+            cue_sheet=cue_sheet,
+            duration_seconds=duration_seconds,
+            bpm=bpm,
+            keyscale=keyscale,
+            seeds=seeds,
+            progress=progress,
+        )
+    else:
+        generated = []
+        for index, seed in enumerate(seeds):
+            path = candidate_dir / f"candidate-{index + 1:02d}-{seed}.wav"
+            generator.generate(
+                path,
+                prompt=prompt,
+                cue_sheet=cue_sheet,
+                duration_seconds=duration_seconds,
+                bpm=bpm,
+                seed=seed,
+                progress=progress,
+            )
+            generated.append((path, seed))
+
+    scored: list[MusicCandidate] = []
+    for index, (path, seed) in enumerate(generated):
+        scored.append(
+            _score_music_candidate(
+                path,
+                index=index,
+                seed=seed,
+                expected_duration=duration_seconds,
+                profile=profile,
+            )
+        )
+    if not scored:
+        raise MusicGenerationError("The local music model returned no valid candidates.")
+    winner = max(scored, key=lambda candidate: (candidate.total_score, -candidate.index))
+    scored = [
+        candidate.model_copy(update={"selected": candidate.index == winner.index})
+        for candidate in scored
+    ]
+    selected = next(candidate for candidate in scored if candidate.selected)
+    generated_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = generated_path.with_name(f".{generated_path.stem}.selected.wav")
+    try:
+        shutil.copyfile(selected.source_path, temporary)
+        os.replace(temporary, generated_path)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise MusicGenerationError("Could not publish the selected music candidate.") from error
+    return scored, selected.index
+
+
+def _score_music_candidate(
+    path: Path,
+    *,
+    index: int,
+    seed: int,
+    expected_duration: float,
+    profile: MusicProfile,
+) -> MusicCandidate:
+    try:
+        with wave.open(str(path), "rb") as audio:
+            channels = audio.getnchannels()
+            sample_rate = audio.getframerate()
+            sample_width = audio.getsampwidth()
+            frame_count = audio.getnframes()
+            duration = frame_count / sample_rate
+            window_frames = min(frame_count, sample_rate * 2)
+            windows: list[NDArray[np.float64]] = []
+            for fraction in (0.08, 0.27, 0.5, 0.73, 0.9):
+                start = max(0, min(frame_count - window_frames, round(frame_count * fraction)))
+                audio.setpos(start)
+                raw = audio.readframes(window_frames)
+                windows.append(_pcm_samples(raw, sample_width, channels))
+            tail_frames = min(frame_count, sample_rate * 8)
+            audio.setpos(max(0, frame_count - tail_frames))
+            tail = _pcm_samples(audio.readframes(tail_frames), sample_width, channels)
+    except (OSError, wave.Error, ValueError) as error:
+        raise MusicGenerationError("Could not inspect a generated music candidate.") from error
+    samples = np.concatenate(windows, axis=0)
+    mono = np.mean(samples, axis=1)
+    absolute = np.abs(mono)
+    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+    rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
+    clipping = float(np.mean(np.abs(samples) >= 0.999)) if samples.size else 1.0
+    silence = float(np.mean(absolute < 0.001)) if absolute.size else 1.0
+    zero_crossing = float(np.mean(np.signbit(mono[1:]) != np.signbit(mono[:-1])))
+    window_rms = [float(np.sqrt(np.mean(np.square(np.mean(item, axis=1))))) for item in windows]
+    variation = float(np.std(window_rms))
+    correlations = []
+    for first, second in zip(windows, windows[1:], strict=False):
+        first_mono = np.mean(first, axis=1)
+        second_mono = np.mean(second, axis=1)
+        if np.std(first_mono) > 1e-6 and np.std(second_mono) > 1e-6:
+            correlations.append(abs(float(np.corrcoef(first_mono, second_mono)[0, 1])))
+    repetition = max(correlations, default=0.0)
+    width = float(np.mean(np.abs(samples[:, 0] - samples[:, 1]))) if channels >= 2 else 0.0
+    tail_peak = np.max(np.abs(tail), axis=1) if tail.size else np.zeros(0)
+    active_tail = np.flatnonzero(tail_peak >= 10 ** (-45 / 20))
+    tail_silence_seconds = (
+        len(tail_peak) / sample_rate
+        if active_tail.size == 0
+        else (len(tail_peak) - int(active_tail[-1]) - 1) / sample_rate
+    )
+
+    notes: list[str] = []
+    technical = 100.0
+    if abs(duration - expected_duration) > max(0.25, expected_duration * 0.01):
+        technical -= 30
+        notes.append("duration mismatch")
+    if rms < 0.015:
+        technical -= 30
+        notes.append("very quiet")
+    elif rms > 0.42:
+        technical -= 18
+        notes.append("over-compressed")
+    if peak >= 0.999:
+        technical -= min(35, 12 + clipping * 2000)
+        notes.append("clipped peaks")
+    if silence > 0.15:
+        technical -= min(30, silence * 80)
+        notes.append("excessive silence")
+    if tail_silence_seconds > 2:
+        technical -= min(35, (tail_silence_seconds - 1.5) * 10)
+        notes.append(f"silent tail {tail_silence_seconds:.1f}s")
+    if channels >= 2 and width < 0.008:
+        technical -= 12
+        notes.append("narrow stereo image")
+
+    structure = 88.0
+    if variation < 0.006:
+        structure -= 18
+        notes.append("flat dynamics")
+    if repetition > 0.96:
+        structure -= 24
+        notes.append("strong repetition")
+    elif repetition > 0.88:
+        structure -= 10
+    style_target = {
+        "calm": 0.045,
+        "lounge": 0.065,
+        "cinematic": 0.055,
+        "warm": 0.06,
+        "energetic": 0.09,
+    }[profile]
+    style = max(35.0, 100.0 - abs(zero_crossing - style_target) * 500)
+    total = technical * 0.55 + structure * 0.3 + style * 0.15
+    fingerprint = music_source_content_sha256(path)
+    if fingerprint is None:
+        raise MusicGenerationError("Could not fingerprint a generated candidate.")
+    return MusicCandidate(
+        index=index,
+        source_path=path,
+        source_content_sha256=fingerprint,
+        seed=seed,
+        total_score=max(0.0, min(100.0, total)),
+        technical_score=max(0.0, min(100.0, technical)),
+        structure_score=max(0.0, min(100.0, structure)),
+        style_score=max(0.0, min(100.0, style)),
+        duration_seconds=duration,
+        sample_rate=sample_rate,
+        channels=channels,
+        notes=notes,
+    )
+
+
+def _pcm_samples(raw: bytes, sample_width: int, channels: int) -> NDArray[np.float64]:
+    if channels <= 0 or sample_width not in {1, 2, 3, 4}:
+        raise ValueError("unsupported PCM layout")
+    if sample_width == 1:
+        values = (np.frombuffer(raw, dtype=np.uint8).astype(np.float64) - 128) / 128
+    elif sample_width == 2:
+        values = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768
+    elif sample_width == 3:
+        packed = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        integers = packed[:, 0] | (packed[:, 1] << 8) | (packed[:, 2] << 16)
+        integers = np.where(integers & 0x800000, integers - 0x1000000, integers)
+        values = integers.astype(np.float64) / 8388608
+    else:
+        values = np.frombuffer(raw, dtype="<i4").astype(np.float64) / 2147483648
+    return values.reshape(-1, channels)
 
 
 def _music_seed(plan: QuickMontagePlan, profile: MusicProfile) -> int:
@@ -731,6 +1074,10 @@ def _music_cache_key(
     cue_sections: list[MusicCueSection],
     generator: str,
     model: str | None,
+    generation_prompt: str,
+    keyscale: str,
+    candidate_count: int,
+    settings: QuickMontageSettings,
 ) -> str:
     payload = {
         "version": ARRANGEMENT_VERSION,
@@ -739,6 +1086,14 @@ def _music_cache_key(
         "duration": round(plan.total_duration_seconds, 3),
         "generator": generator,
         "model": model,
+        "quality": settings.music_quality,
+        "candidate_count": candidate_count,
+        "prompt": generation_prompt,
+        "keyscale": keyscale,
+        "reference_strength": settings.music_reference_strength,
+        "reference_revision": _music_input_revision(settings.music_reference_path),
+        "lora_strength": settings.music_lora_strength,
+        "lora_revision": _music_input_revision(settings.music_lora_path),
         "clips": [
             {
                 "scene_id": str(clip.scene_id) if clip.scene_id else None,
@@ -775,6 +1130,18 @@ def _cached_music_plan(
         or cached.source_path is None
         or cached.source_content_sha256 is None
         or music_source_content_sha256(generated_path) != cached.source_content_sha256
+        or (
+            cached.generator in {"ace-step", "musicgen"}
+            and (
+                not cached.candidates
+                or any(
+                    not candidate.source_path.is_file()
+                    or music_source_content_sha256(candidate.source_path)
+                    != candidate.source_content_sha256
+                    for candidate in cached.candidates
+                )
+            )
+        )
     ):
         return None
     return cached.model_copy(
@@ -796,6 +1163,29 @@ def music_source_content_sha256(path: Path) -> str | None:
         return digest.hexdigest()
     except OSError:
         return None
+
+
+def _music_input_revision(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    if resolved.is_file():
+        return music_source_content_sha256(resolved)
+    if not resolved.is_dir():
+        return None
+    digest = hashlib.sha256()
+    files = sorted(
+        candidate
+        for candidate in resolved.rglob("*")
+        if candidate.is_file()
+        and candidate.suffix.casefold() in {".safetensors", ".bin", ".json", ".pt"}
+    )
+    for candidate in files:
+        digest.update(candidate.relative_to(resolved).as_posix().encode("utf-8"))
+        content = music_source_content_sha256(candidate)
+        if content is not None:
+            digest.update(content.encode("ascii"))
+    return digest.hexdigest() if files else None
 
 
 def _short_error(error: Exception) -> str:

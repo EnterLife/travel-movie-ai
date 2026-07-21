@@ -29,7 +29,8 @@ Implemented:
   timeline-version comparison;
 - energy-aware semantic clip pacing with speech and people protection;
 - deterministic or optional local-transformer story building;
-- generated, library, manual, or disabled music modes with BPM analysis,
+- generated, library, manual, or disabled music modes with story-aware ACE-Step
+  generation, Draft/Balanced/Studio quality, Best-of-N audition, BPM analysis,
   envelopes, narration ducking, and Piper voice synthesis;
 - smart crop, vertical layouts, Ken Burns, color/HDR processing, overlays,
   quick preview, and final H.264/AAC rendering;
@@ -427,13 +428,14 @@ When a transition is selected, the timeline uses real video `xfade` and audio
 beat-sync calculations. One strong but repetitive location or activity should
 not fill the whole movie when varied alternatives are available.
 
-### Generated Lounge Music
+### Generated AI Music
 
 `AI Auto` and `Generate locally` create a soundtrack entirely on the local
 machine. The default AI engine is
 [ACE-Step 1.5](https://github.com/ACE-Step/ACE-Step-1.5), a specialized
-open-source music generation model. It generates an instrumental composition
-from the story style, BPM, duration budget, and music cue sheet.
+open-source music generation model. It generates a complete instrumental
+composition from the story style, Vision captions, BPM, key, duration budget,
+and a macro arrangement derived from the final timeline.
 
 The unified Windows setup:
 
@@ -445,8 +447,10 @@ The first generation then:
 1. downloads model weights into `models/ace-step`;
 2. validates required model configuration files and repairs incomplete metadata
    when downloads are allowed;
-3. detects the GPU tier and enables CPU offload on low-VRAM systems;
-4. generates a bounded base WAV and normalizes it for the exact movie duration.
+3. detects the GPU tier, chooses an appropriate Turbo/SFT/XL model, and enables
+   CPU offload on low-VRAM systems;
+4. generates the requested duration natively and normalizes every candidate to
+   stereo 48 kHz, 24-bit PCM without looping model output.
 
 This does not replace packages in the main `.venv`. On a 6 GB NVIDIA GPU,
 ACE-Step uses its 2B Turbo model with low-VRAM offload. The initial installation
@@ -462,46 +466,67 @@ The music engine options are:
 - `Procedural synthesis`: use the fast built-in lounge arranger without model
   downloads.
 
+Quality presets control the time/VRAM/quality tradeoff:
+
+- `Draft`: one 2B Turbo candidate with 8 diffusion steps;
+- `Balanced` (default): four candidates, automatic technical/structure/style
+  scoring, and selection of the strongest candidate; on a 20+ GB GPU it can use
+  XL Turbo;
+- `Studio`: six candidates, slower SFT/XL SFT sampling where VRAM permits,
+  classifier-free guidance, adaptive guidance, and an ACE-Step language model
+  on GPUs with at least 8 GB VRAM. A 6 GB GPU safely retains the Turbo model and
+  spends the extra budget on candidates and sampling steps.
+
+Candidate count can be overridden from `1` through `8`. The Web UI exposes every
+generated candidate with its technical, structure, and style score and an audio
+player. The winner is copied atomically to the final soundtrack; all candidate
+metadata and hashes remain in `artifacts/music_plan.json` for reproducibility.
+
 ACE-Step is prepared together with the application:
 
 ```powershell
 .\scripts\setup_windows.bat
 ```
 
-With `Very calm default`, TravelMovieAI now favors very quiet, low-register,
-melodic background music by default. Lounge, warm, energetic, and cinematic
-profiles remain available as explicit choices, but automatic music avoids high
-notes, bright bells, sharp synths, cymbal shimmer, loud hits, aggressive
-percussion, and dramatic build-ups.
+Automatic style selection uses scene captions and the selected story profile to
+choose modern cinematic, organic electronic, indie travel, melodic ambient,
+ambient house, or documentary language. Prompts request premium 2020s
+production, a coherent motif, natural phrasing, stereo detail, mastering
+headroom, and a resolved ending while leaving space for location audio and
+dialogue. They reject vocals, speech, clipping, abrupt genre changes, stock-music
+cliches, and mechanical looping.
 
 `Synchronize with editing` is enabled by default. The application first builds
-the final clip timeline and then requests one composition for the movie. For
-longer edits, ACE-Step generation is capped at 90 seconds and then normalized
-to the full timeline so 120-second and longer renders do not depend on a single
-very long model pass. If the model returns a shorter WAV, TravelMovieAI extends
-it to the full timeline instead of filling the remainder with silence. A cue sheet is a
-first-class contract with arrangement sections, BPM, intensity, and restrained
-accent points. It places musical structure at:
+the final clip timeline and then requests a native full-duration composition.
+If a model returns a slightly short WAV, normalization pads the tail with silence;
+it never repeats a generated passage. A cue sheet is a first-class contract with
+arrangement sections, BPM, intensity, and restrained accent points. It places
+musical structure at:
 
 - cut points between clips;
 - changes between detected trip events;
 - the center of high-scoring Vision AI scenes;
 - the opening and final moments.
 
-The cue sections, beat grid, timestamps, strengths, BPM, intensity, arrangement
-version, generator, model identifier, source-content SHA-256, and fallback status
-are stored in `artifacts/music_plan.json`. Cached generated music is reused only
-while that fingerprint still matches the soundtrack file. Local music models
-receive both the prompt and the cue sheet. The prompt asks for a clean low-register
-instrumental travel
-underscore with a recurring motif, mellow midrange melody, no vocals or lyrics,
-no high-pitched sounds, polished production, and mastering headroom so the
-rendered movie can duck music under source audio without clipped peaks. The
-procedural fallback also follows the sections, varying melody energy, stereo
-width, electric-piano tones, muted-guitar pulses, and restrained low accent
-layers across intro, journey, highlight, and finale parts instead of producing
-a flat loop. A fallback result is reported as degraded and is not promoted to a
-successful stage cache entry, so a later run retries the configured local model.
+ACE-Step's native composition limit is 600 seconds. For a longer movie, `AI
+Auto` can use the procedural fallback; explicit ACE-Step mode reports an
+actionable error so it never silently creates a mostly empty soundtrack. A
+manual or library track is another option for long-form edits.
+
+The cue sections, beat grid, timestamps, strengths, BPM, key, generation prompt,
+quality preset, candidates, scores, seeds, arrangement version, generator, model
+identifier, source-content SHA-256, reference/LoRA usage, and fallback status are
+stored in `artifacts/music_plan.json`. Cached generated music is reused only while
+the soundtrack and every generation input still match. Changing a reference
+track or LoRA file invalidates the relevant music-stage cache. The procedural
+fallback remains available, follows the cue sections, and is reported as degraded
+instead of being promoted to a successful neural-generation cache entry.
+
+Optional reference audio can steer the style of ACE-Step while keeping all
+inference local. Use only audio you own or are licensed to use. A local ACE-Step
+LoRA file or adapter directory can provide a reusable house style. Reference and
+LoRA paths are validated before generation, are rejected with the procedural
+engine, and are never uploaded. Their strengths are independently configurable.
 Rebuilding the same timeline uses a
 deterministic seed, while changing clip order, duration, or selected highlights
 reshapes the composition to match the new movie.
@@ -554,7 +579,21 @@ travelmovieai create `
   --analysis-quality deep --width 1920 --height 1080 --fps 30 `
   --framing smart --vertical-layout blur --photo-motion ken_burns `
   --color-normalization --hdr-to-sdr --event-titles --subtitles `
-  --bpm-analysis --music-envelope --validate-full-render-decode
+  --music-quality studio --music-candidates 6 `
+  --music-style modern_cinematic --bpm-analysis --music-envelope `
+  --validate-full-render-decode
+```
+
+Optional local style conditioning:
+
+```powershell
+travelmovieai create `
+  --input "D:\Media\Trip" --output "D:\Movies\Trip-styled.mp4" `
+  --music-quality studio `
+  --music-reference "D:\Music\Owned reference.wav" `
+  --music-reference-strength 0.25 `
+  --music-lora "D:\Models\ace-step-travel-lora" `
+  --music-lora-strength 0.7
 ```
 
 Estimate a cold-run runtime range and peak workspace size from probed metadata:
@@ -663,6 +702,10 @@ file at startup; unknown keys and invalid values fail with an actionable error.
 `directml` is currently accepted as a compatibility value but falls back to
 CPU/OpenCV in the bundled Qwen, Florence, embedding, and quality adapters; it
 does not currently promise DirectML acceleration.
+
+Music quality, candidate count, modern style, reference audio, and LoRA are
+per-movie settings exposed by Web AI Edit and `travelmovieai create`; they are
+intentionally not machine-global keys in `configs/settings.toml`.
 
 ## Automatic Hardware Utilization
 
@@ -1469,6 +1512,12 @@ still required where noted above.
 - [x] HDR-to-SDR tone mapping;
 - [x] event titles, subtitles, credits, and safe-area validation;
 - [x] BPM analysis for library/manual tracks and automatic music volume envelopes;
+- [x] native full-duration 48 kHz ACE-Step generation without soundtrack loops
+  or synthetic post-generation accents;
+- [x] story-aware modern prompts, key/macro arrangement, Draft/Balanced/Studio
+  quality presets, and hardware-aware Turbo/SFT/XL selection;
+- [x] Best-of-N candidate generation, deterministic automated scoring, Web
+  audition, reference audio, LoRA support, and input-aware music caching;
 - [x] Piper narration synthesis.
 - [x] speech-budgeted narration lines timed against the actual selected timeline;
 

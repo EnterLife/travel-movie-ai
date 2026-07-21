@@ -183,6 +183,10 @@ def test_create_command_plumbs_advanced_render_settings(
 ) -> None:
     media = tmp_path / "media"
     media.mkdir()
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"reference")
+    lora = tmp_path / "adapter.safetensors"
+    lora.write_bytes(b"adapter")
     captured: dict[str, object] = {}
 
     class FakeService:
@@ -226,6 +230,20 @@ def test_create_command_plumbs_advanced_render_settings(
             "Local trip",
             "--bpm-analysis",
             "--music-envelope",
+            "--music-quality",
+            "studio",
+            "--music-candidates",
+            "6",
+            "--music-style",
+            "modern_cinematic",
+            "--music-reference",
+            str(reference),
+            "--music-reference-strength",
+            "0.35",
+            "--music-lora",
+            str(lora),
+            "--music-lora-strength",
+            "0.8",
             "--narration",
         ],
     )
@@ -248,6 +266,13 @@ def test_create_command_plumbs_advanced_render_settings(
     assert settings.scene_subtitles_enabled is True
     assert settings.music_bpm_analysis is True
     assert settings.music_volume_envelope is True
+    assert settings.music_quality == "studio"
+    assert settings.music_candidate_count == 6
+    assert settings.music_style == "modern_cinematic"
+    assert settings.music_reference_path == reference
+    assert settings.music_reference_strength == 0.35
+    assert settings.music_lora_path == lora
+    assert settings.music_lora_strength == 0.8
     assert settings.narration_enabled is True
     assert captured["variant_name"] == "vertical cut"
 

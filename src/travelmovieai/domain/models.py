@@ -503,6 +503,26 @@ class MusicBeat(BaseModel):
     nearest_accent_kind: str | None = Field(default=None, max_length=40)
 
 
+class MusicCandidate(BaseModel):
+    index: int = Field(ge=0)
+    source_path: Path
+    source_content_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    seed: int = Field(ge=0)
+    total_score: float = Field(ge=0, le=100)
+    technical_score: float = Field(ge=0, le=100)
+    structure_score: float = Field(ge=0, le=100)
+    style_score: float = Field(ge=0, le=100)
+    duration_seconds: float = Field(gt=0)
+    sample_rate: int = Field(gt=0)
+    channels: int = Field(ge=1, le=8)
+    selected: bool = False
+    notes: list[str] = Field(default_factory=list, max_length=12)
+
+
 class MusicPlan(BaseModel):
     mode: Literal["none", "manual", "library", "generated"]
     source_path: Path | None = None
@@ -518,6 +538,13 @@ class MusicPlan(BaseModel):
     accents: list[MusicAccent] = Field(default_factory=list)
     cue_sections: list[MusicCueSection] = Field(default_factory=list)
     beat_grid: list[MusicBeat] = Field(default_factory=list)
+    candidates: list[MusicCandidate] = Field(default_factory=list, max_length=8)
+    selected_candidate_index: int | None = Field(default=None, ge=0, le=7)
+    quality_preset: Literal["draft", "balanced", "studio"] | None = None
+    generation_prompt: str | None = Field(default=None, max_length=2000)
+    keyscale: str | None = Field(default=None, max_length=40)
+    reference_audio_used: bool = False
+    lora_used: bool = False
     arrangement_version: str | None = None
     generator: Literal["procedural", "ace-step", "musicgen"] | None = None
     model: str | None = None
@@ -543,6 +570,24 @@ class MusicPlan(BaseModel):
                 raise ValueError("A generated soundtrack requires a 64-character cache key")
             if self.source_content_sha256 is None:
                 raise ValueError("A generated soundtrack requires a content fingerprint")
+        selected = [candidate for candidate in self.candidates if candidate.selected]
+        indices = [candidate.index for candidate in self.candidates]
+        if len(indices) != len(set(indices)):
+            raise ValueError("Music candidate indices must be unique")
+        if len(selected) > 1:
+            raise ValueError("A music plan cannot select more than one candidate")
+        if self.candidates and len(selected) != 1:
+            raise ValueError("A music plan with candidates must select exactly one candidate")
+        if self.candidates and self.selected_candidate_index is None:
+            raise ValueError("A music plan with candidates requires a selected candidate index")
+        if self.selected_candidate_index is not None:
+            matching = [
+                candidate
+                for candidate in self.candidates
+                if candidate.index == self.selected_candidate_index
+            ]
+            if len(matching) != 1 or not matching[0].selected:
+                raise ValueError("Selected music candidate metadata is inconsistent")
         return self
 
 
@@ -757,6 +802,21 @@ class QuickMontageSettings(BaseModel):
     music_volume_envelope: bool = False
     music_engine: Literal["auto", "ace-step", "procedural"] = "auto"
     music_model: str | None = Field(default=None, max_length=300)
+    music_quality: Literal["draft", "balanced", "studio"] = "balanced"
+    music_candidate_count: int = Field(default=0, ge=0, le=8)
+    music_style: Literal[
+        "auto",
+        "modern_cinematic",
+        "organic_electronic",
+        "indie_travel",
+        "melodic_ambient",
+        "ambient_house",
+        "modern_documentary",
+    ] = "auto"
+    music_reference_path: Path | None = None
+    music_reference_strength: float = Field(default=0.2, ge=0, le=1)
+    music_lora_path: Path | None = None
+    music_lora_strength: float = Field(default=0.7, ge=0, le=1)
     narration_enabled: bool = False
     narration_volume: float = Field(default=1.0, ge=0, le=2)
     background_volume_during_narration: float = Field(default=0.35, ge=0, le=1)

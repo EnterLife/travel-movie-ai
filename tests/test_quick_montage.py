@@ -498,6 +498,7 @@ def test_cached_segment_must_match_planned_delivery_contract(
 ) -> None:
     segment = tmp_path / "segment.mp4"
     segment.write_bytes(b"prepared")
+    video_duration_seconds = 2.0
 
     class DetailedProbe:
         def __init__(self, *_: object, **__: object) -> None:
@@ -510,6 +511,7 @@ def test_cached_segment_must_match_planned_delivery_contract(
                 (),
                 {
                     "duration_seconds": 2.0,
+                    "video_duration_seconds": video_duration_seconds,
                     "width": 320,
                     "height": 240,
                     "fps": 24.0,
@@ -544,6 +546,9 @@ def test_cached_segment_must_match_planned_delivery_contract(
 
     renderer = QuickMontageRenderer()
     assert renderer._valid_cached_segment(segment, clip, valid_plan) is True
+    video_duration_seconds = 1.7
+    assert renderer._valid_cached_segment(segment, clip, valid_plan) is False
+    video_duration_seconds = 2.0
     wrong_size = valid_plan.model_copy(
         update={"settings": valid_plan.settings.model_copy(update={"width": 640})}
     )
@@ -1168,7 +1173,7 @@ def test_service_creates_playable_quick_montage(tmp_path: Path) -> None:
     music_plan = timeline["music_plan"]
     assert music_plan["generated"] is True
     assert music_plan["duration_seconds"] == pytest.approx(result.duration_seconds)
-    assert music_plan["arrangement_version"] == "adaptive-lounge-v7-content-revision"
+    assert music_plan["arrangement_version"] == "story-music-v9-tail-audit"
     assert music_plan["accents"][0]["kind"] == "intro"
     assert music_plan["accents"][-1]["kind"] == "finale"
 

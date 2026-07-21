@@ -1398,6 +1398,39 @@ input::placeholder {
   background: #000;
 }
 
+.music-candidates {
+  margin-top: 1.25rem;
+}
+
+#music-candidate-list {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.music-candidate-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.music-candidate-card.selected {
+  border-color: var(--accent);
+}
+
+.music-candidate-card > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.music-candidate-card audio {
+  width: 100%;
+}
+
 .files-panel {
   margin-top: 16px;
   overflow: hidden;

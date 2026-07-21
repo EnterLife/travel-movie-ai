@@ -493,6 +493,7 @@ class TravelMovieService:
         resolved_model = resolve_local_music_model(
             model,
             gpu_memory_mb=resources.gpu_memory_mb,
+            quality=settings.music_quality,
         )
         return cast(
             NeuralMusicGenerator,
@@ -508,6 +509,19 @@ class TravelMovieService:
                 cancel_requested=(
                     (lambda: _music_progress_heartbeat(progress)) if progress is not None else None
                 ),
+                quality=settings.music_quality,
+                reference_audio=(
+                    settings.music_reference_path.expanduser().resolve()
+                    if settings.music_reference_path is not None
+                    else None
+                ),
+                reference_strength=settings.music_reference_strength,
+                lora_path=(
+                    settings.music_lora_path.expanduser().resolve()
+                    if settings.music_lora_path is not None
+                    else None
+                ),
+                lora_strength=settings.music_lora_strength,
             ),
         )
 
@@ -721,6 +735,32 @@ def _validate_montage_feature_requests(
             "Narration was requested, but voice_provider is disabled. Configure the local "
             "Piper executable, model, and voice_provider='piper', or disable narration."
         )
+    if montage_settings.music_reference_path is not None:
+        reference = montage_settings.music_reference_path.expanduser().resolve()
+        if not reference.is_file():
+            raise MontageError("The selected music reference audio file does not exist.")
+        if reference.suffix.casefold() not in {".wav", ".flac", ".mp3", ".m4a", ".aac"}:
+            raise MontageError("The selected music reference uses an unsupported audio format.")
+    if montage_settings.music_lora_path is not None:
+        lora = montage_settings.music_lora_path.expanduser().resolve()
+        if not lora.exists():
+            raise MontageError("The selected music LoRA path does not exist.")
+        weights = (
+            [lora]
+            if lora.is_file()
+            else [
+                candidate
+                for name in ("adapter_model.safetensors", "adapter_model.bin", "lora_weights.pt")
+                if (candidate := lora / name).is_file()
+            ]
+        )
+        if not weights:
+            raise MontageError("The selected music LoRA does not contain supported weights.")
+    if montage_settings.music_engine == "procedural" and (
+        montage_settings.music_reference_path is not None
+        or montage_settings.music_lora_path is not None
+    ):
+        raise MontageError("Music reference audio and LoRA require the ACE-Step engine.")
 
 
 def _music_progress_heartbeat(
